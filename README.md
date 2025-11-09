@@ -15,6 +15,16 @@ There are several other MCP server implementations with the same goal to provide
 * support for multiple sources (documentation, code examples, etc.)
 
 
+## Development Setup
+
+To set up the development environment with uv and venv:
+
+1. Create a virtual environment: `uv venv`
+2. Activate the virtual environment:
+   - Linux/macOS: `source .venv/bin/activate`
+   - Windows: `.venv\Scripts\activate`
+3. Install dependencies: `uv sync`
+
 ## Using Respondami
 
 To run the mcp server along with the modelinspector use:

@@ -18,4 +18,6 @@
 
 ## Development Setup
 - Use uv for package management
+- Create a virtual environment with: `uv venv`
+- Activate the virtual environment: `source .venv/bin/activate` (Linux/macOS) or `.venv\Scripts\activate` (Windows)
 - Install dependencies with: `uv sync`
