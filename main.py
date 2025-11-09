@@ -1,7 +1,7 @@
 from mcp.server.fastmcp import FastMCP
 
 # Create an MCP server
-mcp = FastMCP(Example Service")
+mcp = FastMCP("Example Service")
 
 
 @mcp.tool()

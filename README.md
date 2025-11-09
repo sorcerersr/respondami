@@ -15,6 +15,10 @@ There are several other MCP server implementations with the same goal to provide
 * support for multiple sources (documentation, code examples, etc.)
 
 
-## Using model-inspector
+## Using Respondami
 
-```ALLOWED_ORIGINS=http://127.0.0.1:6274 HOST=127.0.0.1 uv run mcp dev main.py```
+To run the mcp server along with the modelinspector use:
+
+```bash
+ALLOWED_ORIGINS=http://127.0.0.1:6274 HOST=127.0.0.1 uv run mcp dev main.py
+```
