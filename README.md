@@ -7,6 +7,8 @@ Built with [Ratatui] and [Crossterm].
 [Ratatui]: https://ratatui.rs
 [Crossterm]: https://crossterm.rs
 
+![Respondami demo](web/demo/demo.gif)
+
 ## ⚠️ No Permission System
 
 Respondami has **no permission gates** — tool calls execute immediately without asking for approval. The agent has full autonomy to read, write, edit files, and run shell commands. **Run it inside a sandbox** (container, VM, or bubblewrap) to protect your system.
