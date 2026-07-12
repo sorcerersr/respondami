@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Pre-commit hook: enforce clippy clean (0 errors, 0 warnings).
+# See AGENTS.md "Clippy must always be clean" for policy.
+#
+# This file is stored in scripts/hooks/ and should be installed via:
+#   ./scripts/install-hooks.sh
+
+set -euo pipefail
+
+echo "🔍 Running cargo clippy..."
+
+if ! cargo clippy --all-targets --all-features 2>&1 | tee /tmp/clippy-output.txt; then
+    echo ""
+    echo "❌ Clippy found errors or warnings. Please fix them before committing."
+    echo "   Run: cargo clippy --all-targets --all-features"
+    exit 1
+fi
+
+# Check for warnings (clippy exits 0 even with warnings in some configurations)
+if grep -qE 'warning:' /tmp/clippy-output.txt; then
+    echo ""
+    echo "❌ Clippy warnings found. Please fix them before committing."
+    echo "   Run: cargo clippy --all-targets --all-features"
+    exit 1
+fi
+
+echo "✅ Clippy clean"
+rm -f /tmp/clippy-output.txt

@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Respondami — A privacy-first coding agent</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <header class="hero">
+            <nav class="hero-nav">
+                <div class="logo">respondami</div>
+                <div class="nav-links">
+                    <a href="#features">Features</a>
+                    <a href="#philosophy">Philosophy</a>
+                    <a href="#screenshots">Screenshots</a>
+                    <a href="#install">Install</a>
+                    <a
+                        href="https://github.com/sorcerersr/respondami"
+                        target="_blank"
+                        rel="noopener"
+                        class="github-link"
+                        >GitHub</a
+                    >
+                </div>
+            </nav>
+            <div class="hero-content">
+                <h1>
+                    A privacy-first coding agent.<br />One binary, no telemetry,
+                    skills-driven.
+                </h1>
+                <p class="tagline">
+                    A fast, private, single-binary AI coding companion built
+                    with Rust. No telemetry, no runtime dependencies, no
+                    compromises.
+                </p>
+
+                <div class="hero-actions">
+                    <a href="#install" class="btn btn-primary">Get Started</a>
+                    <a
+                        href="https://github.com/sorcerersr/respondami"
+                        target="_blank"
+                        rel="noopener"
+                        class="btn btn-secondary"
+                        >View on GitHub</a
+                    >
+                </div>
+            </div>
+        </header>
+
+        <section class="demo-section">
+            <div class="demo-terminal">
+                <video
+                    autoplay
+                    muted
+                    loop
+                    playsinline
+                    class="demo-video"
+                    poster="screenshots/welcome.png"
+                >
+                    <source src="demo/demo.mp4" type="video/mp4" />
+                    <img
+                        src="demo/demo.gif"
+                        alt="Respondami terminal demo — showing agent workflow with tool execution"
+                    />
+                </video>
+            </div>
+        </section>
+
+        <section id="features" class="features">
+            <h2>Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3>Zero telemetry</h3>
+                    <p>
+                        No telemetry, no analytics, no version checks. It only
+                        talks to your LLM.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🧠</div>
+                    <h3>Agent skills & hooks</h3>
+                    <p>
+                        Customizability through agent skills and hooks — no
+                        extension system, no plugin overhead. Just pure agent
+                        behavior.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Rust-grade performance</h3>
+                    <p>
+                        A single compiled binary. No Node.js, no V8, no garbage
+                        collection. Instant startup, minimal memory, smooth UI.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎨</div>
+                    <h3>Beautiful TUI</h3>
+                    <p>
+                        Polished terminal UI with overlay popups, command
+                        palette, file autocomplete, and visual state indicators.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🗜️</div>
+                    <h3>Automatic compaction</h3>
+                    <p>
+                        Built-in configurable compaction triggers when tokens
+                        drop below a reserve. Long sessions without manual
+                        intervention.
+                    </p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚠️</div>
+                    <h3>No Permission Gates</h3>
+                    <p>
+                        Tool calls execute immediately without asking for
+                        approval. Full agent autonomy means you should sandbox
+                        Respondami (container, VM, bubblewrap) to protect your
+                        system.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <section id="philosophy" class="philosophy">
+            <h2>Philosophy</h2>
+            <div class="philosophy-content">
+                <h3>Privacy-first</h3>
+                <p>
+                    Respondami doesn't phone home. There's no telemetry, no
+                    analytics, no version checks. The only network connection it
+                    makes is the one you configured — your LLM. That's it.
+                </p>
+
+                <h3>Customization — skills, not plugins</h3>
+                <p>
+                    Skills are markdown files that shape agent behavior, not
+                    plugins that change the tool. No extension registry, no
+                    plugin lifecycle. Hooks handle the few cases that need
+                    them. You customize what the agent does, not what the tool
+                    is.
+                </p>
+
+                <h3>Built in Rust</h3>
+                <p>
+                    Compiled to a single binary with Rust. No garbage
+                    collection, no JIT warmup, no virtual environments. It
+                    starts fast, uses little memory, and runs the same
+                    everywhere.
+                </p>
+
+                <h3>Terminal-native</h3>
+                <p>
+                    A polished terminal interface built with ratatui. Overlay
+                    popups, a command palette, fuzzy file autocomplete, pinned
+                    scroll during streaming, and real-time token tracking. All
+                    in your terminal.
+                </p>
+            </div>
+        </section>
+
+        <section id="screenshots" class="screenshots">
+            <h2>Screenshots</h2>
+            <div class="screenshot-grid">
+                <a href="#screenshot-welcome" class="screenshot-link">
+                    <div class="screenshot-item">
+                        <img
+                            src="screenshots/welcome.png"
+                            alt="Respondami welcome screen"
+                            loading="lazy"
+                        />
+                        <p class="screenshot-caption">Welcome screen</p>
+                    </div>
+                </a>
+                <a href="#screenshot-demo" class="screenshot-link">
+                    <div class="screenshot-item">
+                        <img
+                            src="screenshots/demo_session.png"
+                            alt="Demo session with read and edit tool calls"
+                            loading="lazy"
+                        />
+                        <p class="screenshot-caption">Demo session with tool execution</p>
+                    </div>
+                </a>
+                <a href="#screenshot-palette" class="screenshot-link">
+                    <div class="screenshot-item">
+                        <img
+                            src="screenshots/command_palette.png"
+                            alt="Command palette overlay"
+                            loading="lazy"
+                        />
+                        <p class="screenshot-caption">Command palette</p>
+                    </div>
+                </a>
+                <a href="#screenshot-files" class="screenshot-link">
+                    <div class="screenshot-item">
+                        <img
+                            src="screenshots/file_selector.png"
+                            alt="File selector popup"
+                            loading="lazy"
+                        />
+                        <p class="screenshot-caption">File selector with fuzzy matching</p>
+                    </div>
+                </a>
+            </div>
+        </section>
+
+        <section id="install" class="install">
+            <h2>Installation</h2>
+            <div class="install-content">
+                <div class="install-step">
+                    <h3>Prerequisites</h3>
+                    <ul>
+                        <li>
+                            <a
+                                href="https://rustup.rs/"
+                                target="_blank"
+                                rel="noopener"
+                                >Rust</a
+                            >
+                            (latest stable)
+                        </li>
+                        <li>
+                            <a
+                                href="https://cmake.org/"
+                                target="_blank"
+                                rel="noopener"
+                                >CMake</a
+                            >
+                            (required for aws-lc-sys)
+                        </li>
+                        <li>
+                            A local LLM running via
+                            <a
+                                href="https://github.com/ggerganov/llama.cpp"
+                                target="_blank"
+                                rel="noopener"
+                                >llama.cpp</a
+                            >
+                        </li>
+                    </ul>
+                </div>
+                <div class="install-step">
+                    <h3>Build from source</h3>
+                    <pre><code>git clone https://github.com/sorcerersr/respondami.git
+cd respondami
+cargo build --release</code></pre>
+                </div>
+                <div class="install-step">
+                    <h3>Run</h3>
+                    <pre><code>./target/release/respondami</code></pre>
+                </div>
+                <div class="install-step">
+                    <h3>Configuration</h3>
+                    <p>
+                        Configuration is stored in
+                        <code>~/.config/respondami/config.json</code>. A sample
+                        config can be found in the repository.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Screenshot lightbox overlays -->
+        <div class="lightbox-overlay" id="screenshot-welcome">
+            <a href="#screenshots" class="lightbox-close">&times;</a>
+            <img src="screenshots/welcome.png" alt="Respondami welcome screen" />
+        </div>
+        <div class="lightbox-overlay" id="screenshot-demo">
+            <a href="#screenshots" class="lightbox-close">&times;</a>
+            <img src="screenshots/demo_session.png" alt="Demo session with tool execution" />
+        </div>
+        <div class="lightbox-overlay" id="screenshot-palette">
+            <a href="#screenshots" class="lightbox-close">&times;</a>
+            <img src="screenshots/command_palette.png" alt="Command palette overlay" />
+        </div>
+        <div class="lightbox-overlay" id="screenshot-files">
+            <a href="#screenshots" class="lightbox-close">&times;</a>
+            <img src="screenshots/file_selector.png" alt="File selector popup" />
+        </div>
+
+        <footer class="footer">
+            <div class="footer-content">
+                <div class="footer-left">
+                    <div class="logo">respondami</div>
+                    <p>
+                        A privacy-first coding agent. One binary, no telemetry,
+                        skills-driven.
+                    </p>
+                </div>
+                <div class="footer-right">
+                    <a
+                        href="https://github.com/sorcerersr/respondami"
+                        target="_blank"
+                        rel="noopener"
+                    >
+                        <span class="github-icon">
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path
+                                    fill="currentColor"
+                                    d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+                                />
+                            </svg>
+                        </span>
+                        GitHub
+                    </a>
+                    <p class="license">Licensed under MIT</p>
+                </div>
+            </div>
+        </footer>
+    </body>
+</html>
