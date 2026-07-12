@@ -29,16 +29,6 @@ The binary is at `target/release/respondami`.
 - [CMake](https://cmake.org/) (required for `aws-lc-sys`)
 - A running LLM backend (e.g. [llama.cpp](https://github.com/ggerganov/llama.cpp) server)
 
-### Container (Podman)
-
-```bash
-make -C container_build build
-make -C container_build install
-respondami
-```
-
-See the [container build docs](./container_build/README.md) for details.
-
 ## Quick Start
 
 1. **Start your LLM server** (e.g. `llama-server -m model.gguf`)
@@ -78,11 +68,9 @@ cargo clippy --all-targets --all-features   # must be clean (0 errors, 0 warning
 cargo test                                    # all tests must pass
 ```
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution guidelines.
-
 ## License
 
-Copyright (c) Stefan Rabmund <stefan.rabmund@mailbox.de>
+Copyright (c) Stefan "Sorcerer" Rabmund
 
 This project is licensed under the MIT license ([LICENSE] or <http://opensource.org/licenses/MIT>)
 
