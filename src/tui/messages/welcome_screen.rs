@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::style::Color;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -143,9 +143,15 @@ impl WelcomeScreen {
 
     /// Build content lines for the skills panel.
     #[must_use]
-    pub(crate) fn build_skills_content(skills: &[crate::skills::Skill]) -> Vec<Line<'static>> {
+    pub(crate) fn build_skills_content(
+        skills: &[crate::skills::Skill],
+        dim_color: Color,
+    ) -> Vec<Line<'static>> {
         if skills.is_empty() {
-            vec![Line::from("No skills loaded")]
+            vec![Line::from(Span::styled(
+                "No skills loaded",
+                Style::default().fg(dim_color),
+            ))]
         } else {
             skills.iter().map(|s| Line::from(s.name.clone())).collect()
         }
@@ -153,19 +159,29 @@ impl WelcomeScreen {
 
     /// Build content lines for the context panel.
     #[must_use]
-    pub(crate) fn build_context_content(cwd: &std::path::Path, agents_md_path: &Option<std::path::PathBuf>) -> Vec<Line<'static>> {
+    pub(crate) fn build_context_content(
+        cwd: &std::path::Path,
+        agents_md_path: &Option<std::path::PathBuf>,
+        dim_color: Color,
+    ) -> Vec<Line<'static>> {
         match agents_md_path {
             Some(path) => {
                 let display = path.strip_prefix(cwd).unwrap_or(path.as_path()).display().to_string();
                 vec![Line::from(display)]
             }
-            None => vec![Line::from("No AGENTS.md found — /init to generate one")],
+            None => vec![Line::from(Span::styled(
+                "No AGENTS.md found",
+                Style::default().fg(dim_color),
+            ))],
         }
     }
 
     /// Build content lines for the hooks panel.
     #[must_use]
-    pub(crate) fn build_hooks_content(registry: &crate::hooks::HookRegistry) -> Vec<Line<'static>> {
+    pub(crate) fn build_hooks_content(
+        registry: &crate::hooks::HookRegistry,
+        dim_color: Color,
+    ) -> Vec<Line<'static>> {
         use crate::hooks::HookEvent;
         let mut lines = Vec::new();
         for event in HookEvent::all() {
@@ -179,7 +195,10 @@ impl WelcomeScreen {
             }
         }
         if lines.is_empty() {
-            lines.push(Line::from("No hooks configured"));
+            lines.push(Line::from(Span::styled(
+                "No hooks configured",
+                Style::default().fg(dim_color),
+            )));
         }
         lines
     }
@@ -192,9 +211,9 @@ impl WelcomeScreen {
         let hook_registry = &app.config.hook_registry;
 
         // Build panel content
-        let skills_content = Self::build_skills_content(skills);
-        let hooks_content = Self::build_hooks_content(hook_registry);
-        let context_content = Self::build_context_content(cwd, agents_md_path);
+        let skills_content = Self::build_skills_content(skills, theme.text_dim);
+        let hooks_content = Self::build_hooks_content(hook_registry, theme.text_dim);
+        let context_content = Self::build_context_content(cwd, agents_md_path, theme.text_dim);
 
         // Count content lines for height calculation
         let skills_line_count = if skills.is_empty() { 1 } else { skills.len() };
@@ -263,7 +282,7 @@ impl WelcomeScreen {
             // Three-column layout: equal width, 1-col gaps, centered as group
             let context_display = match agents_md_path {
                 Some(p) => p.strip_prefix(cwd).unwrap_or(p.as_path()).display().to_string(),
-                None => "No AGENTS.md found — /init to generate one".to_string(),
+                None => "No AGENTS.md found".to_string(),
             };
             let skills_max_width = if skills.is_empty() {
                 "No skills loaded".width()
@@ -327,7 +346,7 @@ impl WelcomeScreen {
             // Two-column layout: Skills | Context (no hooks panel)
             let context_display = match agents_md_path {
                 Some(p) => p.strip_prefix(cwd).unwrap_or(p.as_path()).display().to_string(),
-                None => "No AGENTS.md found — /init to generate one".to_string(),
+                None => "No AGENTS.md found".to_string(),
             };
             let skills_max_width = if skills.is_empty() {
                 "No skills loaded".width()
