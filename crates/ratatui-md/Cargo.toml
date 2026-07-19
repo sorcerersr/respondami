@@ -11,4 +11,4 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.30.0"
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
