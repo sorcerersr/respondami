@@ -18,17 +18,19 @@ pub struct EditToolCall {
     pub path: String,
     pub edits: Vec<EditDiff>,
     pub has_error: bool,
+    pub error_message: Option<String>,
     pub expanded: bool,
 }
 
 impl EditToolCall {
     #[must_use]
-    pub fn from_args(_result: &str, has_error: bool, tool_args: Option<&serde_json::Value>, expanded: bool) -> Self {
+    pub fn from_args(result: &str, has_error: bool, tool_args: Option<&serde_json::Value>, expanded: bool) -> Self {
         if has_error {
             return Self {
                 path: tool_args.and_then(|a| a.get("path").and_then(|v| v.as_str())).unwrap_or("unknown").to_string(),
                 edits: Vec::new(),
                 has_error: true,
+                error_message: Some(result.to_string()),
                 expanded,
             };
         }
@@ -48,14 +50,18 @@ impl EditToolCall {
             })
             .unwrap_or_default();
 
-        Self { path, edits, has_error, expanded }
+        Self { path, edits, has_error, error_message: None, expanded }
     }
 }
 
 impl ToolCallRender for EditToolCall {
     fn content_lines(&self) -> Vec<String> {
         if self.has_error {
-            return vec![format!("Failed to edit {}", self.path)];
+            let mut lines = vec![format!("Failed to edit {path}", path = self.path)];
+            if let Some(ref err) = self.error_message {
+                lines.push(format!("⚠ {err}"));
+            }
+            return lines;
         }
         let mut lines = Vec::new();
         for diff in &self.edits {
