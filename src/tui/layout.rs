@@ -803,7 +803,7 @@ impl LayoutRenderer {
     ///
     /// Horizontally centered, anchored above the input row, grows upward.
     /// Contains: input row (with "> " prefix), accent divider, filtered command list.
-    const PALETTE_MAX_VISIBLE: usize = 10;
+    const PALETTE_MAX_VISIBLE: usize = 15;
 
     fn render_command_palette(
         frame: &mut Frame,
