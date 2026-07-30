@@ -18,7 +18,7 @@ use super::layers::{NavigationLayer, StateTransitionLayer, TransitionAction};
 use super::KeyHandler;
 
 /// Max visible commands in the palette (matches `LayoutRenderer::PALETTE_MAX_VISIBLE`).
-const PALETTE_PAGE_SIZE: usize = 10;
+const PALETTE_PAGE_SIZE: usize = 15;
 
 /// Update scroll offset to keep the selected item visible.
 fn update_scroll(app: &mut App, total: usize) {
