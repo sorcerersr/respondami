@@ -22,11 +22,12 @@ use crate::tui::AppState;
 use super::super::KeyEventResult;
 
 /// Modal layer that handles global shortcuts with modal awareness.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ModalLayer;
 
 impl ModalLayer {
     /// Create a new `ModalLayer` (no configuration needed).
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
