@@ -13,6 +13,7 @@ pub enum PopupType {
     SkillAutocomplete,
     CommandPalette,
     Help,
+    TokenStats,
 }
 
 /// Application states.
@@ -29,6 +30,8 @@ pub enum AppState {
     CommandPalette,
     /// Help popup overlay (opened via F1 or command palette).
     HelpPopup,
+    /// Token statistics dialog overlay.
+    TokenStatsDialog,
 }
 
 use super::editor::FileMatch;

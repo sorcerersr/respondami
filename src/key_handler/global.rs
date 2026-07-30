@@ -12,23 +12,20 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::tui::App;
+use super::KeyEventResult;
 
-/// Handle global shortcuts. Returns `true` if the event caused a quit, `false` otherwise.
-///
-/// This is the only truly global handler — it runs before state-specific handlers
-/// and only handles Ctrl+D (quit). All other shortcuts are handled by `ModalLayer`
-/// which blocks them when a modal is open.
+/// Handle global shortcuts. Returns `KeyEventResult` indicating the outcome.
 pub async fn handle_global_shortcuts(
     _app: &mut App,
     key: &KeyEvent,
     _terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<KeyEventResult> {
     // Ctrl+D — always quit
     if key.code == crossterm::event::KeyCode::Char('d')
         && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
     {
-        return Ok(true);
+        return Ok(KeyEventResult::Quit);
     }
 
-    Ok(false)
+    Ok(KeyEventResult::Unhandled)
 }

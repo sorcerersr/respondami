@@ -79,6 +79,7 @@ pub fn get_palette_commands() -> Vec<PaletteCommand> {
         PaletteCommand { id: "toggle_tool_output", name: "toggle tool output", description: "Toggle tool output expand" },
         PaletteCommand { id: "toggle_hook_mode", name: "toggle hook display", description: "Toggle hook display mode" },
         PaletteCommand { id: "reload_hooks", name: "reload hooks", description: "Reload hooks from disk" },
+        PaletteCommand { id: "token_stats", name: "token stats", description: "Show project token statistics" },
     ]
 }
 

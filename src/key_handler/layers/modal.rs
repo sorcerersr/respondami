@@ -4,12 +4,14 @@
 //!
 //! Blocked shortcuts when modal is open:
 //! - PgUp/PgDown (scroll chat)
-//! - Ctrl+O/Ctrl+/ (toggle reasoning display)
-//! - Ctrl+T (toggle tool output)
-//! - F1 (open help)
 //!
 //! Always available (even in modals):
 //! - Ctrl+D (quit)
+//!
+//! Delegated to `streaming_ui::handle_ui_shortcuts()`:
+//! - F1 (open help)
+//! - Ctrl+O/Ctrl+/ (toggle reasoning display)
+//! - Ctrl+T (toggle tool output)
 //!
 //! HelpPopup-specific:
 //! - Esc dismisses the help popup
@@ -17,6 +19,7 @@
 use crossterm::event::KeyEvent;
 use crate::tui::App;
 use crate::tui::AppState;
+use super::super::KeyEventResult;
 
 /// Modal layer that handles global shortcuts with modal awareness.
 #[derive(Debug)]
@@ -28,45 +31,23 @@ impl ModalLayer {
         Self
     }
 
-    /// Handle a key event. Returns `true` if the event caused a quit.
-    /// Returns `false` if the event was handled but no quit, or if the event was not handled.
-    pub fn handle(&self, app: &mut App, key: &KeyEvent) -> anyhow::Result<bool> {
+    /// Handle a key event. Returns `KeyEventResult` indicating the outcome.
+    pub fn handle(&self, app: &mut App, key: &KeyEvent) -> anyhow::Result<KeyEventResult> {
         // Ctrl+D — always quit, even in modals
         if key.code == crossterm::event::KeyCode::Char('d')
             && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
         {
-            return Ok(true);
+            return Ok(KeyEventResult::Quit);
         }
 
         // If a modal is open, block the following shortcuts
         if self.is_modal_open(app) {
-            return Ok(false);
+            return Ok(KeyEventResult::Unhandled);
         }
 
-        // F1 — open help popup
-        if key.code == crossterm::event::KeyCode::F(1) {
-            app.modal.state = AppState::HelpPopup;
-            return Ok(false);
-        }
-
-        // Ctrl+O or Ctrl+/: toggle reasoning visibility
-        let is_reasoning_toggle = (key.code == crossterm::event::KeyCode::Char('o')
-            || key.code == crossterm::event::KeyCode::Char('/'))
-            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
-        if is_reasoning_toggle {
-            app.config.thinking_display = app.config.thinking_display.toggle();
-            app.chat.auto_scroll = true;
-            app.save_config()?;
-            return Ok(false);
-        }
-
-        // Ctrl+T: toggle all tool call output expand/collapse
-        let is_expand_toggle = key.code == crossterm::event::KeyCode::Char('t')
-            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
-        if is_expand_toggle {
-            app.toggle_all_tool_output();
-            app.save_config()?;
-            return Ok(false);
+        // F1, Ctrl+O, Ctrl+/ , Ctrl+T — delegated to shared UI shortcuts
+        if super::streaming_ui::handle_ui_shortcuts(app, key)? {
+            return Ok(KeyEventResult::Handled);
         }
 
         // PgUp/PgDown — scroll chat
@@ -74,17 +55,17 @@ impl ModalLayer {
             crossterm::event::KeyCode::PageUp => {
                 let page = crate::agent_events::get_chat_visible_height(app);
                 app.chat.scroll_up(page);
-                return Ok(false);
+                return Ok(KeyEventResult::Handled);
             }
             crossterm::event::KeyCode::PageDown => {
                 let page = crate::agent_events::get_chat_visible_height(app);
                 app.chat.scroll_down(page);
-                return Ok(false);
+                return Ok(KeyEventResult::Handled);
             }
             _ => {}
         }
 
-        Ok(false)
+        Ok(KeyEventResult::Unhandled)
     }
 
     /// Check if any modal is currently open.

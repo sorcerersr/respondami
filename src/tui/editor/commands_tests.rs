@@ -119,7 +119,7 @@ use super::{fuzzy_match_case_insensitive, get_palette_commands, fuzzy_match_pale
     #[test]
     fn palette_commands_has_expected_count() {
         let commands = get_palette_commands();
-        assert_eq!(commands.len(), 12);
+        assert_eq!(commands.len(), 13);
     }
 
     #[test]
@@ -151,7 +151,7 @@ use super::{fuzzy_match_case_insensitive, get_palette_commands, fuzzy_match_pale
     #[test]
     fn palette_fuzzy_match_empty_returns_all() {
         let results = fuzzy_match_palette_commands("", 20);
-        assert_eq!(results.len(), 12);
+        assert_eq!(results.len(), 13);
     }
 
     #[test]

@@ -157,7 +157,7 @@ impl App {
     /// Check if the app is in a modal state that blocks normal input.
     #[must_use]
     pub fn is_modal(&self) -> bool {
-        matches!(self.modal.state, super::mode::AppState::InitPopup | super::mode::AppState::SessionSelect | super::mode::AppState::CommandPalette | super::mode::AppState::HelpPopup)
+        matches!(self.modal.state, super::mode::AppState::InitPopup | super::mode::AppState::SessionSelect | super::mode::AppState::CommandPalette | super::mode::AppState::HelpPopup | super::mode::AppState::TokenStatsDialog)
     }
 
     /// Get the current palette filter query, derived from whichever source is active.
@@ -481,6 +481,7 @@ impl App {
             super::mode::AppState::InitPopup => StateHandler::InitPopup,
             super::mode::AppState::CommandPalette => StateHandler::CommandPalette,
             super::mode::AppState::HelpPopup => StateHandler::HelpPopup,
+            super::mode::AppState::TokenStatsDialog => StateHandler::TokenStats,
         }
     }
 
