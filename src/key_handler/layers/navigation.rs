@@ -38,6 +38,7 @@ impl std::fmt::Debug for NavigationLayer {
 
 impl NavigationLayer {
     /// Create a new `NavigationLayer`.
+    #[must_use]
     pub fn new(
         item_count: Box<ItemCountGetter>,
         selected_getter: Box<SelectedGetter>,
