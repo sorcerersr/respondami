@@ -152,6 +152,16 @@ pub async fn run() -> anyhow::Result<()> {
             app.modal.state = AppState::Idle;
         }
 
+        // Poll in-flight token stats computation task.
+        if let Some(task) = app.token_stats_task.as_mut()
+            && task.is_finished()
+        {
+            let handle = app.token_stats_task.take().unwrap();
+            if let Ok(stats) = handle.await {
+                app.modal.token_stats = Some(stats);
+            }
+        }
+
         // Wait for event or animation tick
         // When effects are running, use shorter timeout for smoother animation
         let tick_duration = if app.ui.effect_manager.is_running() {
