@@ -46,7 +46,7 @@ impl KeyHandler for CommandPaletteHandler {
     ) -> anyhow::Result<bool> {
         // Compute matches once — stored in ModalState for all closures to read
         app.modal.command_palette_matches =
-            fuzzy_match_palette_commands(&app.modal.command_palette_query, 10);
+            fuzzy_match_palette_commands(&app.modal.command_palette_query, 15);
 
         // 1. State transitions
         let mut transitions = StateTransitionLayer::new()
