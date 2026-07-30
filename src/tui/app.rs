@@ -355,8 +355,17 @@ impl App {
     }
 
     /// Reset current request usage at the start of a new turn.
+    ///
+    /// Preserves `input_tokens` from the previous request so that the delta
+    /// between requests captures only the growth in context (new messages added),
+    /// not the repeated system prompt + history. Only `output_tokens` resets.
     pub fn reset_request_usage(&mut self) {
-        self.session.current_request_usage = RequestTokenUsage::default();
+        let preserved_input = self.session.current_request_usage.input_tokens;
+        self.session.current_request_usage = RequestTokenUsage {
+            input_tokens: preserved_input,
+            output_tokens: 0,
+            estimated: false,
+        };
     }
 
     /// Clear chat display (preserves session).
@@ -521,5 +530,12 @@ impl App {
         self.editor.history_index = 0;
         self.editor.saved_input = None;
         self.editor.saved_cursor = 0;
+    }
+
+    /// Enable auto-scroll unless the user has pinned the viewport.
+    pub fn maybe_auto_scroll(&mut self) {
+        if !self.chat.pinned_scroll {
+            self.chat.auto_scroll = true;
+        }
     }
 }

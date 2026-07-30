@@ -96,9 +96,14 @@ impl ToolHandler for BashTool {
         let cancel_stdout = cancel.clone();
         let cancel_stderr = cancel.clone();
 
-        // Read stdout and stderr concurrently into separate buffers
-        let stdout_fut = read_stream(stdout, output_tx, &cancel_stdout);
-        let stderr_fut = read_stream(stderr, output_tx, &cancel_stderr);
+        // Spawn stream readers as abortable tasks to prevent pipe deadlock on timeout.
+        // When timeout fires, these tasks are aborted (dropped), breaking the cycle
+        // where a child blocked on a full pipe buffer would prevent `child.kill()` from running.
+        let tx_stdout = output_tx.cloned();
+        let tx_stderr = output_tx.cloned();
+
+        let stdout_handle = tokio::spawn(read_stream(stdout, tx_stdout, cancel_stdout));
+        let stderr_handle = tokio::spawn(read_stream(stderr, tx_stderr, cancel_stderr));
 
         // Wait for process exit with timeout (runs concurrently with stream reads)
         let wait_fut = async {
@@ -117,11 +122,18 @@ impl ToolHandler for BashTool {
 
         // Race: streams+wait complete, or user cancels
         let result = tokio::select! {
-            result = async { tokio::join!(stdout_fut, stderr_fut, wait_fut) } => Some(result),
+            result = async {
+                let wait = wait_fut.await;
+                let stdout = stdout_handle.await;
+                let stderr = stderr_handle.await;
+                (stdout, stderr, wait)
+            } => Some(result),
             () = cancel_fut => None,
         };
 
-        if let Some(((stdout_output, _), (stderr_output, _), exit_result)) = result {
+        if let Some((stdout_res, stderr_res, exit_result)) = result {
+            let (stdout_output, _) = stdout_res.unwrap_or_else(|e| (format!("[spawn error: {e}]"), 0));
+            let (stderr_output, _) = stderr_res.unwrap_or_else(|e| (format!("[spawn error: {e}]"), 0));
             let combined = format!("{stdout_output}{stderr_output}");
 
             let exit_code = match exit_result {
@@ -345,8 +357,8 @@ pub(crate) fn truncate_to_bytes(input: &str, max_bytes: usize) -> &str {
 /// Returns (`full_output`, `total_bytes`).
 async fn read_stream(
     stream: impl AsyncRead + Unpin,
-    tx: Option<&mpsc::Sender<String>>,
-    cancel: &CancelGuard,
+    tx: Option<mpsc::Sender<String>>,
+    cancel: CancelGuard,
 ) -> (String, usize) {
     let mut output = String::new();
     let mut reader = tokio::io::BufReader::new(stream);
@@ -361,7 +373,7 @@ async fn read_stream(
             Ok(0) => break, // EOF
             Ok(_) => {
                 let text = String::from_utf8_lossy(&buf).to_string();
-                if let Some(tx) = tx {
+                if let Some(tx) = &tx {
                     let _ = tx.send(text.clone()).await;
                 }
                 output.push_str(&text);

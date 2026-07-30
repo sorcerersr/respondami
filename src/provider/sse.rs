@@ -127,8 +127,10 @@ pub(crate) async fn process_sse_chunk(
                 .or(delta.reasoning_text.as_ref().filter(|s| !s.is_empty()));
 
             if let Some(text) = reasoning_text {
+                if !state.reasoning_received {
+                    let _ = tx.send(ChatChunk::Thinking(true)).await;
+                }
                 state.reasoning_received = true;
-                let _ = tx.send(ChatChunk::Thinking(true)).await;
                 let _ = tx.send(ChatChunk::Reasoning(text.clone())).await;
             } else {
                 let _ = tx.send(ChatChunk::Thinking(false)).await;

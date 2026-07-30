@@ -440,7 +440,7 @@ impl SessionStore {
             Some(p) => p,
             None => return,
         };
-        let data = serde_json::to_value(&entry).unwrap_or_default();
+        let data = serde_json::to_value(&entry).expect("TokenRateEntry serialization failed");
         let custom_entry = SessionEntry::new_custom("token-rate".into(), data);
         self.entries.push(custom_entry.clone());
         self.append_entry_to_disk(&custom_entry, path).ok();
