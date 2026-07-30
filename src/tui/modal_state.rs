@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use super::mode::{AppState, PopupType};
+use super::token_stats::ProjectTokenStats;
 use crate::tui::editor::PaletteCommand;
 use crate::session::SessionMeta;
 
@@ -18,6 +19,7 @@ pub struct ModalState {
     pub command_palette_scroll_offset: usize,
     pub command_palette_preserved_input: String,
     pub command_palette_preserved_cursor: usize,
+    pub token_stats: Option<ProjectTokenStats>,
 }
 
 impl ModalState {
@@ -35,6 +37,7 @@ impl ModalState {
             command_palette_scroll_offset: 0,
             command_palette_preserved_input: String::new(),
             command_palette_preserved_cursor: 0,
+            token_stats: None,
         }
     }
 }

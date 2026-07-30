@@ -133,6 +133,14 @@ impl LayoutRenderer {
             Self::render_help_popup(frame, chat_row, app, theme);
         }
 
+        // Token statistics dialog overlay (drawn on top of chat area)
+        if app.modal.state == super::mode::AppState::TokenStatsDialog {
+            let stats = app.modal.token_stats.clone();
+            if stats.is_some() {
+                Self::render_token_stats_dialog(frame, chat_row, app, &stats, theme);
+            }
+        }
+
         // File autocomplete popup overlay (drawn on top of chat/input boundary)
         if let Some((file_matches, file_selected, file_scroll, file_show_hidden)) = {
             match &app.editor.autocomplete_mode {
@@ -203,6 +211,7 @@ impl LayoutRenderer {
             || app.modal.state == super::mode::AppState::SessionSelect
             || app.modal.state == super::mode::AppState::CommandPalette
             || app.modal.state == super::mode::AppState::HelpPopup
+            || app.modal.state == super::mode::AppState::TokenStatsDialog
             || any_autocomplete_popup;
         if app.modal.popup_animation.is_some() && !any_popup_active {
             Self::clear_popup_animation(app);
@@ -581,6 +590,101 @@ impl LayoutRenderer {
         Self::maybe_add_popup_fade_effect(app, PopupType::Help, popup_area, theme);
 
         let overlay = PanelOverlay::new(" Help ")
+            .border_style(theme.panel_border_style())
+            .title_style(theme.panel_title_style())
+            .content(lines)
+            .content_bg(theme.bg_light)
+            .content_style(theme.panel_content_style())
+            .selected_style(theme.panel_selected_style());
+
+        frame.render_widget(Clear, popup_area);
+        frame.render_widget(overlay, popup_area);
+    }
+
+    /// Render the token statistics dialog as a centered overlay.
+    fn render_token_stats_dialog(frame: &mut Frame, area: Rect, app: &mut App, stats: &Option<super::token_stats::ProjectTokenStats>, theme: &Theme) {
+        let stats = match stats {
+            Some(s) => s,
+            None => return,
+        };
+
+        let m = |tokens: u64| super::token_stats::ProjectTokenStats::format_millions(tokens);
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Sessions:        {}", stats.session_count),
+                theme.panel_content_style(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Input tokens:    {}", m(stats.total_input_tokens)),
+                theme.panel_content_style(),
+            )),
+            Line::from(Span::styled(
+                format!("  Output tokens:   {}", m(stats.total_output_tokens)),
+                theme.panel_content_style(),
+            )),
+            Line::from(Span::styled(
+                format!("  Total tokens:    {}", m(stats.total_tokens())),
+                theme.panel_content_style(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Avg input/sess:  {}", m(stats.avg_input_per_session())),
+                theme.panel_content_style(),
+            )),
+            Line::from(Span::styled(
+                format!("  Avg output/sess: {}", m(stats.avg_output_per_session())),
+                theme.panel_content_style(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "  I/O ratio:       {}% / {}%",
+                    stats.input_ratio(),
+                    stats.output_ratio()
+                ),
+                theme.panel_content_style(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press Esc to close",
+                Style::default().fg(theme.text_dim).bg(theme.bg_light),
+            )),
+        ];
+
+        let popup_height = (lines.len() + 2) as u16;
+        let popup_width = 42;
+        let popup_height = popup_height.min(area.height);
+        let popup_width = popup_width.min(area.width);
+
+        let popup_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(popup_width),
+                Constraint::Min(0),
+            ])
+            .split(area)[1];
+
+        let popup_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(popup_height),
+                Constraint::Min(0),
+            ])
+            .split(popup_area)[1];
+
+        if popup_area.width < 20 || popup_area.height < 6 {
+            return;
+        }
+
+        // Add fade-in animation on first render
+        Self::maybe_add_popup_fade_effect(app, PopupType::TokenStats, popup_area, theme);
+
+        let overlay = PanelOverlay::new(" Project Token Statistics ")
             .border_style(theme.panel_border_style())
             .title_style(theme.panel_title_style())
             .content(lines)

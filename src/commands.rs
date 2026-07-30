@@ -122,6 +122,15 @@ pub async fn execute_palette_command(
             ));
             app.chat.auto_scroll = true;
         }
+        "token_stats" => {
+            app.modal.token_stats = super::tui::token_stats::compute_project_stats(&app.config.cwd);
+            if app.modal.token_stats.is_none() {
+                app.add_system_message("No session data found. Send a message to create a session.");
+                app.chat.auto_scroll = true;
+            } else {
+                app.modal.state = AppState::TokenStatsDialog;
+            }
+        }
         _ => {
             app.add_system_message(&format!("Unknown command: {cmd_id}"));
             app.chat.auto_scroll = true;

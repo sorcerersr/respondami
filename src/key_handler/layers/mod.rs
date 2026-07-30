@@ -9,6 +9,7 @@
 //! - `NavigationLayer` — list navigation (Up/Down/j/k/Tab)
 //! - `StateTransitionLayer` — Enter, Esc, Ctrl+C state transitions
 //! - `ModalLayer` — modal-aware global shortcuts
+//! - `streaming_ui` — UI shortcuts safe during streaming (F1, Ctrl+O, Ctrl+T)
 //!
 //! Rust guideline compliant 2026-02-21
 
@@ -16,6 +17,7 @@ mod input;
 mod navigation;
 mod transitions;
 mod modal;
+pub mod streaming_ui;
 
 #[doc(inline)]
 pub use input::{InputLayer, InputConfig};
@@ -32,5 +34,7 @@ mod input_tests;
 mod modal_tests;
 #[cfg(test)]
 mod navigation_tests;
+#[cfg(test)]
+mod streaming_ui_tests;
 #[cfg(test)]
 mod transitions_tests;

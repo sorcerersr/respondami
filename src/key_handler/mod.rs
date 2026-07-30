@@ -17,7 +17,8 @@ mod init_popup;
 mod session_select;
 mod command_palette;
 mod help_popup;
-mod layers;
+mod token_stats;
+pub mod layers;
 
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
@@ -39,6 +40,17 @@ pub trait KeyHandler {
     ) -> anyhow::Result<bool>;
 }
 
+/// Result of processing a key event in the early-return gateway layers.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyEventResult {
+    /// The event caused a quit; the app should terminate.
+    Quit,
+    /// The event was consumed; stop processing.
+    Handled,
+    /// The event was not handled; propagate to the next layer.
+    Unhandled,
+}
+
 /// Enum mapping each `AppState` to its corresponding handler.
 ///
 /// This avoids trait objects and keeps dispatch fast and simple.
@@ -49,6 +61,7 @@ pub enum StateHandler {
     InitPopup,
     CommandPalette,
     HelpPopup,
+    TokenStats,
 }
 
 impl StateHandler {
@@ -70,6 +83,7 @@ impl StateHandler {
             StateHandler::InitPopup => init_popup::InitPopupHandler.handle(app, key, terminal).await,
             StateHandler::CommandPalette => command_palette::CommandPaletteHandler.handle(app, key, terminal).await,
             StateHandler::HelpPopup => help_popup::HelpPopupHandler.handle(app, key, terminal).await,
+            StateHandler::TokenStats => token_stats::TokenStatsHandler.handle(app, key, terminal).await,
         }
     }
 }
@@ -86,14 +100,18 @@ pub async fn handle_key_event(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     // 1. Truly global shortcuts (Ctrl+D only)
-    if global::handle_global_shortcuts(app, key, terminal).await? {
-        return Ok(true);
+    match global::handle_global_shortcuts(app, key, terminal).await? {
+        KeyEventResult::Quit => return Ok(true),
+        KeyEventResult::Handled => return Ok(false),
+        KeyEventResult::Unhandled => {}
     }
 
     // 2. Modal-aware global shortcuts (blocked when modal is open)
     let modal_layer = layers::ModalLayer::new();
-    if modal_layer.handle(app, key)? {
-        return Ok(true);
+    match modal_layer.handle(app, key)? {
+        KeyEventResult::Quit => return Ok(true),
+        KeyEventResult::Handled => return Ok(false),
+        KeyEventResult::Unhandled => {}
     }
 
     // 3. Autocomplete handling (only in Idle state)

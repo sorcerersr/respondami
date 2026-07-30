@@ -610,6 +610,9 @@ pub async fn process_agent_events(
                                     // Don't set done yet — wait for the agent to finish
                                     // The Done event will be sent when the agent finishes
                             }
+                            _ if crate::key_handler::layers::streaming_ui::handle_ui_shortcuts(app, &key).unwrap_or(false) => {
+                                // UI shortcut handled (F1, Ctrl+O, Ctrl+T)
+                            }
                             _ => {}
                         }
                     }

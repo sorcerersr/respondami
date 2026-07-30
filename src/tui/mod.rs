@@ -25,6 +25,7 @@ pub mod thinking_display;
 pub mod theme;
 pub mod ui_state;
 pub mod activity_indicator;
+pub mod token_stats;
 
 #[doc(inline)]
 pub use agent_event::{AgentEvent, AbortReason, CompactionReason, PartialToolCall};
@@ -61,3 +62,5 @@ mod layout_tests;
 mod status_bar_tests;
 #[cfg(test)]
 mod thinking_display_tests;
+#[cfg(test)]
+mod token_stats_tests;
