@@ -50,6 +50,9 @@ pub struct App {
     /// In-flight compaction task from manual compaction via command palette.
     /// `Some` = compaction running in background, UI shows sweep animation.
     pub compaction_task: Option<tokio::task::JoinHandle<anyhow::Result<crate::session::CompactionPlan>>>,
+    /// In-flight token stats computation task.
+    /// `Some` = stats being computed in background, dialog shows loading indicator.
+    pub token_stats_task: Option<tokio::task::JoinHandle<super::token_stats::ProjectTokenStats>>,
 }
 
 impl std::fmt::Debug for App {
@@ -65,6 +68,7 @@ impl std::fmt::Debug for App {
             .field("tool_registry", &self.tool_registry)
             .field("active_skills", &self.active_skills)
             .field("compaction_task", &self.compaction_task.is_some())
+            .field("token_stats_task", &self.token_stats_task.is_some())
             .finish()
     }
 }
@@ -132,6 +136,7 @@ impl App {
             tool_registry: ToolRegistry::new(),
             active_skills: HashSet::new(),
             compaction_task: None,
+            token_stats_task: None,
         }
     }
 

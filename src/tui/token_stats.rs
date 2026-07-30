@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::session::{AgentMessage, SessionEntry, Usage};
 
 /// Aggregated token statistics for a project.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProjectTokenStats {
     /// Number of sessions scanned.
     pub session_count: usize,

@@ -71,6 +71,10 @@ pub fn tick_activity_indicator(app: &mut App, theme: &Theme) {
     if app.is_working() {
         let (label, _, _) = crate::tui::status_bar::get_activity(&app.modal.state, theme);
         app.ui.activity_indicator.tick(label);
+    } else if app.modal.state == AppState::TokenStatsDialog
+        && app.token_stats_task.is_some()
+    {
+        app.ui.activity_indicator.tick("Gathering metrics");
     }
 }
 

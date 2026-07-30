@@ -26,6 +26,7 @@ impl KeyHandler for TokenStatsHandler {
         if key.code == crossterm::event::KeyCode::Esc {
             app.modal.state = AppState::Idle;
             app.modal.token_stats = None;
+            app.token_stats_task.take();
         }
         Ok(false)
     }
