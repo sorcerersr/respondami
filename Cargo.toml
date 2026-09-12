@@ -26,7 +26,6 @@ ignore = "0.4"
 futures-util = "0.3"
 reqwest = { version = "0.13", features = ["json", "stream"], default-features = false }
 partial-json-fixer = "0.5"
-pulldown-cmark = "0.13"
 similar = "3.2"
 unicode-normalization = "0.1"
 unicode-width = "0.2"
