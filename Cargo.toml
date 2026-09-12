@@ -53,7 +53,7 @@ ratatui-widgets = { path = "crates/ratatui-widgets" }
 ratatui-md = { path = "crates/ratatui-md" }
 
 [dev-dependencies]
-serial_test = "3.5.0"
+serial_test = "4.0.1"
 tempfile = "3"
 
 [profile.release]
