@@ -45,6 +45,7 @@ pub type ShiftEnterCallback = Box<dyn FnOnce(&mut App)>;
 pub type CtrlGCallback = Box<dyn FnOnce(&mut App)>;
 
 /// State transition layer that handles Enter, Esc, Ctrl+C, and other state transitions.
+#[derive(Default)]
 pub struct StateTransitionLayer {
     enter: Option<EnterCallback>,
     esc: Option<EscCallback>,
@@ -71,6 +72,7 @@ impl std::fmt::Debug for StateTransitionLayer {
 
 impl StateTransitionLayer {
     /// Create a new `StateTransitionLayer` with no callbacks.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             enter: None,
@@ -84,42 +86,49 @@ impl StateTransitionLayer {
     }
 
     /// Set the Enter callback.
+    #[must_use]
     pub fn with_enter(mut self, cb: EnterCallback) -> Self {
         self.enter = Some(cb);
         self
     }
 
     /// Set the Esc callback.
+    #[must_use]
     pub fn with_esc(mut self, cb: EscCallback) -> Self {
         self.esc = Some(cb);
         self
     }
 
     /// Set the Ctrl+C callback.
+    #[must_use]
     pub fn with_ctrl_c(mut self, cb: CtrlCCallback) -> Self {
         self.ctrl_c = Some(cb);
         self
     }
 
     /// Set the Ctrl+K callback.
+    #[must_use]
     pub fn with_ctrl_k(mut self, cb: CtrlKCallback) -> Self {
         self.ctrl_k = Some(cb);
         self
     }
 
     /// Set the Alt+Enter callback.
+    #[must_use]
     pub fn with_alt_enter(mut self, cb: AltEnterCallback) -> Self {
         self.alt_enter = Some(cb);
         self
     }
 
     /// Set the Shift+Enter callback.
+    #[must_use]
     pub fn with_shift_enter(mut self, cb: ShiftEnterCallback) -> Self {
         self.shift_enter = Some(cb);
         self
     }
 
     /// Set the Ctrl+G callback.
+    #[must_use]
     pub fn with_ctrl_g(mut self, cb: CtrlGCallback) -> Self {
         self.ctrl_g = Some(cb);
         self

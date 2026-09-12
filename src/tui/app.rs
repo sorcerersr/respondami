@@ -50,6 +50,9 @@ pub struct App {
     /// In-flight compaction task from manual compaction via command palette.
     /// `Some` = compaction running in background, UI shows sweep animation.
     pub compaction_task: Option<tokio::task::JoinHandle<anyhow::Result<crate::session::CompactionPlan>>>,
+    /// In-flight token stats computation task.
+    /// `Some` = stats being computed in background, dialog shows loading indicator.
+    pub token_stats_task: Option<tokio::task::JoinHandle<super::token_stats::ProjectTokenStats>>,
 }
 
 impl std::fmt::Debug for App {
@@ -65,6 +68,7 @@ impl std::fmt::Debug for App {
             .field("tool_registry", &self.tool_registry)
             .field("active_skills", &self.active_skills)
             .field("compaction_task", &self.compaction_task.is_some())
+            .field("token_stats_task", &self.token_stats_task.is_some())
             .finish()
     }
 }
@@ -132,6 +136,7 @@ impl App {
             tool_registry: ToolRegistry::new(),
             active_skills: HashSet::new(),
             compaction_task: None,
+            token_stats_task: None,
         }
     }
 
@@ -157,7 +162,7 @@ impl App {
     /// Check if the app is in a modal state that blocks normal input.
     #[must_use]
     pub fn is_modal(&self) -> bool {
-        matches!(self.modal.state, super::mode::AppState::InitPopup | super::mode::AppState::SessionSelect | super::mode::AppState::CommandPalette | super::mode::AppState::HelpPopup)
+        matches!(self.modal.state, super::mode::AppState::InitPopup | super::mode::AppState::SessionSelect | super::mode::AppState::CommandPalette | super::mode::AppState::HelpPopup | super::mode::AppState::TokenStatsDialog)
     }
 
     /// Get the current palette filter query, derived from whichever source is active.
@@ -350,8 +355,17 @@ impl App {
     }
 
     /// Reset current request usage at the start of a new turn.
+    ///
+    /// Preserves `input_tokens` from the previous request so that the delta
+    /// between requests captures only the growth in context (new messages added),
+    /// not the repeated system prompt + history. Only `output_tokens` resets.
     pub fn reset_request_usage(&mut self) {
-        self.session.current_request_usage = RequestTokenUsage::default();
+        let preserved_input = self.session.current_request_usage.input_tokens;
+        self.session.current_request_usage = RequestTokenUsage {
+            input_tokens: preserved_input,
+            output_tokens: 0,
+            estimated: false,
+        };
     }
 
     /// Clear chat display (preserves session).
@@ -481,6 +495,7 @@ impl App {
             super::mode::AppState::InitPopup => StateHandler::InitPopup,
             super::mode::AppState::CommandPalette => StateHandler::CommandPalette,
             super::mode::AppState::HelpPopup => StateHandler::HelpPopup,
+            super::mode::AppState::TokenStatsDialog => StateHandler::TokenStats,
         }
     }
 
@@ -515,5 +530,12 @@ impl App {
         self.editor.history_index = 0;
         self.editor.saved_input = None;
         self.editor.saved_cursor = 0;
+    }
+
+    /// Enable auto-scroll unless the user has pinned the viewport.
+    pub fn maybe_auto_scroll(&mut self) {
+        if !self.chat.pinned_scroll {
+            self.chat.auto_scroll = true;
+        }
     }
 }

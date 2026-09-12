@@ -47,6 +47,7 @@ impl std::fmt::Debug for InputLayer {
 
 impl InputLayer {
     /// Create a new `InputLayer` with the given configuration.
+    #[must_use]
     pub fn new(config: InputConfig) -> Self {
         Self {
             config,
@@ -55,6 +56,7 @@ impl InputLayer {
     }
 
     /// Set the callback for @ trigger.
+    #[must_use]
     pub fn with_at_trigger(mut self, cb: AtTriggerCallback) -> Self {
         self.at_trigger = Some(cb);
         self

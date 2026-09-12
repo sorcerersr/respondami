@@ -71,6 +71,10 @@ pub fn tick_activity_indicator(app: &mut App, theme: &Theme) {
     if app.is_working() {
         let (label, _, _) = crate::tui::status_bar::get_activity(&app.modal.state, theme);
         app.ui.activity_indicator.tick(label);
+    } else if app.modal.state == AppState::TokenStatsDialog
+        && app.token_stats_task.is_some()
+    {
+        app.ui.activity_indicator.tick("Gathering metrics");
     }
 }
 
@@ -99,9 +103,7 @@ pub async fn handle_compaction_result(
                 Ok((tb, ta, mr)) => {
                     app.add_compaction_message(tb.saturating_sub(ta), mr);
                     if pinned_scroll_guard {
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
                     } else {
                         app.chat.auto_scroll = true;
                     }
@@ -114,9 +116,7 @@ pub async fn handle_compaction_result(
                 Err(e) => {
                     app.add_system_message(&format!("Compaction failed: {e}"));
                     if pinned_scroll_guard {
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
                     } else {
                         app.chat.auto_scroll = true;
                     }
@@ -127,9 +127,7 @@ pub async fn handle_compaction_result(
         Ok(Err(e)) => {
             app.add_system_message(&format!("Compaction failed: {e}"));
             if pinned_scroll_guard {
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             } else {
                 app.chat.auto_scroll = true;
             }
@@ -138,9 +136,7 @@ pub async fn handle_compaction_result(
         Err(_) => {
             app.add_system_message("Compaction task panicked.");
             if pinned_scroll_guard {
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             } else {
                 app.chat.auto_scroll = true;
             }

@@ -18,7 +18,7 @@ use super::layers::{NavigationLayer, StateTransitionLayer, TransitionAction};
 use super::KeyHandler;
 
 /// Max visible commands in the palette (matches `LayoutRenderer::PALETTE_MAX_VISIBLE`).
-const PALETTE_PAGE_SIZE: usize = 10;
+const PALETTE_PAGE_SIZE: usize = 15;
 
 /// Update scroll offset to keep the selected item visible.
 fn update_scroll(app: &mut App, total: usize) {
@@ -46,7 +46,7 @@ impl KeyHandler for CommandPaletteHandler {
     ) -> anyhow::Result<bool> {
         // Compute matches once — stored in ModalState for all closures to read
         app.modal.command_palette_matches =
-            fuzzy_match_palette_commands(&app.modal.command_palette_query, 10);
+            fuzzy_match_palette_commands(&app.modal.command_palette_query, 15);
 
         // 1. State transitions
         let mut transitions = StateTransitionLayer::new()

@@ -194,7 +194,7 @@ pub fn cursor_backspace(input: &mut String, pos: &mut usize) {
         input.remove(*pos);
         *pos -= 1;
     } else {
-        let (offset, width) = prev_char_offset(input, *pos).unwrap();
+        let Some((offset, width)) = prev_char_offset(input, *pos) else { return; };
         input.remove(offset);
         *pos -= width;
     }

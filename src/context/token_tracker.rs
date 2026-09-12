@@ -134,7 +134,7 @@ impl TokenRateTracker {
         self.has_provider_usage = true;
 
         // Override the estimated turn tokens with actual provider data
-        self.turn_tokens = completion_tokens;
+        self.turn_tokens = self.provider_completion_tokens;
     }
 
     /// Called when streaming ends. Adds turn totals to session totals.
