@@ -103,9 +103,7 @@ pub async fn handle_compaction_result(
                 Ok((tb, ta, mr)) => {
                     app.add_compaction_message(tb.saturating_sub(ta), mr);
                     if pinned_scroll_guard {
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
                     } else {
                         app.chat.auto_scroll = true;
                     }
@@ -118,9 +116,7 @@ pub async fn handle_compaction_result(
                 Err(e) => {
                     app.add_system_message(&format!("Compaction failed: {e}"));
                     if pinned_scroll_guard {
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
                     } else {
                         app.chat.auto_scroll = true;
                     }
@@ -131,9 +127,7 @@ pub async fn handle_compaction_result(
         Ok(Err(e)) => {
             app.add_system_message(&format!("Compaction failed: {e}"));
             if pinned_scroll_guard {
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             } else {
                 app.chat.auto_scroll = true;
             }
@@ -142,9 +136,7 @@ pub async fn handle_compaction_result(
         Err(_) => {
             app.add_system_message("Compaction task panicked.");
             if pinned_scroll_guard {
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             } else {
                 app.chat.auto_scroll = true;
             }

@@ -87,9 +87,7 @@ pub async fn process_agent_events(
                             CompactionReason::Threshold => "Context compacted. Continuing task...",
                         };
                         app.add_system_message(system_msg);
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
 
                         // Reset tracking for the retry.
                         // Use post-compaction token estimate instead of zero to avoid
@@ -107,9 +105,7 @@ pub async fn process_agent_events(
 
                         if let Some(err) = agents_md_error {
                             app.add_system_message(&format!("⚠ Could not load AGENTS.md: {err}"));
-                            if !app.chat.pinned_scroll {
-                                app.chat.auto_scroll = true;
-                            }
+                            app.maybe_auto_scroll();
                         }
 
                         // Save user message to session
@@ -176,9 +172,7 @@ pub async fn process_agent_events(
                 }
                 app.agent.tracker.record(token.len());
                 app.push_token(&token);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ThinkingStart)) => {
                 // Transition from ToolExec back to Streaming — thinking is
@@ -187,9 +181,7 @@ pub async fn process_agent_events(
                     app.modal.state = AppState::Streaming;
                 }
                 app.add_thinking_message();
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ThinkingEnd)) => {
                 // Thinking block is static — no animation to stop
@@ -197,29 +189,21 @@ pub async fn process_agent_events(
             Ok(Some(AgentEvent::Reasoning(text))) => {
                 app.agent.tracker.record(text.len());
                 app.push_reasoning(&text);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolCallStart { tool_call_id, tool_name, tool_args })) => {
                 app.modal.state = AppState::ToolExec;
                 app.add_pending_tool_call(&tool_call_id, &tool_name, &tool_args);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolCallDone { tool_call_id, result, has_error, rtk_original })) => {
                 app.agent.tracker.pause_timing(); // Exclude tool exec time from streaming time
                 app.update_tool_call_result(&tool_call_id, &result, has_error, rtk_original);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolOutput(text))) => {
                 app.append_tool_output(&text);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::RetryStart { attempt, max_attempts, delay_ms, error })) => {
                 app.add_system_message(&format!(
@@ -229,9 +213,7 @@ pub async fn process_agent_events(
                     delay_ms,
                     error
                 ));
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::RetryEnd { success, attempt })) => {
                 if success {
@@ -239,9 +221,7 @@ pub async fn process_agent_events(
                 } else {
                     app.add_system_message(&format!("Retry failed after {attempt} attempt(s)."));
                 }
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::Usage(usage))) => {
                 app.accumulate_token_usage(&usage);
@@ -249,27 +229,19 @@ pub async fn process_agent_events(
             }
             Ok(Some(AgentEvent::Compaction { tokens_saved, message_count })) => {
                 app.add_compaction_message(tokens_saved, message_count);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::CompactionProgress { message })) => {
                 app.add_system_message(&message);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::CompactionDone { tokens_before, tokens_after, messages_removed })) => {
                 app.add_compaction_message(tokens_before.saturating_sub(tokens_after), messages_removed);
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::CompactionError { message })) => {
                 app.add_system_message(&format!("Compaction failed: {message}"));
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::SaveAssistantMessage { content, usage })) => {
                 if app.session.session_store.has_active_session() {
@@ -304,9 +276,7 @@ pub async fn process_agent_events(
                         stderr,
                         tool_name,
                     }));
-                    if !app.chat.pinned_scroll {
-                        app.chat.auto_scroll = true;
-                    }
+                    app.maybe_auto_scroll();
                 }
             }
             Ok(Some(AgentEvent::SkillActivation { skill_name })) => {
@@ -320,9 +290,7 @@ pub async fn process_agent_events(
                         skill_name,
                     },
                 ));
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::NeedsCompaction { reason, retry_user_message, .. })) => {
                 // Drain remaining events from the channel before compaction
@@ -370,9 +338,7 @@ pub async fn process_agent_events(
 
                 if compaction_blocked {
                     app.add_system_message(&format!("Compaction blocked by hook: {compaction_blocked_error}"));
-                    if !app.chat.pinned_scroll {
-                        app.chat.auto_scroll = true;
-                    }
+                    app.maybe_auto_scroll();
                     app.modal.state = AppState::Idle;
                     done = true;
                     continue;
@@ -386,9 +352,7 @@ pub async fn process_agent_events(
                     Ok(p) => p,
                     Err(e) => {
                         app.add_system_message(&format!("Compaction failed: Failed to build provider: {e}"));
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
                         app.modal.state = AppState::Idle;
                         done = true;
                         continue;
@@ -459,20 +423,19 @@ pub async fn process_agent_events(
                 if stop_blocked {
                     // Feed stderr back to the model as its next instruction
                     app.add_system_message(&format!("Agent blocked from stopping: {stop_blocked_error}"));
-                    if !app.chat.pinned_scroll {
-                        app.chat.auto_scroll = true;
-                    }
+                    app.maybe_auto_scroll();
                     // Restart the agent with the error as a user message
-                    app.start_streaming(&stop_blocked_error);
+                    let wrapped_error = format!(
+                        "Agent was blocked from stopping. Reason: {stop_blocked_error}\n\nContinue your current work.",
+                    );
+                    app.start_streaming(&wrapped_error);
                     app.agent.tracker.start();
 
                     let (context_messages, agents_md_error) =
                         crate::agent::build_context_with_system(&app.session.session_store, &app.config.cwd, &app.config.skills);
                     if let Some(err) = agents_md_error {
                         app.add_system_message(&format!("⚠ Could not load AGENTS.md: {err}"));
-                        if !app.chat.pinned_scroll {
-                            app.chat.auto_scroll = true;
-                        }
+                        app.maybe_auto_scroll();
                     }
 
                     let (new_tx, new_rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
@@ -488,7 +451,7 @@ pub async fn process_agent_events(
                     agent_handle = tokio::spawn(async move {
                         crate::agent::run_agent_with_snapshot(
                             context_messages,
-                            stop_blocked_error,
+                            wrapped_error,
                             config,
                             cwd,
                             agent_tool_registry,
@@ -512,9 +475,7 @@ pub async fn process_agent_events(
                 }
 
                 // Snap viewport to bottom so the complete response is visible.
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
                 done = true;
             }
             Ok(Some(AgentEvent::Done(Err(AbortReason::UserCancelled)))) => {
@@ -524,9 +485,7 @@ pub async fn process_agent_events(
                     app.session.session_store.save_token_rate(snap);
                 }
                 app.add_system_message("Cancelled.");
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
                 done = true;
             }
             Ok(Some(AgentEvent::Done(Err(AbortReason::StreamAborted)))) => {
@@ -536,9 +495,7 @@ pub async fn process_agent_events(
                     app.session.session_store.save_token_rate(snap);
                 }
                 app.add_system_message("Cancelled.");
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
                 done = true;
             }
             Ok(Some(AgentEvent::Done(Err(AbortReason::Error(e))))) => {
@@ -549,9 +506,7 @@ pub async fn process_agent_events(
                     app.session.session_store.save_token_rate(snap);
                 }
                 app.add_system_message(&format!("Agent error: {e}"));
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
                 done = true;
             }
             Ok(None) => {
@@ -561,9 +516,7 @@ pub async fn process_agent_events(
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;
                 }
-                if !app.chat.pinned_scroll {
-                    app.chat.auto_scroll = true;
-                }
+                app.maybe_auto_scroll();
                 done = true;
             }
             Err(_) => {}
