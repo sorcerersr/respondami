@@ -20,6 +20,7 @@ Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 wi
 - **Providers**: `src/provider/mod.rs` defines `ChatChunk` enum; implementations in `provider/llamacpp.rs`, SSE parsing in `provider/sse.rs`
 - **Tools**: Registry pattern in `src/tools/mod.rs` with `ToolHandler` trait. Tools: bash, read, write, edit, rtk, activate_skill
 - **Session**: JSONL persistence in `src/session/manager.rs` with fsync. Compaction via LLM summarization.
+- **Project dir**: `.respondami/` is auto-created at startup (`src/project_dir.rs`) with a `.gitignore` (`*` + negations for `skills/`, `hooks/`, `AGENTS.md`, `config.json`) so runtime artifacts stay out of `git status`. The app never overwrites an existing `.gitignore` there.
 - **Hooks**: Shell scripts at lifecycle points (`src/hooks/`). Discovered from `~/.config/respondami/hooks/` and `.respondami/hooks/`. Execute synchronously in agent loop — can inject context (exit 0), block actions (exit 2), or log errors (other codes).
 - **State modules**: UI state split into focused modules under `src/tui/` — `chat_state.rs` (messages + scroll), `editor_state.rs` (input buffer, history navigation), `agent_state.rs` (streaming + tool calls), `session_state.rs` (persistence), `modal_state.rs` (popups), `config_state.rs` (thinking/hook display), `ui_state.rs` (animation/effects).
 - **Context**: `src/context/token_tracker.rs` — TokenRateTracker for turn lifecycle (start/pause/finalize, char counting, provider correction).
@@ -50,7 +51,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (918 total)
+cargo test --workspace                         # all tests (936 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -79,7 +80,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **913 tests** (697 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **936 tests** (720 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 

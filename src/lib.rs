@@ -15,6 +15,7 @@ pub mod hooks;
 pub mod key_handler;
 pub mod logging;
 pub mod mouse;
+pub mod project_dir;
 pub mod provider;
 pub mod session;
 pub mod skills;
@@ -35,6 +36,8 @@ mod config_tests;
 mod event_loop_tests;
 #[cfg(test)]
 mod logging_tests;
+#[cfg(test)]
+mod project_dir_tests;
 #[cfg(test)]
 mod sse_debug_tests;
 #[cfg(test)]
@@ -72,6 +75,11 @@ pub async fn run() -> anyhow::Result<()> {
     // Initialize file-based logging (.respondami/logs/respondami.log)
     logging::init();
     tracing::info!("respondami starting");
+
+    // Ensure .respondami/ exists with a .gitignore (keeps artifacts out of git status)
+    project_dir::ensure_respondami_dir(
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    );
 
     // Initialize config
     let config = Config::load()?;
