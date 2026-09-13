@@ -14,7 +14,7 @@ keywords = ["cli", "ai", "agent", "terminal", "tdd"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-async-openai = { version = "0.41.0", features = ["chat-completion"] }
+async-openai = { version = "0.42.0", features = ["chat-completion"] }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
