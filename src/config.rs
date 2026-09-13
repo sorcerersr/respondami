@@ -156,6 +156,11 @@ pub struct UiConfig {
     /// Show hidden files (dotfiles, dotdirs) in the file autocomplete popup.
     #[serde(default = "default_file_show_hidden")]
     pub file_show_hidden: bool,
+    /// Gitignore-style patterns whose matches remain visible in the file
+    /// autocomplete popup even when covered by the project `.gitignore`.
+    /// The config file value replaces this default wholesale.
+    #[serde(default = "default_file_always_visible")]
+    pub file_always_visible: Vec<String>,
 }
 
 fn default_thinking_max_lines() -> usize {
@@ -170,6 +175,10 @@ fn default_file_show_hidden() -> bool {
     true
 }
 
+fn default_file_always_visible() -> Vec<String> {
+    vec!["docs/plans/".to_string(), "docs/reviews/".to_string()]
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
@@ -178,6 +187,7 @@ impl Default for UiConfig {
             tool_output_expanded: default_tool_output_expanded(),
             hook_display: HookDisplay::default(),
             file_show_hidden: default_file_show_hidden(),
+            file_always_visible: default_file_always_visible(),
         }
     }
 }

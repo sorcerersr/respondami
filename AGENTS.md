@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **166 `.rs` files**, ~32.7K lines total (23.4K production, 9.3K tests)
+- **166 `.rs` files**, ~33.3K lines total (23.6K production, 9.6K tests)
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (978 total)
+cargo test --workspace                         # all tests (985 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **978 tests** (762 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **985 tests** (769 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -288,7 +288,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (762 tests)
+### Root Crate Tests (769 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -329,7 +329,7 @@ cargo test --workspace                       # all tests pass
 | `src/tui/autocomplete_tests.rs`               | File and skill autocomplete                             |
 | `src/tui/editor/commands_tests.rs`            | Editor commands                                         |
 | `src/tui/editor/cursor_tests.rs`              | Cursor movement and wrapping                            |
-| `src/tui/editor/discovery_tests.rs`           | File discovery for autocomplete                         |
+| `src/tui/editor/discovery_tests.rs`           | File discovery for autocomplete, always-visible (force-include) patterns |
 | `src/tui/editor/wrap_tests.rs`                | Text wrapping                                           |
 | `src/tui/hook_display_tests.rs`               | Hook display modes                                      |
 | `src/tui/layout_tests.rs`                     | Layout calculations, input area height                  |
