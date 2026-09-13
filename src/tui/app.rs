@@ -393,7 +393,8 @@ impl App {
 
     /// Discover entries for @-autocomplete.
     pub fn discover_files(&mut self) {
-        self.editor.discovered_files = super::editor::FileDiscovery::discover_entries(&self.config.cwd);
+        self.editor.discovered_files =
+            super::editor::FileDiscovery::discover_entries(&self.config.cwd, &self.config.config.ui.file_always_visible);
     }
 
     /// Toggle expand/collapse state for all tool call output messages.
