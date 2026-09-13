@@ -127,6 +127,7 @@ pub async fn process_agent_events(
                         let hook_registry = app.config.hook_registry.clone();
                         let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
                         let skills = app.config.skills.clone();
+                        let history_guard = app.session.history_guard.clone();
 
                         agent_handle = tokio::spawn(async move {
                             run_agent_with_snapshot(
@@ -141,6 +142,7 @@ pub async fn process_agent_events(
                                 new_tx,
                                 new_cancel_rx,
                                 rtk_state,
+                                history_guard,
                             ).await;
                         });
 
@@ -438,6 +440,16 @@ pub async fn process_agent_events(
                         app.maybe_auto_scroll();
                     }
 
+                    // Save user message to session
+                    if app.session.session_store.has_active_session() {
+                        let parent_id = app.session.session_store.last_entry_id();
+                        if let Err(e) = app.session.session_store
+                            .append_message(parent_id, crate::session::AgentMessage::user(wrapped_error.clone()))
+                        {
+                            tracing::error!("Failed to save user message: {}", e);
+                        }
+                    }
+
                     let (new_tx, new_rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
                     let (new_cancel_tx, new_cancel_rx) = tokio::sync::watch::channel(false);
                     let config = app.config.config.clone();
@@ -447,6 +459,7 @@ pub async fn process_agent_events(
                     let hook_registry = app.config.hook_registry.clone();
                     let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
                     let skills = app.config.skills.clone();
+                    let history_guard = app.session.history_guard.clone();
 
                     agent_handle = tokio::spawn(async move {
                         crate::agent::run_agent_with_snapshot(
@@ -461,6 +474,7 @@ pub async fn process_agent_events(
                             new_tx,
                             new_cancel_rx,
                             rtk_state,
+                            history_guard,
                         )
                         .await;
                     });
@@ -594,29 +608,6 @@ pub async fn process_agent_events(
     // This prevents task leaks and ensures all resources are freed.
     let _ = tokio::time::timeout(Duration::from_secs(5), agent_handle).await;
     false
-}
-
-/// Perform compaction using the `CompactionEngine`.
-///
-/// Called from the main thread (`process_agent_events`) where `SessionStore` lives.
-/// Returns (`tokens_before`, `tokens_after`, `messages_removed`) on success.
-///
-/// # Errors
-///
-/// - Provider build fails if the provider settings are invalid.
-/// - Compaction fails if the LLM returns an error during summarization.
-pub async fn perform_compaction(app: &mut App, _reason: &CompactionReason) -> anyhow::Result<(u32, u32, u32)> {
-    let engine = CompactionEngine::from_config(&app.config.config);
-    let provider = build_provider(&app.config.config)?;
-    engine
-        .perform(
-            &mut app.session.session_store,
-            &provider,
-            &app.config.config,
-            app.config.cwd.as_path(),
-            &app.config.skills,
-        )
-        .await
 }
 
 /// Calculate the visible height of the chat area in lines.

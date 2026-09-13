@@ -124,7 +124,7 @@ impl FileDiscovery {
                 });
             } else {
                 // Skip files > 1MB
-                if entry.metadata().ok().is_some_and(|m| m.len() > 1_000_000) {
+                if entry.metadata().is_ok_and(|m| m.len() > 1_000_000) {
                     continue;
                 }
                 // Skip binary files
@@ -156,9 +156,7 @@ impl FileDiscovery {
     }
 
     fn is_binary(path: &std::path::Path) -> bool {
-        std::fs::read(path)
-            .ok()
-            .is_some_and(|bytes| bytes.iter().take(512).any(|&b| b == 0))
+        std::fs::read(path).is_ok_and(|bytes| bytes.iter().take(512).any(|&b| b == 0))
     }
 
     /// Fuzzy match entries against a query.

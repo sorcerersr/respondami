@@ -8,11 +8,13 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **138 `.rs` files**, ~25K lines total (17K production, 8K tests)
+- **166 `.rs` files**, ~32.7K lines total (23.4K production, 9.3K tests)
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
 ### Core Patterns
+
+- **Cache-stable history**: Outgoing request prefixes must stay byte-identical and append-only between consecutive requests so vLLM prefix caching hits. Tool-call assistant messages use one canonical block shape for both session save and live context push (`canonical_turn_blocks` in `src/agent/mod.rs`); `HistoryGuard` (`src/history_guard.rs`) verifies the prefix at request time and logs a warning on drift (never blocks).
 
 - **Channel-based agent**: `src/lib.rs` spawns `run_agent_with_snapshot()` via `tokio::spawn`, communicates via `mpsc::channel::<AgentEvent>(256)`
 - **Top-down scroll model**: `scroll_offset = 0` means viewport at top. `scroll_to_bottom()` sets offset to `max_offset`. See `src/tui/chat_state.rs`.
@@ -20,6 +22,7 @@ Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 wi
 - **Providers**: `src/provider/mod.rs` defines `ChatChunk` enum; implementations in `provider/llamacpp.rs`, SSE parsing in `provider/sse.rs`
 - **Tools**: Registry pattern in `src/tools/mod.rs` with `ToolHandler` trait. Tools: bash, read, write, edit, rtk, activate_skill
 - **Session**: JSONL persistence in `src/session/manager.rs` with fsync. Compaction via LLM summarization.
+- **Project dir**: `.respondami/` is auto-created at startup (`src/project_dir.rs`) with a `.gitignore` (`*` + negations for `skills/`, `hooks/`, `AGENTS.md`, `config.json`) so runtime artifacts stay out of `git status`. The app never overwrites an existing `.gitignore` there.
 - **Hooks**: Shell scripts at lifecycle points (`src/hooks/`). Discovered from `~/.config/respondami/hooks/` and `.respondami/hooks/`. Execute synchronously in agent loop — can inject context (exit 0), block actions (exit 2), or log errors (other codes).
 - **State modules**: UI state split into focused modules under `src/tui/` — `chat_state.rs` (messages + scroll), `editor_state.rs` (input buffer, history navigation), `agent_state.rs` (streaming + tool calls), `session_state.rs` (persistence), `modal_state.rs` (popups), `config_state.rs` (thinking/hook display), `ui_state.rs` (animation/effects).
 - **Context**: `src/context/token_tracker.rs` — TokenRateTracker for turn lifecycle (start/pause/finalize, char counting, provider correction).
@@ -50,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (918 total)
+cargo test --workspace                         # all tests (978 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -79,9 +82,17 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **913 tests** (697 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **978 tests** (762 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
+
+### History Prefix Stability (vLLM prefix caching)
+
+- The conversation prefix sent in each request must be byte-identical and append-only; any mid-history change invalidates the provider's prefix cache from that point on.
+- Tool-call assistant messages use one canonical block shape for both session save and live context push: first call = response's non-tool blocks + its own tool call; later calls = its own tool call only (`canonical_turn_blocks`). Never diverge the save form from the live form — `HistoryGuard` (`src/history_guard.rs`) checks per-message digests at each request and logs a `warn!` on drift (log-only, never blocks).
+- The synthetic `hook_instruction` message pair is sent to the LLM but never persisted; it gets `None` digests so the guard skips it.
+- Reset the guard baseline after legitimate rewrites: new session, session resume, and compaction (`SessionState::reset_history_guard`).
+- Streaming `ContentBlock`s are filtered by `finalize_tool_calls` (provider/mod.rs) before use — empty id/name placeholders and unparseable `arguments` JSON are dropped so they can't leak into persisted or resent content.
 
 ### Scroll Model
 
@@ -134,12 +145,13 @@ cargo test --workspace                       # all tests pass
 | ------------------------ | ---------------------------------------------------------------------- |
 | `src/main.rs`            | Entry point, mimalloc global allocator                                 |
 | `src/lib.rs`             | Main event loop, terminal setup, animation ticks, compaction polling   |
-| `src/agent/mod.rs`       | Agent loop, tool orchestration, retry logic, cooperative cancellation  |
+| `src/agent/mod.rs`       | Agent loop, tool orchestration, retry, canonical turn blocks, history guard wiring |
 | `src/agent/streaming.rs` | SSE streaming from provider, `AgentResponse` builder                   |
 | `src/agent_events.rs`    | Agent event processing, bridges async agent loop with TUI              |
 | `src/event_loop.rs`      | Shared helpers: draw frame, animation tick, compaction result handling |
 | `src/config.rs`          | Config loading from `~/.config/respondami/config.yaml`                 |
 | `src/commands.rs`        | Command palette commands and descriptions                              |
+| `src/history_guard.rs`   | Per-message digests + append-only prefix guard (vLLM cache stability)  |
 
 ### Provider Layer
 
@@ -276,18 +288,19 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (702 tests)
+### Root Crate Tests (762 tests)
 
-| Test File                                     | Coverage                                                |
-| --------------------------------------------- | ------------------------------------------------------- |
-| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building                      |
+| Test File                                     | Coverage                                                         |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks        |
 | `src/agent/token_estimation_tests.rs`         | Token estimation from messages                          |
 | `src/agent_events_tests.rs`                   | Agent event processing edge cases                       |
 | `src/agents_md_tests.rs`                      | AGENTS.md loading and parsing                           |
 | `src/commands_tests.rs`                       | Command palette commands                                |
 | `src/config_tests.rs`                         | Config loading and validation                           |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
-| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling                  |
+| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `poll_compaction_task` (not finished / idle / pending-turn launch) |
+| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
 | `src/key_handler/layers/input_tests.rs`       | Input layer key handling                                |
@@ -295,6 +308,7 @@ cargo test --workspace                       # all tests pass
 | `src/key_handler/layers/navigation_tests.rs`  | Navigation layer (j/k/Up/Down)                          |
 | `src/key_handler/layers/transitions_tests.rs` | State transitions                                       |
 | `src/logging_tests.rs`                        | Logging initialization                                  |
+| `src/provider/finalize_tool_calls_tests.rs`   | Streaming tool-call filtering (empty/unparseable drops) |
 | `src/provider/llamacpp_tests.rs`              | LlamaCpp provider, request building                     |
 | `src/provider/mod_tests.rs`                   | Provider trait, error classification, tool call parsing |
 | `src/provider/sse_tests.rs`                   | SSE parsing, cancellation                               |
@@ -327,6 +341,7 @@ cargo test --workspace                       # all tests pass
 | `src/tui/status_bar_tests.rs`                 | Status bar rendering                                    |
 | `src/tui/thinking_display_tests.rs`           | Thinking display toggle                                 |
 | `src/tui/tracker_tests.rs`                    | Token tracker display                                   |
+| `src/turn_tests.rs`                           | Pre-prompt deferral, in-progress guards, pending-turn rollback |
 
 ### Widget Crate Tests
 

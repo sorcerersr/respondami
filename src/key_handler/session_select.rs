@@ -36,6 +36,9 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // Rebuild chat display from session using the adapter
     let adapter = crate::session::SessionDisplayAdapter::new(app.config.tool_output_expanded);
     app.chat.chat_messages = adapter.build_messages(app.session.session_store.entries());
+    // Resumed session — the next outgoing prefix legitimately differs from
+    // whatever the guard saw last, so reset the baseline.
+    app.session.reset_history_guard();
     app.modal.state = AppState::Idle;
     app.chat.auto_scroll = true;
     Ok(())
