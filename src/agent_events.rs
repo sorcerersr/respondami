@@ -610,29 +610,6 @@ pub async fn process_agent_events(
     false
 }
 
-/// Perform compaction using the `CompactionEngine`.
-///
-/// Called from the main thread (`process_agent_events`) where `SessionStore` lives.
-/// Returns (`tokens_before`, `tokens_after`, `messages_removed`) on success.
-///
-/// # Errors
-///
-/// - Provider build fails if the provider settings are invalid.
-/// - Compaction fails if the LLM returns an error during summarization.
-pub async fn perform_compaction(app: &mut App, _reason: &CompactionReason) -> anyhow::Result<(u32, u32, u32)> {
-    let engine = CompactionEngine::from_config(&app.config.config);
-    let provider = build_provider(&app.config.config)?;
-    engine
-        .perform(
-            &mut app.session.session_store,
-            &provider,
-            &app.config.config,
-            app.config.cwd.as_path(),
-            &app.config.skills,
-        )
-        .await
-}
-
 /// Calculate the visible height of the chat area in lines.
 /// Terminal height minus input area, status bar, and working indicator (if active).
 #[must_use]

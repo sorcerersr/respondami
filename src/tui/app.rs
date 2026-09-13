@@ -53,6 +53,10 @@ pub struct App {
     /// In-flight token stats computation task.
     /// `Some` = stats being computed in background, dialog shows loading indicator.
     pub token_stats_task: Option<tokio::task::JoinHandle<super::token_stats::ProjectTokenStats>>,
+    /// Deferred turn waiting on background compaction (pre-prompt path).
+    /// `Some` = the turn's input was captured; the main loop launches the
+    /// agent when `compaction_task` finishes, or rolls back on cancel.
+    pub pending_turn: Option<crate::turn::PendingTurn>,
 }
 
 impl std::fmt::Debug for App {
@@ -69,6 +73,7 @@ impl std::fmt::Debug for App {
             .field("active_skills", &self.active_skills)
             .field("compaction_task", &self.compaction_task.is_some())
             .field("token_stats_task", &self.token_stats_task.is_some())
+            .field("pending_turn", &self.pending_turn.is_some())
             .finish()
     }
 }
@@ -137,6 +142,7 @@ impl App {
             active_skills: HashSet::new(),
             compaction_task: None,
             token_stats_task: None,
+            pending_turn: None,
         }
     }
 
@@ -310,6 +316,18 @@ impl App {
         self.chat.chat_messages.push(ChatMessage::System(SystemMessage {
             content: content.to_string(),
         }));
+    }
+
+    /// Show a transient status-bar note that compaction is in progress.
+    ///
+    /// Used by turn-start and session commands blocked while a compaction
+    /// task runs. The note auto-expires after 5 seconds (see
+    /// `status_bar.rs`), so repeated key presses do not spam the chat.
+    pub fn notify_compaction_in_progress(&mut self) {
+        self.ui.status_bar_message = Some((
+            "Compaction in progress — press Esc to cancel".to_string(),
+            Instant::now(),
+        ));
     }
 
     /// Add a thinking block message to chat.
@@ -486,8 +504,10 @@ impl App {
             super::mode::AppState::Idle => StateHandler::Idle,
             // Streaming/ToolExec/Compacting are mapped to Idle as a safe fallback.
             // During Streaming/ToolExec, process_agent_events() handles input inline
-            // and this handler is never reached. During Compacting, cancellation is
-            // handled in the main loop (lib.rs) via JoinHandle::abort().
+            // and this handler is never reached. During Compacting, Esc/Ctrl+C is
+            // intercepted in the key dispatcher (`key_handler::mod.rs`) which
+            // transitions to Idle so the main loop's cancel branch (lib.rs)
+            // aborts the task and rolls back any pending turn.
             super::mode::AppState::Streaming
             | super::mode::AppState::ToolExec
             | super::mode::AppState::Compacting => StateHandler::Idle,

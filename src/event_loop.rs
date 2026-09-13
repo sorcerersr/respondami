@@ -149,6 +149,58 @@ pub async fn handle_compaction_result(
     }
 }
 
+/// Outcome of polling the main-loop compaction task.
+#[derive(Debug)]
+pub enum CompactionPollResult {
+    /// No compaction task is in flight (or it has not finished yet).
+    NotFinished,
+    /// Compaction finished and no turn was pending (manual `/compact`).
+    /// State has been transitioned to Idle.
+    Idle,
+    /// Compaction finished and the deferred pre-prompt turn was launched.
+    /// `quit` is `true` if the user quit during the turn.
+    TurnLaunched { quit: bool },
+}
+
+/// Poll the main-loop compaction task; launch a pending turn when it ends.
+///
+/// Awaits a finished `app.compaction_task`, applies the result via
+/// [`handle_compaction_result`], then either transitions to Idle (manual
+/// compaction) or launches the agent for the deferred pre-prompt turn.
+/// A failed or panicked compaction still launches the pending turn — the
+/// agent loop's overflow path is the fallback.
+pub async fn poll_compaction_task(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> CompactionPollResult {
+    if !app.compaction_task
+        .as_ref()
+        .is_some_and(tokio::task::JoinHandle::is_finished)
+    {
+        return CompactionPollResult::NotFinished;
+    }
+
+    // Checked above — the task is guaranteed to exist.
+    let handle = app.compaction_task.take().expect("compaction task exists while finished");
+    let _ = handle_compaction_result(app, handle, false).await;
+
+    if let Some(pending) = app.pending_turn.take() {
+        let quit = match crate::turn::launch_agent_turn(app, pending.input, terminal).await {
+            Ok(quit) => quit,
+            Err(e) => {
+                app.add_system_message(&format!("Failed to start agent: {e}"));
+                app.chat.auto_scroll = true;
+                app.modal.state = AppState::Idle;
+                false
+            }
+        };
+        return CompactionPollResult::TurnLaunched { quit };
+    }
+
+    app.modal.state = AppState::Idle;
+    CompactionPollResult::Idle
+}
+
 /// Transition the app to idle state and reset the compaction task.
 ///
 /// Common cleanup when compaction finishes with an error (or is cancelled).

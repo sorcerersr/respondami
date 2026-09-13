@@ -8,8 +8,9 @@
 //!
 //! The top-level `handle_key_event()` is a thin dispatcher that:
 //! 1. Runs truly global shortcuts (Ctrl+D)
-//! 2. Runs autocomplete handling (when active in appropriate states)
-//! 3. Delegates to the state-specific handler via `StateHandler` enum
+//! 2. Cancels in-flight compaction on Esc/Ctrl+C
+//! 3. Runs autocomplete handling (when active in appropriate states)
+//! 4. Delegates to the state-specific handler via `StateHandler` enum
 
 mod global;
 mod idle;
@@ -25,7 +26,7 @@ use crossterm::event::KeyEvent;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::tui::App;
+use crate::tui::{App, AppState, AutocompleteMode};
 
 /// Trait for handling key events in a specific application state.
 ///
@@ -90,6 +91,10 @@ impl StateHandler {
 
 /// Thin dispatcher that delegates to the appropriate handler chain.
 ///
+/// While a background compaction is running, Esc/Ctrl+C transitions to
+/// Idle so the main loop's cancel branch aborts the task and rolls back
+/// any pending turn.
+///
 /// # Errors
 ///
 /// - Hook execution errors (exit code != 0).
@@ -106,7 +111,19 @@ pub async fn handle_key_event(
         KeyEventResult::Unhandled => {}
     }
 
-    // 2. Modal-aware global shortcuts (blocked when modal is open)
+    // 2. Cancel in-flight compaction on Esc / Ctrl+C (also clears an open
+    //    autocomplete; the main loop performs the abort + rollback).
+    if app.modal.state == AppState::Compacting
+        && (key.code == crossterm::event::KeyCode::Esc
+            || (key.code == crossterm::event::KeyCode::Char('c')
+                && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)))
+    {
+        app.editor.autocomplete_mode = AutocompleteMode::None;
+        app.modal.state = AppState::Idle;
+        return Ok(false);
+    }
+
+    // 3. Modal-aware global shortcuts (blocked when modal is open)
     let modal_layer = layers::ModalLayer::new();
     match modal_layer.handle(app, key)? {
         KeyEventResult::Quit => return Ok(true),
@@ -114,12 +131,12 @@ pub async fn handle_key_event(
         KeyEventResult::Unhandled => {}
     }
 
-    // 3. Autocomplete handling (only in Idle state)
+    // 4. Autocomplete handling (only in Idle state)
     if handle_autocomplete(app, key)? {
         return Ok(false);
     }
 
-    // 4. State-specific handler
+    // 5. State-specific handler
     let handler = app.current_handler();
     handler.handle(app, key, terminal).await
 }
@@ -132,8 +149,6 @@ fn handle_autocomplete(
     app: &mut App,
     key: &KeyEvent,
 ) -> anyhow::Result<bool> {
-    use crate::tui::AutocompleteMode;
-
     // Clone data to avoid borrow conflict with mutable app reference.
     let skill_data = match &app.editor.autocomplete_mode {
         AutocompleteMode::Skill { matches, selected, scroll_offset } => {

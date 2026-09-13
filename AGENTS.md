@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **165 `.rs` files**, ~32.5K lines total (23.4K production, 9.1K tests)
+- **166 `.rs` files**, ~32.7K lines total (23.4K production, 9.3K tests)
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (964 total)
+cargo test --workspace                         # all tests (978 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **964 tests** (748 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **978 tests** (762 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -288,7 +288,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (748 tests)
+### Root Crate Tests (762 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -299,7 +299,7 @@ cargo test --workspace                       # all tests pass
 | `src/commands_tests.rs`                       | Command palette commands                                |
 | `src/config_tests.rs`                         | Config loading and validation                           |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
-| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling                  |
+| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `poll_compaction_task` (not finished / idle / pending-turn launch) |
 | `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
@@ -341,6 +341,7 @@ cargo test --workspace                       # all tests pass
 | `src/tui/status_bar_tests.rs`                 | Status bar rendering                                    |
 | `src/tui/thinking_display_tests.rs`           | Thinking display toggle                                 |
 | `src/tui/tracker_tests.rs`                    | Token tracker display                                   |
+| `src/turn_tests.rs`                           | Pre-prompt deferral, in-progress guards, pending-turn rollback |
 
 ### Widget Crate Tests
 

@@ -45,6 +45,8 @@ mod project_dir_tests;
 mod sse_debug_tests;
 #[cfg(test)]
 mod skills_tests;
+#[cfg(test)]
+mod turn_tests;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,7 +75,8 @@ use crate::tui::{App, AppState, Theme};
 ///
 /// # Panics
 ///
-/// - If the compaction task handle is unexpectedly `None` during shutdown cleanup.
+/// - If the compaction task handle is unexpectedly missing while reported
+///   finished (see `event_loop::poll_compaction_task`).
 pub async fn run() -> anyhow::Result<()> {
     // Initialize file-based logging (.respondami/logs/respondami.log)
     logging::init();
@@ -150,17 +153,16 @@ pub async fn run() -> anyhow::Result<()> {
         // Tick activity indicator animation (time-based, ~10 ticks/s)
         event_loop::tick_activity_indicator(&mut app, &theme);
 
-        // Poll in-flight compaction task from manual compaction.
-        if let Some(task) = app.compaction_task.as_mut()
-            && task.is_finished()
-        {
-            let handle = app.compaction_task.take().unwrap();
-            match event_loop::handle_compaction_result(&mut app, handle, false).await {
-                event_loop::CompactionResult::Success { .. } => {}
-                event_loop::CompactionResult::Failed(_)
-                | event_loop::CompactionResult::Panicked => {}
+        // Poll in-flight compaction task (manual or pre-prompt deferral).
+        // Applies the result and launches any deferred turn.
+        match event_loop::poll_compaction_task(&mut app, &mut terminal).await {
+            event_loop::CompactionPollResult::NotFinished
+            | event_loop::CompactionPollResult::Idle => {}
+            event_loop::CompactionPollResult::TurnLaunched { quit: true } => {
+                shutdown_terminal(endpoint_check).await?;
+                return Ok(());
             }
-            app.modal.state = AppState::Idle;
+            event_loop::CompactionPollResult::TurnLaunched { quit: false } => {}
         }
 
         // Poll in-flight token stats computation task.
@@ -195,24 +197,17 @@ pub async fn run() -> anyhow::Result<()> {
                     let was_compacting = app.modal.state == AppState::Compacting;
 
                     if key_handler::handle_key_event(&mut app, &key, &mut terminal).await? {
-                        // Quit
-                        execute!(std::io::stdout(), crate::mouse::DisableMouseScroll)?;
-                        execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
-                        execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
-                        execute!(std::io::stdout(), LeaveAlternateScreen,
-                            crossterm::style::ResetColor,
-                        )?;
-                        let _ = crossterm::terminal::disable_raw_mode();
-                        endpoint_check.await.ok();
-                        tracing::info!("Quitting respondami");
+                        shutdown_terminal(endpoint_check).await?;
                         return Ok(());
                     }
 
-                    // If user cancelled during compaction, abort the background task.
+                    // If user cancelled during compaction (Esc/Ctrl+C), abort
+                    // the background task and roll back any deferred turn.
                     if was_compacting && app.modal.state != AppState::Compacting
                         && let Some(task) = app.compaction_task.take()
                     {
                         task.abort();
+                        crate::turn::rollback_pending_turn(&mut app);
                         app.add_system_message("Compaction cancelled.");
                         app.chat.auto_scroll = true;
                     }
@@ -242,4 +237,26 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
     }
+}
+
+/// Tear down the terminal after a quit request.
+///
+/// Shared by the Ctrl+D path and a quit triggered while a deferred turn
+/// is running. Awaits the endpoint check task so its result is logged
+/// before shutdown.
+///
+/// # Errors
+///
+/// - Terminal restore commands fail if the terminal is already gone.
+async fn shutdown_terminal(
+    endpoint_check: tokio::task::JoinHandle<()>,
+) -> anyhow::Result<()> {
+    execute!(std::io::stdout(), crate::mouse::DisableMouseScroll)?;
+    execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
+    execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+    execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::style::ResetColor)?;
+    let _ = crossterm::terminal::disable_raw_mode();
+    endpoint_check.await.ok();
+    tracing::info!("Quitting respondami");
+    Ok(())
 }
