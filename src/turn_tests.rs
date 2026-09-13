@@ -5,17 +5,31 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+use ratatui::layout::Rect;
+use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::config::Config;
 use crate::session::CompactionPlan;
 use crate::turn::{rollback_pending_turn, run_turn_with_input, start_turn, PendingTurn};
 use crate::tui::{App, AppState, ChatMessage};
 
-/// Build a terminal over stdout. Never drawn to in these tests — the
-/// tested paths return before any frame is rendered.
+/// Build a terminal that never queries the real terminal size.
+///
+/// `Terminal::new` uses a fullscreen viewport and calls
+/// `crossterm::terminal::size()` — which fails in headless environments
+/// (CI runners): there is no controlling tty, stdout is a pipe, and the
+/// `tput` fallback is unavailable. `Viewport::Fixed` pins the viewport at
+/// construction and `autoresize` is a no-op for fixed viewports, so no OS
+/// size query happens at all. The tested paths return before any frame is
+/// rendered, and the fixed 80×24 area is never inspected by assertions.
 fn make_terminal() -> Terminal<CrosstermBackend<std::io::Stdout>> {
-    Terminal::new(CrosstermBackend::new(std::io::stdout())).expect("test terminal")
+    Terminal::with_options(
+        CrosstermBackend::new(std::io::stdout()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, 80, 24)),
+        },
+    )
+    .expect("test terminal")
 }
 
 fn make_app() -> App {

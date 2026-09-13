@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+use ratatui::layout::Rect;
+use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::event_loop::{CompactionPollResult, CompactionResult, poll_compaction_task, transition_to_idle};
 use crate::session::CompactionPlan;
@@ -76,8 +77,25 @@ fn make_poll_app() -> App {
     App::new(crate::config::Config::default(), std::path::PathBuf::from("."))
 }
 
+/// Build a test terminal that never queries the real terminal size.
+///
+/// `Terminal::new` uses a fullscreen viewport and calls
+/// `crossterm::terminal::size()` — which fails in headless environments
+/// (CI runners): there is no controlling tty, stdout is a pipe, and the
+/// `tput` fallback is unavailable. `Viewport::Fixed` pins the viewport at
+/// construction and `autoresize` is a no-op for fixed viewports, so no OS
+/// size query happens at all and the test stays hermetic. Any frames drawn
+/// render into the fixed 80×24 area and write to the test's captured
+/// stdout. The dimensions are arbitrary — the tested logic never
+/// inspects them.
 fn make_poll_terminal() -> Terminal<CrosstermBackend<std::io::Stdout>> {
-    Terminal::new(CrosstermBackend::new(std::io::stdout())).expect("test terminal")
+    Terminal::with_options(
+        CrosstermBackend::new(std::io::stdout()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, 80, 24)),
+        },
+    )
+    .expect("test terminal")
 }
 
 /// A finished plan with an out-of-range cut index — `apply_compaction`
