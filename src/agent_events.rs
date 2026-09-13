@@ -127,6 +127,7 @@ pub async fn process_agent_events(
                         let hook_registry = app.config.hook_registry.clone();
                         let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
                         let skills = app.config.skills.clone();
+                        let history_guard = app.session.history_guard.clone();
 
                         agent_handle = tokio::spawn(async move {
                             run_agent_with_snapshot(
@@ -141,6 +142,7 @@ pub async fn process_agent_events(
                                 new_tx,
                                 new_cancel_rx,
                                 rtk_state,
+                                history_guard,
                             ).await;
                         });
 
@@ -438,6 +440,16 @@ pub async fn process_agent_events(
                         app.maybe_auto_scroll();
                     }
 
+                    // Save user message to session
+                    if app.session.session_store.has_active_session() {
+                        let parent_id = app.session.session_store.last_entry_id();
+                        if let Err(e) = app.session.session_store
+                            .append_message(parent_id, crate::session::AgentMessage::user(wrapped_error.clone()))
+                        {
+                            tracing::error!("Failed to save user message: {}", e);
+                        }
+                    }
+
                     let (new_tx, new_rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
                     let (new_cancel_tx, new_cancel_rx) = tokio::sync::watch::channel(false);
                     let config = app.config.config.clone();
@@ -447,6 +459,7 @@ pub async fn process_agent_events(
                     let hook_registry = app.config.hook_registry.clone();
                     let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
                     let skills = app.config.skills.clone();
+                    let history_guard = app.session.history_guard.clone();
 
                     agent_handle = tokio::spawn(async move {
                         crate::agent::run_agent_with_snapshot(
@@ -461,6 +474,7 @@ pub async fn process_agent_events(
                             new_tx,
                             new_cancel_rx,
                             rtk_state,
+                            history_guard,
                         )
                         .await;
                     });

@@ -254,6 +254,9 @@ pub async fn run_turn_with_input(
             app.config.context_window,
             app.config.cwd.to_string_lossy().to_string(),
         );
+        // Fresh session — the history guard must not compare against the
+        // previous session's baseline.
+        app.session.reset_history_guard();
     }
 
     // Pre-prompt compaction check: if context is near the threshold, compact before sending
@@ -276,6 +279,9 @@ pub async fn run_turn_with_input(
                 Ok((tb, ta, mr)) => {
                     app.add_compaction_message(tb.saturating_sub(ta), mr);
                     app.chat.auto_scroll = true;
+                    // Compaction rewrote the session history — reset the guard
+                    // baseline (see `crate::history_guard`).
+                    app.session.reset_history_guard();
                 }
                 Err(e) => {
                     app.add_system_message(&format!("Compaction check failed: {e}"));
@@ -328,6 +334,7 @@ pub async fn run_turn_with_input(
     let hook_registry = app.config.hook_registry.clone();
     let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
     let skills = app.config.skills.clone();
+    let history_guard = app.session.history_guard.clone();
 
     let agent_handle = tokio::spawn(async move {
         crate::agent::run_agent_with_snapshot(
@@ -342,6 +349,7 @@ pub async fn run_turn_with_input(
             tx,
             cancel_rx,
             rtk_state,
+            history_guard,
         ).await;
     });
 

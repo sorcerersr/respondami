@@ -102,6 +102,10 @@ pub async fn handle_compaction_result(
             ) {
                 Ok((tb, ta, mr)) => {
                     app.add_compaction_message(tb.saturating_sub(ta), mr);
+                    // Compaction rewrote the session history — the next
+                    // outgoing prefix is legitimately different, so reset the
+                    // history guard baseline (see `crate::history_guard`).
+                    app.session.reset_history_guard();
                     if pinned_scroll_guard {
                         app.maybe_auto_scroll();
                     } else {

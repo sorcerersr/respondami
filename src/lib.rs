@@ -12,6 +12,7 @@ pub mod config;
 pub mod context;
 pub mod event_loop;
 pub mod hooks;
+pub mod history_guard;
 pub mod key_handler;
 pub mod logging;
 pub mod mouse;
@@ -34,6 +35,8 @@ mod commands_tests;
 mod config_tests;
 #[cfg(test)]
 mod event_loop_tests;
+#[cfg(test)]
+mod history_guard_tests;
 #[cfg(test)]
 mod logging_tests;
 #[cfg(test)]

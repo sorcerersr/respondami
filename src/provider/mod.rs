@@ -12,6 +12,8 @@ mod sse;
 pub use llamacpp::LlamaCppProvider;
 
 #[cfg(test)]
+mod finalize_tool_calls_tests;
+#[cfg(test)]
 mod llamacpp_tests;
 #[cfg(test)]
 mod mod_tests;
@@ -326,6 +328,41 @@ pub struct PartialToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+}
+
+/// Convert accumulated partial tool calls into validated [`ToolCall`]s.
+///
+/// Applied once when a streamed response completes. Calls are dropped — with a
+/// warning per drop — when their arguments cannot be parsed (see
+/// [`parse_tool_call_arguments`]) or when `id`/`name` are empty (index-gap
+/// placeholders from [`accumulate_tool_call`], which the provider may emit when
+/// a streamed tool call is malformed). Dropping at assembly time keeps the
+/// pairing invariant: a dropped call is never sent to the model, executed,
+/// or saved to the session, so no orphan tool result can exist.
+///
+/// Empty *arguments* are valid (a no-arg call) and are kept — only calls that
+/// are structurally empty are malformed.
+#[must_use]
+pub fn finalize_tool_calls(pending: Vec<PartialToolCall>) -> Vec<ToolCall> {
+    let mut result = Vec::with_capacity(pending.len());
+    for (index, ptc) in pending.into_iter().enumerate() {
+        if ptc.id.is_empty() || ptc.name.is_empty() {
+            tracing::warn!(
+                index,
+                "Dropping malformed tool call with empty id/name (provider index-gap placeholder)"
+            );
+            continue;
+        }
+        let Some(args) = parse_tool_call_arguments(&ptc.arguments) else {
+            continue;
+        };
+        result.push(ToolCall {
+            id: ptc.id,
+            name: ptc.name,
+            arguments: args,
+        });
+    }
+    result
 }
 
 /// Parse tool call arguments with lenient JSON repair.
