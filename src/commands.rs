@@ -29,16 +29,15 @@ pub async fn execute_palette_command(
         "new" => {
             // Guarded: a finished compaction plan applied to the replaced
             // store would corrupt the new session (see `apply_compaction`).
+            // Idempotent: replacing an empty store and zeroing already-zero
+            // usage are harmless no-ops, so /new always leaves a fresh state.
             if app.compaction_task.is_some() {
                 app.notify_compaction_in_progress();
-            } else if app.session.session_store.has_active_session() {
+            } else {
                 app.session.session_store = SessionStore::new(&app.config.cwd);
                 app.chat.chat_messages.clear();
                 app.active_skills.clear();
-                app.reset_request_usage();
-                app.session.cumulative_usage = crate::session::RequestTokenUsage::default();
-                app.session.session_prompt_tokens = 0;
-                app.session.session_completion_tokens = 0;
+                app.session.reset_for_new_session();
             }
         }
         "resume" => {
