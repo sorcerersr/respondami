@@ -349,8 +349,6 @@ impl App {
     /// Within a single request: takes the max of each field (deduplicates
     /// repeated SSE usage events). Between requests: only adds the delta.
     ///
-    /// Also updates session-level token counters for accurate percentage display.
-    ///
     /// Mirrors zed's `accumulate_token_usage` pattern.
     pub fn accumulate_token_usage(&mut self, usage: &Usage) {
         let current = RequestTokenUsage {
@@ -363,10 +361,6 @@ impl App {
         let delta = current.delta(&self.session.current_request_usage);
         self.session.cumulative_usage.input_tokens += delta.input_tokens;
         self.session.cumulative_usage.output_tokens += delta.output_tokens;
-
-        // Update session-level counters for percentage display (actual context window usage)
-        self.session.session_prompt_tokens += delta.input_tokens;
-        self.session.session_completion_tokens += delta.output_tokens;
 
         // Clear the estimated flag — we now have real usage data.
         self.session.current_request_usage = current;
