@@ -1,3 +1,8 @@
 target/
 .respondami/sessions/
 .respondami/logs/
+docs/plans/
+docs/reviews/
+findings.md
+progress.md
+task_plan.md

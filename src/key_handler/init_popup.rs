@@ -48,7 +48,7 @@ impl KeyHandler for InitPopupHandler {
         if let Some(action) = transitions.handle(app, key) {
             match action {
                 TransitionAction::RunTurnWithInput(prompt) => {
-                    return crate::turn::run_turn_with_input(app, prompt, None, terminal).await;
+                    return crate::turn::run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal).await;
                 }
                 TransitionAction::Send => unreachable!("InitPopup never sends"),
                 TransitionAction::None => return Ok(false),

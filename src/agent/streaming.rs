@@ -6,8 +6,8 @@
 
 use crate::config::Config;
 use crate::provider::{
-    accumulate_tool_call, agent_message_to_message, ChatChunk, ChatRequest, Message,
-    PartialToolCall, parse_tool_call_arguments, Provider, ProviderError, ToolDef,
+    accumulate_tool_call, agent_message_to_message, finalize_tool_calls, ChatChunk, ChatRequest, Message,
+    PartialToolCall, Provider, ProviderError, ToolDef,
 };
 use crate::session::{AgentMessage, CompactionSettings, ContentBlock, ToolCall, Usage};
 use crate::tools::ToolRegistry;
@@ -246,18 +246,10 @@ pub async fn stream_response_from_messages(
 
     // Convert partial tool calls to full tool calls and add as ToolCall blocks.
     // Uses lenient JSON parsing (strict → repair → drop) to avoid silently
-    // dropping tool calls with slightly malformed arguments.
-    let tool_calls: Vec<ToolCall> = pending_tool_calls
-        .into_iter()
-        .filter_map(|ptc| {
-            let args = parse_tool_call_arguments(&ptc.arguments)?;
-            Some(ToolCall {
-                id: ptc.id,
-                name: ptc.name,
-                arguments: args,
-            })
-        })
-        .collect();
+    // dropping tool calls with slightly malformed arguments, and drops
+    // structurally empty calls (empty id/name) so malformed calls are never
+    // sent to the model, executed, or saved to the session.
+    let tool_calls: Vec<ToolCall> = finalize_tool_calls(pending_tool_calls);
 
     // Add tool calls as content blocks
     for tc in tool_calls {

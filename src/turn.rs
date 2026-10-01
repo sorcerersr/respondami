@@ -1,19 +1,21 @@
 //! Turn orchestration — coordinates the full lifecycle of a user turn:
 //! parse → add message → session → spawn agent → process events.
 
+use std::collections::HashSet;
+
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::session::CompactionSettings;
 use crate::tui::editor::fuzzy_match_case_insensitive;
-use crate::tui::{AgentEvent, App, AppState, CompactionReason};
+use crate::tui::{AgentEvent, App, AppState};
 
-use super::agent_events::{perform_compaction, process_agent_events};
+use super::agent_events::process_agent_events;
 use super::commands::execute_palette_command;
 
 /// Estimate system overhead tokens (system prompt + AGENTS.md + skills).
-/// Used by the pre-prompt compaction check and `perform_compaction` to get an
-/// accurate context estimate that includes the full system context.
+/// Used by the pre-prompt compaction check to get an accurate context
+/// estimate that includes the full system context.
 #[must_use]
 pub fn estimate_system_overhead_tokens(cwd: &std::path::Path, skills: &[crate::skills::Skill]) -> u32 {
     let mut overhead: u32 = 0;
@@ -34,6 +36,25 @@ pub fn estimate_system_overhead_tokens(cwd: &std::path::Path, skills: &[crate::s
     overhead
 }
 
+/// Snapshot of a turn deferred to background compaction.
+///
+/// Captured by `run_turn_with_input` when the pre-prompt compaction check
+/// fires. The main loop uses `input` to launch the agent when compaction
+/// finishes; `rollback_pending_turn` restores pre-turn state on cancel.
+#[derive(Debug)]
+pub struct PendingTurn {
+    /// Input to launch the agent with (may be a skill-injected prompt).
+    pub input: String,
+    /// Text to restore to the editor on cancel (what the user typed).
+    pub restore_input: String,
+    /// `true` if the session was auto-created for this turn.
+    pub created_session: bool,
+    /// Chat message count before this turn (rollback truncates to this).
+    pub pre_turn_chat_len: usize,
+    /// Active skills before this turn (rollback restores this set).
+    pub pre_turn_skills: HashSet<String>,
+}
+
 /// Start a turn from the current input buffer.
 /// Called when the user presses Enter in idle state.
 ///
@@ -46,6 +67,13 @@ pub async fn start_turn(
     app: &mut App,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
+    // In-progress guard: compaction is running — keep the typed text in the
+    // editor (buffer untouched) so a single Enter re-sends once it ends.
+    if app.compaction_task.is_some() {
+        app.notify_compaction_in_progress();
+        return Ok(false);
+    }
+
     let input = app.editor.input_buffer.clone();
     app.editor.input_buffer.clear();
     app.editor.cursor_pos = 0;
@@ -64,7 +92,8 @@ pub async fn start_turn(
         return Ok(result);
     }
 
-    run_turn_with_input(app, input, None, terminal).await
+    let pre_turn_skills = app.active_skills.clone();
+    run_turn_with_input(app, input, None, pre_turn_skills, terminal).await
 }
 
 /// Parse a slash command from input. Returns (`command_id`, args) if matched.
@@ -139,13 +168,17 @@ async fn handle_skill_activation(
             format!("Skill: {}\n\n{}\n\nUser: {}", name, content.trim(), user_args)
         };
 
+        // Snapshot pre-turn skills before activation so a cancelled
+        // deferred turn restores the exact pre-turn set.
+        let pre_turn_skills = app.active_skills.clone();
+
         // Activate the skill
         app.activate_skill(name);
 
         // Delegate to run_turn_with_input
         // Display only the original user input (e.g. "/refine some prompt") in chat.
         // LLM receives the full SKILL.md + prompt.
-        match run_turn_with_input(app, user_input, Some(input.to_string()), terminal).await {
+        match run_turn_with_input(app, user_input, Some(input.to_string()), pre_turn_skills, terminal).await {
             Ok(quit) => Some(quit),
             Err(e) => {
                 app.add_system_message(&format!("Skill execution failed: {e}"));
@@ -189,14 +222,31 @@ async fn handle_skill_activation(
 /// - Hook execution errors (exit code != 0).
 /// - Agent streaming errors (network, serialization, context overflow).
 /// - Session persistence errors (file I/O).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "skill-name set; the default hasher is the only sensible representation"
+)]
 pub async fn run_turn_with_input(
     app: &mut App,
     input: String,
     display_text: Option<String>,
+    pre_turn_skills: HashSet<String>,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     // @path references are sent literally to the model.
     // The model uses `read` for files and `ls` for directories.
+
+    // In-progress guard: a compaction task is already running. Starting a
+    // turn now would spawn a second compaction task, and the finished plan
+    // could later be applied to a replaced session store.
+    if app.compaction_task.is_some() {
+        app.notify_compaction_in_progress();
+        return Ok(false);
+    }
+
+    // Snapshot for rollback if this turn defers to background compaction
+    // and the user cancels it.
+    let pre_turn_chat_len = app.chat.chat_messages.len();
 
     // Run UserPromptSubmit hooks (before adding user message)
     let user_prompt_hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::UserPromptSubmit);
@@ -240,20 +290,28 @@ pub async fn run_turn_with_input(
         return Ok(false);
     }
 
+    // Display text: what the user sees in chat and what the editor is
+    // restored to on cancel. `None` → the input itself.
+    let display = display_text.unwrap_or_else(|| input.clone());
+
     // Add user message to chat (no hook context XML tags — hook output is displayed as HookMessage)
-    app.add_user_message(&display_text.unwrap_or_else(|| input.clone()));
+    app.add_user_message(&display);
     app.chat.auto_scroll = true;
 
     // Auto-create session if none exists.
     // Do NOT append a system message to the session — the system prompt
     // is injected by build_context_with_system() to avoid duplicate
     // system messages that break Jinja templates requiring system at pos 0.
-    if !app.session.session_store.has_active_session() {
+    let created_session = !app.session.session_store.has_active_session();
+    if created_session {
         app.session.session_store.create_session(
             app.config.model_name.clone(),
             app.config.context_window,
             app.config.cwd.to_string_lossy().to_string(),
         );
+        // Fresh session — the history guard must not compare against the
+        // previous session's baseline.
+        app.session.reset_history_guard();
     }
 
     // Pre-prompt compaction check: if context is near the threshold, compact before sending
@@ -272,22 +330,73 @@ pub async fn run_turn_with_input(
             app.add_system_message("Context approaching limit. Compacting before sending...");
             app.chat.auto_scroll = true;
 
-            match perform_compaction(app, &CompactionReason::Threshold).await {
-                Ok((tb, ta, mr)) => {
-                    app.add_compaction_message(tb.saturating_sub(ta), mr);
-                    app.chat.auto_scroll = true;
-                }
-                Err(e) => {
-                    app.add_system_message(&format!("Compaction check failed: {e}"));
-                    app.chat.auto_scroll = true;
-                    // Continue anyway — let the agent try
-                }
-            }
+            // Defer the turn: spawn compaction into the main loop's task
+            // slot. `event_loop::poll_compaction_task` applies the result
+            // when it finishes and launches the agent, keeping the UI
+            // responsive in the meantime (sweep animation, scroll, and
+            // Esc-to-cancel with rollback via `rollback_pending_turn`).
+            // A failed compaction still launches the turn — the agent
+            // loop's overflow path is the fallback.
+            app.modal.state = AppState::Compacting;
+
+            let entries = app.session.session_store.entries().to_vec();
+            let engine = crate::session::CompactionEngine::from_config(&app.config.config);
+            let provider = crate::agent::build_provider(&app.config.config)?;
+            let config = app.config.config.clone();
+            let cwd = app.config.cwd.clone();
+            let skills = app.config.skills.clone();
+
+            app.compaction_task = Some(tokio::spawn(async move {
+                engine.compute_compaction(provider, config, entries, cwd, skills).await
+            }));
+
+            app.pending_turn = Some(PendingTurn {
+                input,
+                restore_input: display,
+                created_session,
+                pre_turn_chat_len,
+                pre_turn_skills,
+            });
+            return Ok(false);
         }
     }
 
-    // Run the agent loop in a background task with channel for UI updates
-    let user_msg = input;
+    launch_agent_turn(app, input, terminal).await
+}
+
+/// Roll back a deferred turn after compaction cancellation.
+///
+/// Truncates chat to the pre-turn length, discards an auto-created
+/// session, restores active skills, and puts the typed text back in the
+/// editor. No-op if no turn is pending.
+pub fn rollback_pending_turn(app: &mut App) {
+    let Some(pending) = app.pending_turn.take() else {
+        return;
+    };
+    app.chat.chat_messages.truncate(pending.pre_turn_chat_len);
+    if pending.created_session {
+        app.session.session_store = crate::session::SessionStore::new(&app.config.cwd);
+        app.session.reset_history_guard();
+    }
+    app.active_skills = pending.pre_turn_skills;
+    app.editor.input_buffer = pending.restore_input;
+    app.editor.cursor_pos = app.editor.input_buffer.len();
+}
+
+/// Launch the agent for a turn whose input is already displayed in chat.
+///
+/// Runs the agent loop in a background task and processes its events until
+/// the turn completes (or the user quits).
+///
+/// # Errors
+///
+/// - Session persistence errors (file I/O).
+/// - Agent streaming errors (network, serialization, context overflow).
+pub async fn launch_agent_turn(
+    app: &mut App,
+    user_msg: String,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> anyhow::Result<bool> {
     app.start_streaming(&user_msg);
     app.agent.tracker.start();
     app.reset_request_usage();
@@ -328,6 +437,7 @@ pub async fn run_turn_with_input(
     let hook_registry = app.config.hook_registry.clone();
     let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
     let skills = app.config.skills.clone();
+    let history_guard = app.session.history_guard.clone();
 
     let agent_handle = tokio::spawn(async move {
         crate::agent::run_agent_with_snapshot(
@@ -342,6 +452,7 @@ pub async fn run_turn_with_input(
             tx,
             cancel_rx,
             rtk_state,
+            history_guard,
         ).await;
     });
 

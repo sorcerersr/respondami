@@ -306,6 +306,24 @@ impl SessionStore {
         entry_tokens.saturating_add(system_overhead_tokens)
     }
 
+    /// Last real usage from the most recent Assistant message, if any.
+    ///
+    /// Returns `(prompt_tokens, completion_tokens)`. `prompt_tokens` is the
+    /// actual context size at that request (see
+    /// [`Self::estimate_context_tokens`]). Returns `None` when the session
+    /// has no Assistant message with recorded usage.
+    #[must_use]
+    pub fn last_request_usage(&self) -> Option<(u32, u32)> {
+        for entry in self.entries.iter().rev() {
+            if let SessionEntry::Message { message: AgentMessage::Assistant { usage, .. }, .. } = entry
+                && let Some(u) = usage.as_ref()
+            {
+                return Some((u.prompt_tokens, u.completion_tokens));
+            }
+        }
+        None
+    }
+
     /// Sum token usage from all saved Assistant messages in the session.
     /// Returns `(total_input_tokens, total_output_tokens)` for tracker restoration.
     #[must_use]

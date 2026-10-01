@@ -27,31 +27,42 @@ pub async fn execute_palette_command(
 ) -> anyhow::Result<bool> {
     match cmd_id {
         "new" => {
-            if app.session.session_store.has_active_session() {
+            // Guarded: a finished compaction plan applied to the replaced
+            // store would corrupt the new session (see `apply_compaction`).
+            // Idempotent: replacing an empty store and zeroing already-zero
+            // usage are harmless no-ops, so /new always leaves a fresh state.
+            if app.compaction_task.is_some() {
+                app.notify_compaction_in_progress();
+            } else {
                 app.session.session_store = SessionStore::new(&app.config.cwd);
                 app.chat.chat_messages.clear();
                 app.active_skills.clear();
-                app.reset_request_usage();
-                app.session.cumulative_usage = crate::session::RequestTokenUsage::default();
-                app.session.session_prompt_tokens = 0;
-                app.session.session_completion_tokens = 0;
+                app.session.reset_for_new_session();
             }
         }
         "resume" => {
-            app.modal.session_select_matches = app.list_sessions()?;
-            if app.modal.session_select_matches.is_empty() {
-                app.add_system_message("No sessions found. Send a message to create one.");
-                app.chat.auto_scroll = true;
+            // Guarded: a finished compaction plan must not be applied to
+            // the resumed session's store.
+            if app.compaction_task.is_some() {
+                app.notify_compaction_in_progress();
             } else {
-                app.modal.session_select_index = 0;
-                app.modal.state = AppState::SessionSelect;
+                app.modal.session_select_matches = app.list_sessions()?;
+                if app.modal.session_select_matches.is_empty() {
+                    app.add_system_message("No sessions found. Send a message to create one.");
+                    app.chat.auto_scroll = true;
+                } else {
+                    app.modal.session_select_index = 0;
+                    app.modal.state = AppState::SessionSelect;
+                }
             }
         }
         "quit" | "q" => {
             return Ok(true);
         }
         "compact" => {
-            if app.session.session_store.has_active_session() {
+            if app.compaction_task.is_some() {
+                app.notify_compaction_in_progress();
+            } else if app.session.session_store.has_active_session() {
                 // Close command palette, show "Compacting..." message.
                 // Spawn LLM summarization as background task — UI redraws with sweep animation.
                 app.modal.state = AppState::Compacting;
@@ -69,9 +80,10 @@ pub async fn execute_palette_command(
                     engine.compute_compaction(provider, config, entries, cwd, skills).await
                 }));
                 return Ok(false); // Return immediately — main loop redraws with animation
+            } else {
+                app.add_system_message("No active session to compact.");
+                app.chat.auto_scroll = true;
             }
-            app.add_system_message("No active session to compact.");
-            app.chat.auto_scroll = true;
         }
         "help" | "h" => {
             app.modal.state = AppState::HelpPopup;
@@ -96,9 +108,15 @@ pub async fn execute_palette_command(
             app.clear_chat();
         }
         "init" => {
-            app.add_user_message(crate::agents_md::GENERATE_CHAT_MESSAGE);
-            let prompt = crate::agents_md::GENERATE_PROMPT.to_string();
-            return run_turn_with_input(app, prompt, None, terminal).await;
+            // Guard before adding the user message — a blocked turn must
+            // not leave an orphaned chat message.
+            if app.compaction_task.is_some() {
+                app.notify_compaction_in_progress();
+            } else {
+                app.add_user_message(crate::agents_md::GENERATE_CHAT_MESSAGE);
+                let prompt = crate::agents_md::GENERATE_PROMPT.to_string();
+                return run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal).await;
+            }
         }
         // Toggle commands — act directly and persist
         "toggle_thinking" => {

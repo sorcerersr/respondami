@@ -4,6 +4,7 @@
 use super::app::App;
 use super::chat_state::ChatState;
 use super::messages::{ChatMessage, UserMessage, AssistantMessage, SystemMessage};
+use crate::session::{RequestTokenUsage, Usage};
 
     // Scroll behavior tests (pinned scroll, auto-scroll)
     #[test]
@@ -184,4 +185,81 @@ use super::messages::{ChatMessage, UserMessage, AssistantMessage, SystemMessage}
         assert_eq!(app.editor.history_index, 0);
         assert!(app.editor.saved_input.is_none());
         assert_eq!(app.editor.saved_cursor, 0);
+    }
+
+    // Token usage reset tests (session boundary vs turn boundary)
+    #[test]
+    fn reset_for_new_session_zeroes_all_usage() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        // Simulate a used session
+        app.session.current_request_usage = RequestTokenUsage {
+            input_tokens: 75_000,
+            output_tokens: 12_000,
+            estimated: false,
+        };
+        app.session.cumulative_usage = RequestTokenUsage {
+            input_tokens: 200_000,
+            output_tokens: 40_000,
+            estimated: false,
+        };
+
+        app.session.reset_for_new_session();
+
+        assert_eq!(app.session.current_request_usage.input_tokens, 0);
+        assert_eq!(app.session.current_request_usage.output_tokens, 0);
+        assert_eq!(app.session.cumulative_usage.input_tokens, 0);
+        assert_eq!(app.session.cumulative_usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn reset_request_usage_preserves_input_for_delta_accounting() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        app.session.current_request_usage = RequestTokenUsage {
+            input_tokens: 50_000,
+            output_tokens: 8_000,
+            estimated: true,
+        };
+
+        app.reset_request_usage();
+
+        // Turn-level reset: input preserved (within-turn delta accounting),
+        // output and estimated flag reset.
+        assert_eq!(app.session.current_request_usage.input_tokens, 50_000);
+        assert_eq!(app.session.current_request_usage.output_tokens, 0);
+        assert!(!app.session.current_request_usage.estimated);
+    }
+
+    #[test]
+    fn accumulate_after_full_reset_records_first_usage_without_stale_inflation() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        // Stale usage from a previous session
+        app.session.current_request_usage = RequestTokenUsage {
+            input_tokens: 75_000,
+            output_tokens: 0,
+            estimated: false,
+        };
+        app.session.reset_for_new_session();
+
+        // The new session's first request is much smaller than the stale value
+        let usage = Usage {
+            prompt_tokens: 3_000,
+            completion_tokens: 400,
+            total_tokens: 3_400,
+        };
+        app.accumulate_token_usage(&usage);
+
+        // max(0, 3000) == 3000: no stale inflation of the context percentage
+        assert_eq!(app.session.current_request_usage.input_tokens, 3_000);
+        assert_eq!(app.session.current_request_usage.output_tokens, 400);
+        assert_eq!(app.session.cumulative_usage.input_tokens, 3_000);
+        assert_eq!(app.session.cumulative_usage.output_tokens, 400);
     }

@@ -80,6 +80,7 @@ Display and interaction settings.
 | `hook_display` | string | `"minimal"` | Display mode for hook messages. One of: |
 | | | | - `"minimal"` — Shows only hook status (success/blocked). |
 | | | | - `"full"` — Shows hook output and timing details. |
+| `file_always_visible` | string[] | `["docs/plans/", "docs/reviews/"]` | Gitignore-style patterns that stay visible in the `@` file autocomplete even when gitignored. The config file value replaces the default; `[]` disables. |
 
 ## RTK
 

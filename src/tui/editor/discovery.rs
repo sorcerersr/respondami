@@ -1,8 +1,9 @@
 //! File discovery for @-autocomplete.
 //!
 //! Walks the project directory (excluding `.git`, `node_modules`, `target`, etc.)
-//! and collects file and directory entries. Respects `.gitignore`, skips binary
-//! files and files > 1MB. Provides `fuzzy_match()` for query filtering.
+//! and collects file and directory entries. Respects `.gitignore` — paths
+//! matching the always-visible pattern list remain visible anyway — and skips
+//! binary files and files > 1MB. Provides `fuzzy_match()` for query filtering.
 
 use std::path::Path;
 
@@ -85,13 +86,20 @@ pub struct FileDiscovery;
 
 impl FileDiscovery {
     /// Walk the project directory and collect file and directory entries.
+    ///
+    /// Entries matched by the project `.gitignore` are skipped unless the path
+    /// or an ancestor directory matches a gitignore-style pattern in
+    /// `always_visible` (non-negated patterns only). Hard exclusions (noise
+    /// dirs), the 1 MB size cap, and the binary-file check cannot be
+    /// overridden.
     #[must_use]
-    pub fn discover_entries(cwd: &Path) -> Vec<FileMatch> {
+    pub fn discover_entries(cwd: &Path, always_visible: &[String]) -> Vec<FileMatch> {
         let excluded_dirs = [".git", "node_modules", "target", ".respondami", "__pycache__"];
         let mut entries = Vec::new();
 
-        // Build gitignore filter
+        // Build gitignore filter and the always-visible override
         let gitignore = Self::build_gitignore(cwd);
+        let force_include = Self::build_force_include(cwd, always_visible);
 
         let walker = walkdir::WalkDir::new(cwd).into_iter().filter_entry(|e| {
             let file_name = e.file_name().to_string_lossy();
@@ -109,11 +117,14 @@ impl FileDiscovery {
                 Err(_) => continue,
             };
 
-            // Skip gitignored paths
-            if gitignore
+            // Skip gitignored paths unless force-included by the always-visible list
+            let is_ignored = gitignore
                 .as_ref()
-                .is_some_and(|gi| gi.matched_path_or_any_parents(rel, entry.file_type().is_dir()).is_ignore())
-            {
+                .is_some_and(|gi| gi.matched_path_or_any_parents(rel, entry.file_type().is_dir()).is_ignore());
+            let force_included = force_include
+                .as_ref()
+                .is_some_and(|fi| fi.matched_path_or_any_parents(rel, entry.file_type().is_dir()).is_ignore());
+            if is_ignored && !force_included {
                 continue;
             }
 
@@ -124,7 +135,7 @@ impl FileDiscovery {
                 });
             } else {
                 // Skip files > 1MB
-                if entry.metadata().ok().is_some_and(|m| m.len() > 1_000_000) {
+                if entry.metadata().is_ok_and(|m| m.len() > 1_000_000) {
                     continue;
                 }
                 // Skip binary files
@@ -155,10 +166,17 @@ impl FileDiscovery {
         builder.build().ok()
     }
 
+    /// Build the always-visible (force-include) pattern matcher.
+    fn build_force_include(cwd: &Path, patterns: &[String]) -> Option<ignore::gitignore::Gitignore> {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(cwd);
+        for line in patterns {
+            builder.add_line(None, line).ok();
+        }
+        builder.build().ok()
+    }
+
     fn is_binary(path: &std::path::Path) -> bool {
-        std::fs::read(path)
-            .ok()
-            .is_some_and(|bytes| bytes.iter().take(512).any(|&b| b == 0))
+        std::fs::read(path).is_ok_and(|bytes| bytes.iter().take(512).any(|&b| b == 0))
     }
 
     /// Fuzzy match entries against a query.

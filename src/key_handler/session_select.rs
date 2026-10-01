@@ -27,6 +27,15 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
         output_tokens,
         estimated: false,
     };
+    // Restore current context usage from the last real request in the session
+    let (current_input, current_output) = app.session.session_store
+        .last_request_usage()
+        .unwrap_or((0, 0));
+    app.session.current_request_usage = crate::session::RequestTokenUsage {
+        input_tokens: current_input,
+        output_tokens: current_output,
+        estimated: false,
+    };
     // Restore token rate tracker from saved entries
     let (tokens, seconds) = app.session.session_store.total_token_rate();
     app.restore_tracker(tokens, seconds);
@@ -36,6 +45,9 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // Rebuild chat display from session using the adapter
     let adapter = crate::session::SessionDisplayAdapter::new(app.config.tool_output_expanded);
     app.chat.chat_messages = adapter.build_messages(app.session.session_store.entries());
+    // Resumed session — the next outgoing prefix legitimately differs from
+    // whatever the guard saw last, so reset the baseline.
+    app.session.reset_history_guard();
     app.modal.state = AppState::Idle;
     app.chat.auto_scroll = true;
     Ok(())

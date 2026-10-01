@@ -21,10 +21,14 @@ pub use streaming::{AgentResponse, build_provider, stream_response_from_messages
 
 use std::io;
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::config::Config;
+use crate::history_guard::{HistoryGuard, MessageDigest, message_digest};
 use crate::hooks::{HookContext, HookRegistry, execute_hook};
-use crate::session::{AgentMessage, CompactionEngine, RequestTokenUsage, SessionStore};
+use crate::session::{
+    AgentMessage, CompactionEngine, ContentBlock, RequestTokenUsage, SessionStore, ToolCall,
+};
 use crate::skills::Skill;
 use crate::tools::rtk::rewrite_command;
 use crate::tools::{CancelGuard, ToolRegistry};
@@ -131,6 +135,7 @@ pub async fn run_agent_with_snapshot(
     tx: mpsc::Sender<AgentEvent>,
     cancel_rx: watch::Receiver<bool>,
     rtk_state: crate::tools::rtk::RtkState,
+    history_guard: Arc<Mutex<HistoryGuard>>,
 ) {
     let provider = match build_provider(&config) {
         Ok(p) => p,
@@ -149,6 +154,13 @@ pub async fn run_agent_with_snapshot(
     // Build initial context from snapshot + user message
     let mut current_context = context_messages;
     current_context.push(AgentMessage::user(user_message.clone()));
+
+    // Per-message digests, kept in lockstep with `current_context` for the
+    // history guard (vLLM prefix-cache stability). `None` marks ephemeral
+    // messages (the synthetic hook_instruction pair) that are sent to the LLM
+    // but never persisted — the guard skips them in the prefix comparison.
+    let mut context_digests: Vec<Option<MessageDigest>> =
+        current_context.iter().map(|msg| Some(message_digest(msg))).collect();
 
     let mut current_request_usage: RequestTokenUsage = RequestTokenUsage::default();
     // Retry tracking for transient provider errors
@@ -190,6 +202,9 @@ pub async fn run_agent_with_snapshot(
         // Modeled on pi-coding-agent: retry empty responses, network errors, rate limits,
         // and server errors with exponential backoff. Context overflow and billing errors
         // are NOT retried (compaction and user action respectively).
+        // History guard: verify this outgoing context's prefix is byte-identical
+        // to the previous outgoing context before the provider sees it.
+        check_outgoing_history(&history_guard, &context_digests, &current_context);
         let response = loop {
             match stream_response_from_messages(
                 &provider,
@@ -236,6 +251,7 @@ pub async fn run_agent_with_snapshot(
                         // Remove the empty response from context before retry
                         if matches!(current_context.last(), Some(AgentMessage::Assistant { .. })) {
                             current_context.pop();
+                            context_digests.pop();
                         }
                         continue;
                     }
@@ -420,24 +436,13 @@ pub async fn run_agent_with_snapshot(
                         })
                         .await;
                     let error_result = "Error: skill name is required".to_string();
-                    current_context.push(AgentMessage::assistant_with_blocks(
-                        vec![crate::session::ContentBlock::ToolCall {
-                            tool_call: tc.clone(),
-                        }],
-                        None,
-                    ));
-                    current_context.push(AgentMessage::tool(
-                        tc.id.clone(),
-                        tc.name.clone(),
-                        tc.arguments.clone(),
-                        error_result.clone(),
-                    ));
+                    push_persisted_context_pair(&mut current_context, &mut context_digests, tc, &error_result);
                     // Persist assistant+tool to session for correct alternation pattern.
                     // Without this, the activate_skill tool call becomes orphaned
                     // (no matching tool result) when context is rebuilt from JSONL.
                     let _ = tx
                         .send(AgentEvent::SaveAssistantMessage {
-                            content: vec![crate::session::ContentBlock::ToolCall {
+                            content: vec![ContentBlock::ToolCall {
                                 tool_call: tc.clone(),
                             }],
                             usage: None,
@@ -483,25 +488,14 @@ pub async fn run_agent_with_snapshot(
                         }
                     }
                 }
-                current_context.push(AgentMessage::assistant_with_blocks(
-                    vec![crate::session::ContentBlock::ToolCall {
-                        tool_call: tc.clone(),
-                    }],
-                    None,
-                ));
-                current_context.push(AgentMessage::tool(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    tc.arguments.clone(),
-                    result.clone(),
-                ));
+                push_persisted_context_pair(&mut current_context, &mut context_digests, tc, &result);
                 // Persist assistant+tool to session for correct alternation pattern.
                 // Without this, the activate_skill tool call becomes orphaned
                 // (no matching tool result) when context is rebuilt from JSONL,
                 // corrupting the message alternation pattern for the LLM.
                 let _ = tx
                     .send(AgentEvent::SaveAssistantMessage {
-                        content: vec![crate::session::ContentBlock::ToolCall {
+                        content: vec![ContentBlock::ToolCall {
                             tool_call: tc.clone(),
                         }],
                         usage: None,
@@ -600,18 +594,7 @@ pub async fn run_agent_with_snapshot(
                     })
                     .await;
                 // Add to context as a failed tool result
-                current_context.push(AgentMessage::assistant_with_blocks(
-                    vec![crate::session::ContentBlock::ToolCall {
-                        tool_call: tc.clone(),
-                    }],
-                    None,
-                ));
-                current_context.push(AgentMessage::tool(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    tc.arguments.clone(),
-                    blocked_result,
-                ));
+                push_persisted_context_pair(&mut current_context, &mut context_digests, tc, &blocked_result);
                 continue;
             }
 
@@ -744,21 +727,12 @@ pub async fn run_agent_with_snapshot(
 
             // Persist assistant message for this tool call to maintain alternation
             // in JSONL (assistant->tool->assistant->tool pattern).
-            // First tool call gets full content blocks; subsequent ones get just the tool call.
-            // Without this per-call save, multi-tool-call responses produce
-            // consecutive tool->tool messages in JSONL, corrupting context rebuild.
-            let assistant_blocks = if first_tool_call {
-                // Include all content blocks (text, thinking) plus this tool call
-                let mut blocks = response.content.clone();
-                blocks.push(crate::session::ContentBlock::ToolCall {
-                    tool_call: tc.clone(),
-                });
-                blocks
-            } else {
-                vec![crate::session::ContentBlock::ToolCall {
-                    tool_call: tc.clone(),
-                }]
-            };
+            // First tool call carries the response's non-tool blocks (thinking,
+            // text) plus this tool call; subsequent calls carry just their own.
+            // The same blocks are saved to the session and pushed to the live
+            // context so the two histories stay byte-identical (vLLM
+            // prefix-cache stability).
+            let assistant_blocks = canonical_turn_blocks(&response.content, tc, first_tool_call);
             let assistant_usage = if first_tool_call {
                 response.usage.clone()
             } else {
@@ -767,8 +741,8 @@ pub async fn run_agent_with_snapshot(
             first_tool_call = false;
             let _ = tx
                 .send(AgentEvent::SaveAssistantMessage {
-                    content: assistant_blocks,
-                    usage: assistant_usage,
+                    content: assistant_blocks.clone(),
+                    usage: assistant_usage.clone(),
                 })
                 .await;
             // Send tool result for TUI to save to session
@@ -781,44 +755,150 @@ pub async fn run_agent_with_snapshot(
                 })
                 .await;
 
-            // Add to context for next iteration
-            current_context.push(AgentMessage::assistant_with_blocks(
-                vec![crate::session::ContentBlock::ToolCall {
-                    tool_call: tc.clone(),
-                }],
-                None,
-            ));
-            current_context.push(AgentMessage::tool(
-                tc.id.clone(),
-                tc.name.clone(),
-                tc.arguments.clone(),
-                final_result,
-            ));
+            // Add to context for next iteration — the same blocks and usage as
+            // saved above, so live and persisted history never diverge.
+            let assistant_msg = AgentMessage::assistant_with_blocks(assistant_blocks, assistant_usage);
+            let assistant_digest = message_digest(&assistant_msg);
+            let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), final_result);
+            let tool_digest = message_digest(&tool_msg);
+            current_context.push(assistant_msg);
+            context_digests.push(Some(assistant_digest));
+            current_context.push(tool_msg);
+            context_digests.push(Some(tool_digest));
 
             // If there are hook instructions, inject them as a synthetic hook_instruction tool call/result.
             // This is visible only to the LLM — no TUI events, not saved to session.
             if !hook_instructions.is_empty() {
-                let hook_tool_call = crate::session::ToolCall {
+                let hook_tool_call = ToolCall {
                     id: "hook_instruction".to_string(),
                     name: crate::tools::HOOK_INSTRUCTION_TOOL.to_string(),
                     arguments: serde_json::json!({}),
                 };
-                // Inject into agent context ONLY — no TUI events, no session save
+                // Inject into agent context ONLY — no TUI events, no session save.
+                // Marked ephemeral (None) in the digest list: these messages are
+                // never persisted, so they must not participate in the guard's
+                // prefix comparison.
                 current_context.push(AgentMessage::assistant_with_blocks(
-                    vec![crate::session::ContentBlock::ToolCall {
+                    vec![ContentBlock::ToolCall {
                         tool_call: hook_tool_call.clone(),
                     }],
                     None,
                 ));
+                context_digests.push(None);
                 current_context.push(AgentMessage::tool(
                     "hook_instruction".to_string(),
                     crate::tools::HOOK_INSTRUCTION_TOOL.to_string(),
                     serde_json::json!({}),
                     hook_instructions.trim().to_string(),
                 ));
+                context_digests.push(None);
             }
         }
     }
+}
+
+/// Push the assistant+tool message pair for an already-persisted tool call
+/// (`activate_skill`, hook-blocked call) to the live context, keeping the
+/// parallel digest list in lockstep.
+fn push_persisted_context_pair(
+    context: &mut Vec<AgentMessage>,
+    digests: &mut Vec<Option<MessageDigest>>,
+    tc: &ToolCall,
+    result: &str,
+) {
+    let assistant = AgentMessage::assistant_with_blocks(
+        vec![ContentBlock::ToolCall {
+            tool_call: tc.clone(),
+        }],
+        None,
+    );
+    let tool = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), result.to_string());
+    push_context_message(context, digests, assistant, false);
+    push_context_message(context, digests, tool, false);
+}
+
+/// Push a message to the live context and its digest to the parallel digest
+/// list, keeping the two in lockstep.
+///
+/// `ephemeral` marks messages that are sent to the LLM but never persisted
+/// (the synthetic `hook_instruction` pair) — they get a `None` digest so the
+/// history guard skips them in the prefix comparison.
+fn push_context_message(
+    context: &mut Vec<AgentMessage>,
+    digests: &mut Vec<Option<MessageDigest>>,
+    message: AgentMessage,
+    ephemeral: bool,
+) {
+    let digest = if ephemeral { None } else { Some(message_digest(&message)) };
+    digests.push(digest);
+    context.push(message);
+}
+
+/// Verify the outgoing context prefix against the history guard before each
+/// request.
+///
+/// The guard compares per-message digests with the previous outgoing context
+/// and logs a structured warning (never blocking) when the prefix is no
+/// longer byte-identical and append-only — the condition under which
+/// provider prefix caching (e.g. vLLM) silently stops hitting.
+fn check_outgoing_history(
+    history_guard: &Mutex<HistoryGuard>,
+    digests: &[Option<MessageDigest>],
+    context: &[AgentMessage],
+) {
+    let mut guard = history_guard
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let Some(violation) = guard.check_and_update(digests) else {
+        return;
+    };
+    let current_preview = context
+        .get(violation.index)
+        .map(format_message_preview)
+        .unwrap_or_else(|| "  <context ended here>".to_string());
+    tracing::warn!(
+        index = violation.index,
+        violation = %violation,
+        current = %current_preview,
+        "History prefix drift — provider prefix cache will miss from this point"
+    );
+}
+
+/// Canonical assistant content blocks for one tool call of a multi-tool response.
+///
+/// First tool call: the response's non-tool blocks (thinking, text — in
+/// stream order) plus this tool call. Later tool calls: just this tool call.
+///
+/// The same blocks are sent to the session (`SaveAssistantMessage`) and
+/// pushed to the live context, so the two representations stay byte-identical
+/// across turns. Without this, the live and persisted histories diverge at
+/// every multi-tool-call position and provider prefix caching breaks. The
+/// per-tool-call split (assistant→tool→assistant→tool) is preserved for the
+/// JSONL alternation requirement.
+///
+/// The thinking (reasoning) blocks are intentionally kept: they are reserialized
+/// on every subsequent request. This grows within-turn token usage but keeps
+/// the history byte-stable — the deliberate trade documented in the
+/// cache-stable history design (see `docs/plans/2026-09-12-cache-stable-history-design.md`).
+#[must_use]
+fn canonical_turn_blocks(
+    content: &[ContentBlock],
+    tool_call: &ToolCall,
+    first: bool,
+) -> Vec<ContentBlock> {
+    let mut blocks: Vec<ContentBlock> = if first {
+        content
+            .iter()
+            .filter(|block| !matches!(block, ContentBlock::ToolCall { .. }))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    blocks.push(ContentBlock::ToolCall {
+        tool_call: tool_call.clone(),
+    });
+    blocks
 }
 
 /// Log the last 3 context messages before a retry attempt.
