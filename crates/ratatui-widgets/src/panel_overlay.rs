@@ -11,17 +11,22 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 
 /// Lightweight border set for panel overlays.
-/// Thin verticals and light horizontals reduce visual weight for transient popups.
-/// Asymmetric: angled top corners (▟/▜) for header feel, flat bottom (▔/▔) to ground.
+///
+/// Thin verticals and light horizontals reduce visual weight for transient
+/// popups. Top corners are chunky (▟/▜) for a header feel. Bottom glyphs put
+/// their line at the bottom of the cell (▙/▟ corners, ▁ line) because border
+/// cells are painted with the panel background: a top-aligned line (▔) would
+/// leave panel background visible below the line, making the panel appear to
+/// stick out past its bottom border.
 pub const PANEL_BORDER: border::Set = border::Set {
     top_left: "▟",
     top_right: "▜",
-    bottom_left: "▔",
-    bottom_right: "▔",
+    bottom_left: "▙",
+    bottom_right: "▟",
     vertical_left: "▏",
     vertical_right: "▕",
     horizontal_top: "▔",
-    horizontal_bottom: "▔",
+    horizontal_bottom: "▁",
 };
 
 /// A generic overlay panel with title bar, borders, and content lines.
@@ -178,6 +183,16 @@ impl<'a> Widget for PanelOverlay<'a> {
 mod tests {
     use super::*;
 
+    /// Bottom border glyphs must put their line at the bottom of the cell so
+    /// the panel background (which fills border cells) does not render below
+    /// the border line.
+    #[test]
+    fn bottom_border_line_sits_at_cell_bottom() {
+        assert_eq!(PANEL_BORDER.horizontal_bottom, "▁");
+        assert_eq!(PANEL_BORDER.bottom_left, "▙");
+        assert_eq!(PANEL_BORDER.bottom_right, "▟");
+    }
+
     #[test]
     fn height_minimum() {
         let overlay = PanelOverlay::new(" Test ");
@@ -212,5 +227,20 @@ mod tests {
         overlay.render_into(Rect::new(0, 0, 10, 4), &mut buf);
         // Second content line should have accent bg
         assert_eq!(buf[(1, 2)].bg, ratatui::style::Color::Rgb(0x47, 0x8b, 0xe6));
+    }
+
+    #[test]
+    fn render_bottom_row_uses_lower_cell_glyphs() {
+        let overlay = PanelOverlay::new(" Title ").content(vec![Line::from("Content")]);
+        let area = Rect::new(0, 0, 10, 4);
+        let mut buf = Buffer::empty(area);
+        overlay.render_into(area, &mut buf);
+        // Last row is the bottom border: corners connect to a line that sits
+        // at the bottom of the cell, not the top.
+        assert_eq!(buf[(0, 3)].symbol(), "▙");
+        for x in 1..9 {
+            assert_eq!(buf[(x, 3)].symbol(), "▁");
+        }
+        assert_eq!(buf[(9, 3)].symbol(), "▟");
     }
 }
