@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **166 `.rs` files**, ~32.7K lines total (23.4K production, 9.3K tests)
+- **166 `.rs` files**, ~33.3K lines total (23.6K production, 9.6K tests)
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (978 total)
+cargo test --workspace                         # all tests (991 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **978 tests** (762 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **991 tests** (776 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -120,6 +120,7 @@ cargo test --workspace                       # all tests pass
 ### Token Usage Accumulation
 
 - Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests.
+- `reset_request_usage()` is turn-level (preserves `input_tokens` for within-turn delta accounting); session boundaries (new session, resume) must use `SessionState::reset_for_new_session()` which zeroes everything — reusing the turn-level reset leaks stale context percentages into a fresh session (the `max()` never corrects it).
 - `estimate_context_tokens()` prefers actual LLM `prompt_tokens` from last Assistant message, falls back to char estimates + system overhead.
 
 ### Provider Abstraction
@@ -288,7 +289,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (762 tests)
+### Root Crate Tests (776 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -314,7 +315,7 @@ cargo test --workspace                       # all tests pass
 | `src/provider/sse_tests.rs`                   | SSE parsing, cancellation                               |
 | `src/session/compaction_tests.rs`             | Compaction engine, summarization                        |
 | `src/session/entry_tests.rs`                  | Session entry serialization                             |
-| `src/session/manager_tests.rs`                | Session CRUD, context building, compaction application  |
+| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage      |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
 | `src/sse_debug_tests.rs`                      | SSE debug utilities                                     |
 | `src/tools/activate_skill_tests.rs`           | activate_skill tool                                     |
@@ -325,11 +326,11 @@ cargo test --workspace                       # all tests pass
 | `src/tools/rtk_tests.rs`                      | RTK rewrite integration                                 |
 | `src/tools/write_tests.rs`                    | Write tool                                              |
 | `src/tui/activity_indicator_tests.rs`         | Activity indicator animation                            |
-| `src/tui/app_tests.rs`                        | App state, message helpers, token usage                 |
+| `src/tui/app_tests.rs`                        | App state, message helpers, token usage, session reset  |
 | `src/tui/autocomplete_tests.rs`               | File and skill autocomplete                             |
 | `src/tui/editor/commands_tests.rs`            | Editor commands                                         |
 | `src/tui/editor/cursor_tests.rs`              | Cursor movement and wrapping                            |
-| `src/tui/editor/discovery_tests.rs`           | File discovery for autocomplete                         |
+| `src/tui/editor/discovery_tests.rs`           | File discovery for autocomplete, always-visible (force-include) patterns |
 | `src/tui/editor/wrap_tests.rs`                | Text wrapping                                           |
 | `src/tui/hook_display_tests.rs`               | Hook display modes                                      |
 | `src/tui/layout_tests.rs`                     | Layout calculations, input area height                  |

@@ -169,6 +169,7 @@ fn config_default_ui() {
     assert_eq!(config.ui.thinking_max_lines, 5);
     assert!(config.ui.tool_output_expanded);
     assert!(config.ui.file_show_hidden);
+    assert_eq!(config.ui.file_always_visible, vec!["docs/plans/", "docs/reviews/"]);
 }
 
 #[test]
@@ -200,6 +201,24 @@ fn config_full_roundtrip_with_ui() {
     let decoded: Config = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.ui.thinking_display, config.ui.thinking_display);
     assert_eq!(decoded.ui.thinking_max_lines, config.ui.thinking_max_lines);
+}
+
+#[test]
+fn ui_config_file_always_visible_serde_default() {
+    let json = r"{}";
+    let ui: UiConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(ui.file_always_visible, vec!["docs/plans/", "docs/reviews/"]);
+}
+
+#[test]
+fn ui_config_file_always_visible_replaces_default_wholesale() {
+    let json = r#"{"file_always_visible": ["notes/private/"]}"#;
+    let ui: UiConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(ui.file_always_visible, vec!["notes/private/"]);
+
+    let json = r#"{"file_always_visible": []}"#;
+    let ui: UiConfig = serde_json::from_str(json).unwrap();
+    assert!(ui.file_always_visible.is_empty());
 }
 
 // ---------------------------------------------------------------------------

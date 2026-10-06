@@ -210,6 +210,84 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     }
 
     // ---------------------------------------------------------------------------
+    // last_request_usage
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn last_request_usage_none_on_fresh_store() {
+        let dir = temp_dir();
+        let manager = SessionStore::new(&dir);
+
+        assert_eq!(manager.last_request_usage(), None);
+    }
+
+    #[test]
+    fn last_request_usage_returns_most_recent_assistant() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+
+        manager
+            .append_message(
+                None,
+                AgentMessage::assistant(
+                    "first".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    Some(Usage { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 }),
+                ),
+            )
+            .unwrap();
+        manager.append_message(None, AgentMessage::user("follow-up".to_string())).unwrap();
+        manager
+            .append_message(
+                None,
+                AgentMessage::assistant(
+                    "second".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    Some(Usage { prompt_tokens: 200, completion_tokens: 20, total_tokens: 220 }),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(manager.last_request_usage(), Some((200, 20)));
+    }
+
+    #[test]
+    fn last_request_usage_skips_assistant_without_usage() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+
+        manager
+            .append_message(
+                None,
+                AgentMessage::assistant(
+                    "with usage".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    Some(Usage { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 }),
+                ),
+            )
+            .unwrap();
+        manager
+            .append_message(
+                None,
+                AgentMessage::assistant(
+                    "without usage".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+
+        // The trailing assistant has no usage — fall back to the earlier one.
+        assert_eq!(manager.last_request_usage(), Some((100, 10)));
+    }
+
+    // ---------------------------------------------------------------------------
     // total_token_rate
     // ---------------------------------------------------------------------------
 
