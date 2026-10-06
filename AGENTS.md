@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (991 total)
+cargo test --workspace                         # all tests (993 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **991 tests** (776 root + 41 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **993 tests** (775 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -289,7 +289,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (776 tests)
+### Root Crate Tests (775 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -348,5 +348,5 @@ cargo test --workspace                       # all tests pass
 
 | Test File                 | Coverage                                                                                                                    | Tests |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, prompt editor, header bar                                               | 41    |
+| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, prompt editor, header bar                                               | 43    |
 | `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 175   |
