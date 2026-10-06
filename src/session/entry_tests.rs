@@ -194,7 +194,7 @@ use super::{SessionEntry, AgentMessage, ToolCall, Usage, RequestTokenUsage, Toke
         assert_eq!(session.id(), "sess-1");
 
         let msg = SessionEntry::new_message(Some("sess-1".to_string()), AgentMessage::user("hi".to_string()));
-        assert!(!msg.id().is_empty());
+        assert_ne!(msg.id(), "");
         assert_eq!(msg.parent_id(), Some("sess-1".to_string()));
     }
 

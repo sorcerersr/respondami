@@ -105,7 +105,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn render_content_lines_empty() {
         let bash = BashToolCall::from_args("", false, None, None, false);
         let lines = bash.content_lines();
-        assert!(lines.is_empty());
+        assert_eq!(lines, [] as [String; 0]);
     }
 
     #[test]

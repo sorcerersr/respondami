@@ -163,7 +163,7 @@ use super::*;
         ];
 
         let (read_files, modified_files) = CompactionSettings::extract_file_operations(&entries, 2);
-        assert!(read_files.is_empty());
+        assert_eq!(read_files, [] as [String; 0]);
         assert_eq!(modified_files, vec!["src/edit.rs"]);
     }
 

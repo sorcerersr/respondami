@@ -39,7 +39,7 @@ use super::wrap::{build_visual_lines, cursor_visual_pos, last_char_boundary, wra
     #[test]
     fn wrap_line_zero_width() {
         let segments = wrap_line("hello", 0);
-        assert!(segments.is_empty());
+        assert_eq!(segments, [] as [(usize, usize); 0]);
     }
 
     #[test]

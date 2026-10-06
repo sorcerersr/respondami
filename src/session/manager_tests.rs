@@ -21,7 +21,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
         let id = manager.create_session("llama3.2".to_string(), 32768, "/home/user".to_string());
-        assert!(!id.is_empty());
+        assert_ne!(id, "");
         assert!(manager.has_active_session());
         assert_eq!(manager.session_id(), Some(id.as_str()));
     }
@@ -53,7 +53,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
         let mut manager = SessionStore::new(&dir);
         manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
         let id = manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
-        assert!(!id.is_empty());
+        assert_ne!(id, "");
         assert_eq!(manager.entries().len(), 2); // header + message
     }
 
@@ -163,7 +163,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
 
         manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
         let last_id = manager.last_entry_id().unwrap();
-        assert!(!last_id.is_empty());
+        assert_ne!(last_id, "");
     }
 
     #[test]

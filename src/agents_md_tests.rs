@@ -96,7 +96,7 @@ fn load_agents_md_read_error() {
 
 #[test]
 fn generate_prompt_is_non_empty() {
-    assert!(!GENERATE_PROMPT.is_empty());
+    assert_ne!(GENERATE_PROMPT, "");
 }
 
 #[test]

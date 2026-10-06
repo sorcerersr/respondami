@@ -27,7 +27,7 @@ async fn execute_hook_success() {
     let result = execute_hook(&hook, &context).await;
     assert!(result.success());
     assert!(result.stdout.contains("hello world"));
-    assert!(result.stderr.is_empty());
+    assert_eq!(result.stderr, "");
 }
 
 #[tokio::test]

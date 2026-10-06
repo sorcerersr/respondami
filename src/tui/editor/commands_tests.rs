@@ -96,7 +96,7 @@ use super::{fuzzy_match_case_insensitive, get_palette_commands, fuzzy_match_pale
     #[test]
     fn parse_file_refs_empty() {
         let refs = parse_file_references("hello world");
-        assert!(refs.is_empty());
+        assert_eq!(refs, [] as [String; 0]);
     }
 
     #[test]

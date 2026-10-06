@@ -218,7 +218,7 @@ fn ui_config_file_always_visible_replaces_default_wholesale() {
 
     let json = r#"{"file_always_visible": []}"#;
     let ui: UiConfig = serde_json::from_str(json).unwrap();
-    assert!(ui.file_always_visible.is_empty());
+    assert_eq!(ui.file_always_visible, [] as [String; 0]);
 }
 
 // ---------------------------------------------------------------------------

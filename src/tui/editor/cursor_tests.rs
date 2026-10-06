@@ -238,7 +238,7 @@ use super::{cursor_line_col, cursor_left, cursor_right, cursor_up, cursor_down, 
         let mut input = String::new();
         let mut pos = 0;
         cursor_backspace(&mut input, &mut pos);
-        assert!(input.is_empty());
+        assert_eq!(input, "");
         assert_eq!(pos, 0);
     }
 
@@ -277,7 +277,7 @@ use super::{cursor_line_col, cursor_left, cursor_right, cursor_up, cursor_down, 
         let mut input = String::new();
         let mut pos = 0;
         cursor_delete(&mut input, &mut pos);
-        assert!(input.is_empty());
+        assert_eq!(input, "");
     }
 
     // ---------------------------------------------------------------------------
