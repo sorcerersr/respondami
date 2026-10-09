@@ -261,6 +261,14 @@ pub struct Config {
     pub rtk: RtkConfig,
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Whether the model supports vision (images). When false, the `read` tool
+    /// returns a text note instead of an image attachment. Default true.
+    #[serde(default = "default_vision")]
+    pub vision: bool,
+}
+
+fn default_vision() -> bool {
+    true
 }
 
 fn default_compaction_enabled() -> bool {
@@ -294,6 +302,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             rtk: RtkConfig::default(),
             retry: RetryConfig::default(),
+            vision: default_vision(),
         }
     }
 }
@@ -338,7 +347,7 @@ impl Config {
         // Check if the raw JSON has newer sections (for migrate-on-load)
         let raw: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse config {}", path.display()))?;
-        let needs_migration = raw.get("ui").is_none() || raw.get("rtk").is_none();
+        let needs_migration = raw.get("ui").is_none() || raw.get("rtk").is_none() || raw.get("vision").is_none();
 
         let config: Self = serde_json::from_value(raw)
             .with_context(|| format!("Failed to parse config {}", path.display()))?;

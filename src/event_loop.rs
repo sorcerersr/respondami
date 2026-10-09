@@ -78,6 +78,28 @@ pub fn tick_activity_indicator(app: &mut App, theme: &Theme) {
     }
 }
 
+/// Extract a human-readable panic message from a `JoinError`.
+///
+/// Consumes the error and downcasts the panic payload to a `String` or
+/// `&'static str` (the two payload types `panic!` produces). Falls back to a
+/// generic message for non-string payloads or a cancelled (non-panicking)
+/// error.
+#[must_use]
+pub fn join_panic_message(error: tokio::task::JoinError) -> String {
+    match error.try_into_panic() {
+        Ok(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&'static str>()
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| "unknown panic payload".to_string()),
+        Err(_) => "task was cancelled".to_string(),
+    }
+}
+
 /// Poll a finished compaction task and apply the result.
 ///
 /// Handles the `JoinHandle` match, calls `apply_compaction`, and pushes the
@@ -137,8 +159,26 @@ pub async fn handle_compaction_result(
             }
             CompactionResult::Failed(format!("{e}"))
         }
-        Err(_) => {
-            app.add_system_message("Compaction task panicked.");
+        Err(e) if e.is_panic() => {
+            let detail = join_panic_message(e);
+            // Full detail (possibly multi-line) goes to the log; the TUI
+            // shows only the first line to keep the message compact.
+            tracing::error!("Compaction task panicked: {detail}");
+            let first_line = detail.lines().next().unwrap_or_default();
+            app.add_system_message(&format!("Compaction task panicked: {first_line}"));
+            if pinned_scroll_guard {
+                app.maybe_auto_scroll();
+            } else {
+                app.chat.auto_scroll = true;
+            }
+            CompactionResult::Panicked
+        }
+        Err(e) => {
+            // The task was cancelled (aborted) rather than panicked. This is
+            // a defensive fallback — user-initiated cancels are handled by the
+            // caller before it ever awaits the handle.
+            tracing::error!("Compaction task cancelled: {e}");
+            app.add_system_message("Compaction task cancelled.");
             if pinned_scroll_guard {
                 app.maybe_auto_scroll();
             } else {

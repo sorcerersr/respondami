@@ -189,10 +189,14 @@ impl Theme {
 
     /// Semantic header color for FilledHeaderBar-based tool call display.
     /// read=cyan, write=green, edit=orange, `bash=blue_bright`, error=red.
+    /// A user-cancelled call (Esc) is a warning, not a failure: orange.
     #[must_use]
-    pub fn tool_header_color(&self, tool_name: &str, has_error: bool) -> Color {
+    pub fn tool_header_color(&self, tool_name: &str, has_error: bool, cancelled: bool) -> Color {
         if has_error {
             return self.red;
+        }
+        if cancelled {
+            return self.orange;
         }
         match tool_name {
             "read" => self.cyan,

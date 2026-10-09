@@ -6,7 +6,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use crate::event_loop::{CompactionPollResult, CompactionResult, poll_compaction_task, transition_to_idle};
+use crate::event_loop::{CompactionPollResult, CompactionResult, join_panic_message, poll_compaction_task, transition_to_idle};
 use crate::session::CompactionPlan;
 use crate::turn::PendingTurn;
 use crate::tui::{App, AppState, ChatMessage};
@@ -45,6 +45,40 @@ fn compaction_result_debug() {
     let debug = format!("{result:?}");
     assert!(debug.contains("Success"));
     assert!(debug.contains("100"));
+}
+
+// ---- join_panic_message tests ----
+
+#[tokio::test]
+async fn join_panic_message_string_payload() {
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        panic!("a string panic");
+    });
+    let err = handle.await.unwrap_err();
+    assert!(err.is_panic());
+    assert_eq!(join_panic_message(err), "a string panic");
+}
+
+#[tokio::test]
+async fn join_panic_message_static_str_payload() {
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        panic!("a static str panic");
+    });
+    let err = handle.await.unwrap_err();
+    assert!(err.is_panic());
+    assert_eq!(join_panic_message(err), "a static str panic");
+}
+
+#[tokio::test]
+async fn join_panic_message_non_string_falls_back_to_generic() {
+    // Panic with a non-string payload (a u32). Both downcasts fail, so the
+    // message falls back to the generic "unknown panic payload" string.
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        std::panic::panic_any(42u32);
+    });
+    let err = handle.await.unwrap_err();
+    assert!(err.is_panic());
+    assert_eq!(join_panic_message(err), "unknown panic payload");
 }
 
 // ---- transition_to_idle tests ----
@@ -201,9 +235,51 @@ async fn poll_panicked_task_returns_idle() {
 
     assert!(matches!(result, CompactionPollResult::Idle));
     assert_eq!(app.modal.state, AppState::Idle);
+    // An aborted (non-panicking) task is reported as cancelled.
     assert!(matches!(
         app.chat.chat_messages.last(),
-        Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked."
+        Some(ChatMessage::System(msg)) if msg.content == "Compaction task cancelled."
+    ));
+}
+
+#[tokio::test]
+async fn poll_panicking_task_surfaces_panic_message() {
+    let mut app = make_poll_app();
+    // A task that panics with a String payload — the JoinError carries the
+    // message, which handle_compaction_result must surface in the TUI.
+    app.compaction_task = Some(tokio::spawn(async move {
+        panic!("byte index 4096 is not a char boundary");
+    }));
+    yield_to_runtime().await;
+    let mut terminal = make_poll_terminal();
+
+    let result = poll_compaction_task(&mut app, &mut terminal).await;
+
+    assert!(matches!(result, CompactionPollResult::Idle));
+    assert_eq!(app.modal.state, AppState::Idle);
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked: byte index 4096 is not a char boundary"
+    ));
+}
+
+#[tokio::test]
+async fn poll_panicking_task_shows_first_line_only() {
+    let mut app = make_poll_app();
+    // A multi-line panic payload: the TUI shows only the first line while the
+    // full detail goes to the log.
+    app.compaction_task = Some(tokio::spawn(async move {
+        panic!("first line\nsecond line\nthird line");
+    }));
+    yield_to_runtime().await;
+    let mut terminal = make_poll_terminal();
+
+    let result = poll_compaction_task(&mut app, &mut terminal).await;
+
+    assert!(matches!(result, CompactionPollResult::Idle));
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked: first line"
     ));
 }
 

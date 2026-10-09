@@ -22,6 +22,7 @@ mod sse_tests;
 
 use std::io;
 
+use crate::image::ImageContent;
 use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -33,7 +34,12 @@ pub enum Message {
     #[serde(rename = "system")]
     System { content: String },
     #[serde(rename = "user")]
-    User { content: String },
+    User {
+        content: String,
+        /// Attached images (vision support). Empty for text-only messages.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageContent>,
+    },
     #[serde(rename = "assistant")]
     Assistant {
         content: String,
@@ -55,7 +61,7 @@ impl Message {
     #[must_use]
     pub fn content(&self) -> &str {
         match self {
-            Message::System { content } | Message::User { content } | Message::Assistant { content, .. } => content,
+            Message::System { content } | Message::User { content, .. } | Message::Assistant { content, .. } => content,
             Message::Tool { result, .. } => result,
         }
     }
@@ -259,6 +265,9 @@ fn default_url() -> String {
 // ---------------------------------------------------------------------------
 
 /// Convert `AgentMessage` (session domain) to `Message` (provider domain).
+///
+/// Single-message conversion. For the full conversation (including image
+/// re-injection), use [`agent_messages_to_provider_messages`].
 #[must_use]
 pub fn agent_message_to_message(msg: &AgentMessage) -> Message {
     match msg {
@@ -267,6 +276,7 @@ pub fn agent_message_to_message(msg: &AgentMessage) -> Message {
         },
         AgentMessage::User { content } => Message::User {
             content: content.clone(),
+            images: Vec::new(),
         },
         AgentMessage::Assistant { content: blocks, .. } => {
             let content = msg.text();
@@ -295,6 +305,41 @@ pub fn agent_message_to_message(msg: &AgentMessage) -> Message {
             result: result.clone(),
         },
     }
+}
+
+/// Convert a full `AgentMessage` conversation to provider `Message`s, applying
+/// image re-injection.
+///
+/// `OpenAI` completions can't carry images in tool results, so a tool message
+/// that returned images is followed by a synthetic `Message::User` carrying the
+/// images. This is pure and deterministic: the same `AgentMessage` list always
+/// produces the same `Message` list, so the wire prefix stays byte-stable for
+/// provider prefix caching.
+#[must_use]
+pub fn agent_messages_to_provider_messages(messages: &[AgentMessage]) -> Vec<Message> {
+    let mut result = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if let AgentMessage::Tool {
+            tool_call_id,
+            result: tool_result,
+            images,
+            ..
+        } = msg
+            && !images.is_empty()
+        {
+            result.push(Message::Tool {
+                tool_call_id: tool_call_id.clone(),
+                result: tool_result.clone(),
+            });
+            result.push(Message::User {
+                content: String::new(),
+                images: images.clone(),
+            });
+            continue;
+        }
+        result.push(agent_message_to_message(msg));
+    }
+    result
 }
 
 /// Accumulate a `ToolCallDelta` into a `PartialToolCall`.

@@ -4,7 +4,7 @@
 //! per-file serialization queues to prevent concurrent write conflicts.
 //! Supports cooperative cancellation via `CancelGuard`.
 
-use super::{CancelGuard, ToolDefinition, ToolHandler};
+use super::{CancelGuard, ToolDefinition, ToolHandler, ToolOutput};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -45,7 +45,7 @@ impl ToolHandler for WriteTool {
         cwd: &Path,
         _output_tx: Option<&mpsc::Sender<String>>,
         cancel: &CancelGuard,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ToolOutput> {
         let path_str = match args.get("path").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => {
@@ -84,6 +84,6 @@ impl ToolHandler for WriteTool {
         })
         .await??;
 
-        Ok(format!("Successfully wrote {size} bytes to {path_str}"))
+        Ok(ToolOutput::text(format!("Successfully wrote {size} bytes to {path_str}")))
     }
 }

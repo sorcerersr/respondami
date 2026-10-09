@@ -20,7 +20,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn create_session_returns_uuid() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        let id = manager.create_session("llama3.2".to_string(), 32768, "/home/user".to_string());
+        let id = manager.create_session("llama3.2".to_string(), 32768, "/home/user".to_string()).unwrap();
         assert_ne!(id, "");
         assert!(manager.has_active_session());
         assert_eq!(manager.session_id(), Some(id.as_str()));
@@ -30,7 +30,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn create_session_creates_file() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        let id = manager.create_session("llama3.2".to_string(), 32768, "/home/user".to_string());
+        let id = manager.create_session("llama3.2".to_string(), 32768, "/home/user".to_string()).unwrap();
         let path = manager.sessions_dir().join(format!("{id}.jsonl"));
         assert!(path.exists());
     }
@@ -39,7 +39,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn create_session_sets_model() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("gpt-4".to_string(), 8192, "/".to_string());
+        manager.create_session("gpt-4".to_string(), 8192, "/".to_string()).unwrap();
         assert_eq!(manager.model_name(), Some("gpt-4".to_string()));
     }
 
@@ -51,7 +51,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn append_message_adds_entry() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         let id = manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
         assert_ne!(id, "");
         assert_eq!(manager.entries().len(), 2); // header + message
@@ -61,7 +61,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn append_message_writes_to_disk() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        let session_id = manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        let session_id = manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
 
         let path = manager.sessions_dir().join(format!("{session_id}.jsonl"));
@@ -79,7 +79,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
         let dir = temp_dir();
         // Create a session
         let mut manager1 = SessionStore::new(&dir);
-        let id = manager1.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        let id = manager1.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         manager1.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
         manager1.append_message(None, AgentMessage::assistant("hi".to_string(), String::new(), Vec::new(), None)).unwrap();
 
@@ -95,7 +95,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn load_session_skips_empty_lines() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        let id = manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        let id = manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         // Add empty lines to the file
         let path = manager.sessions_dir().join(format!("{id}.jsonl"));
@@ -116,7 +116,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn build_context_skips_header() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
         manager.append_message(None, AgentMessage::assistant("hi".to_string(), String::new(), Vec::new(), None)).unwrap();
 
@@ -128,7 +128,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn build_context_injects_compaction_summary() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         // Add a compaction entry
         let compaction = SessionEntry::new_compaction(
@@ -158,7 +158,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn last_entry_id_returns_last() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         assert!(manager.last_entry_id().is_some());
 
         manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
@@ -181,7 +181,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn total_usage_sums_assistant_usage_separately() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         // Add assistant message with usage
         let msg = AgentMessage::assistant(
@@ -201,7 +201,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn total_usage_ignores_non_assistant() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
 
         let (input, output) = manager.total_usage();
@@ -225,7 +225,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn last_request_usage_returns_most_recent_assistant() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         manager
             .append_message(
@@ -258,7 +258,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn last_request_usage_skips_assistant_without_usage() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         manager
             .append_message(
@@ -295,7 +295,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn total_token_rate_sums_entries() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         manager.save_token_rate(TokenRateEntry::new(100, 5.0));
         manager.save_token_rate(TokenRateEntry::new(200, 10.0));
@@ -309,7 +309,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn total_token_rate_empty() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
         let (tokens, seconds) = manager.total_token_rate();
         assert_eq!(tokens, 0);
@@ -324,7 +324,7 @@ use super::{SessionStore, SessionEntry, AgentMessage, TokenRateEntry};
     fn estimate_token_count_positive() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
-        manager.create_session("llama3.2".to_string(), 32768, "/".to_string());
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         manager.append_message(None, AgentMessage::user("hello world this is a test".to_string())).unwrap();
 
         let count = manager.estimate_token_count();

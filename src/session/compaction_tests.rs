@@ -16,6 +16,7 @@ use super::*;
                 tool_name: "test".to_string(),
                 tool_arguments: serde_json::json!({}),
                 result: content.to_string(),
+                images: Vec::new(),
             },
             _ => panic!("unknown role: {role}"),
         };
@@ -400,4 +401,83 @@ use super::*;
             .count();
         assert_eq!(kept_at_4, 3);
         assert!(kept_at_4 < CompactionSettings::MIN_KEEP_MESSAGES);
+    }
+
+    // ---------------------------------------------------------------------------
+    // serialize_for_summary
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn serialize_for_summary_truncates_tool_result_at_char_boundary() {
+        // Regression: `§` (U+00A7, 2 bytes) straddles byte 4096 (bytes
+        // 4095..4097). A raw `&result[..4096]` panics with
+        // "byte index 4096 is not a char boundary". The fix floors the
+        // slice to a char boundary, dropping the multi-byte char whole.
+        let mut result = "a".repeat(4095);
+        result.push('§');
+        result.push_str("rest of the tool output");
+        assert_eq!(result.len(), 4120);
+
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry(&result, "tool"),
+        ];
+
+        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+
+        // The truncated content is the first 4095 bytes (the `§` is dropped
+        // whole because 4096 is not a char boundary).
+        let expected_prefix = format!("[Tool Result] {}", "a".repeat(4095));
+        assert!(text.starts_with(&expected_prefix), "should keep the 4095 ASCII bytes");
+        assert!(text.ends_with("... (truncated, 4120 bytes total)"));
+        // The multi-byte char must not leak into the truncated output.
+        assert!(!text.contains('§'));
+    }
+
+    #[test]
+    fn serialize_for_summary_truncates_tool_result_on_exact_boundary() {
+        // When 4096 lands exactly on a char boundary, the full 4096 bytes are
+        // kept (no char is dropped) and the label reports the byte total.
+        let result = "b".repeat(4100);
+
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry(&result, "tool"),
+        ];
+
+        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+
+        let expected_prefix = format!("[Tool Result] {}", "b".repeat(4096));
+        assert!(text.starts_with(&expected_prefix), "exact boundary keeps all 4096 bytes");
+        assert!(text.ends_with("... (truncated, 4100 bytes total)"));
+    }
+
+    #[test]
+    fn serialize_for_summary_keeps_short_tool_result() {
+        // A tool result under 4096 bytes is emitted verbatim, no truncation.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry("short output", "tool"),
+        ];
+
+        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        assert_eq!(text, "[Tool Result] short output");
     }

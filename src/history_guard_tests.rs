@@ -2,7 +2,18 @@
 //! prefix stability.
 
 use crate::history_guard::{HistoryGuard, MessageDigest, message_digest};
+use crate::image::ImageContent;
 use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
+
+fn image_tool_result(id: &str, result: &str) -> AgentMessage {
+    let img = ImageContent {
+        data: "aW1hZ2U=".to_string(),
+        mime_type: "image/png".to_string(),
+        width: 100,
+        height: 50,
+    };
+    AgentMessage::tool(id.to_string(), "read".to_string(), serde_json::json!({}), result.to_string(), vec![img])
+}
 
 fn assistant_with(text: &str, usage: bool) -> AgentMessage {
     AgentMessage::assistant_with_blocks(
@@ -24,7 +35,7 @@ fn system(content: &str) -> AgentMessage {
 }
 
 fn tool_result(id: &str, result: &str) -> AgentMessage {
-    AgentMessage::tool(id.to_string(), "read".to_string(), serde_json::json!({}), result.to_string())
+    AgentMessage::tool(id.to_string(), "read".to_string(), serde_json::json!({}), result.to_string(), Vec::new())
 }
 
 fn digests(msgs: &[AgentMessage]) -> Vec<Option<MessageDigest>> {
@@ -40,6 +51,30 @@ fn digest_identical_messages_match() {
     let a = user("hello");
     let b = user("hello");
     assert_eq!(message_digest(&a), message_digest(&b));
+}
+
+#[test]
+fn digest_tool_with_images_is_stable() {
+    // The base64 payload is frozen at ingestion, so a tool message carrying an
+    // image must produce an identical digest before and after a JSONL rebuild
+    // (the byte-prefix that vLLM prefix caching depends on).
+    let a = image_tool_result("t1", "Image: x (100x50, image/png)");
+    let wire = serde_json::to_value(&a).unwrap();
+    let rebuilt: AgentMessage = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        message_digest(&a),
+        message_digest(&rebuilt),
+        "image tool message must be byte-stable across persistence"
+    );
+}
+
+#[test]
+fn digest_tool_with_images_differs_from_text_only() {
+    // A tool message with an image must digest differently from the same
+    // message without the image (the image is part of the wire bytes).
+    let with_img = image_tool_result("t1", "Image: x");
+    let without_img = tool_result("t1", "Image: x");
+    assert_ne!(message_digest(&with_img), message_digest(&without_img));
 }
 
 #[test]

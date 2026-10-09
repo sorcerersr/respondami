@@ -12,13 +12,15 @@ pub struct BashToolCall {
     pub output: String,
     pub exit_code: Option<i32>,
     pub has_error: bool,
+    /// User-initiated cancellation (Esc) — header shows `⚠ cancelled`.
+    pub cancelled: bool,
     pub rtk_original: Option<String>,
     pub expanded: bool,
 }
 
 impl BashToolCall {
     #[must_use]
-    pub fn from_args(result: &str, has_error: bool, tool_args: Option<&serde_json::Value>, rtk_original: Option<String>, expanded: bool) -> Self {
+    pub fn from_args(result: &str, has_error: bool, cancelled: bool, tool_args: Option<&serde_json::Value>, rtk_original: Option<String>, expanded: bool) -> Self {
         let command = tool_args
             .and_then(|a| a.get("command"))
             .and_then(|v| v.as_str())
@@ -30,6 +32,7 @@ impl BashToolCall {
             output: result.to_string(),
             exit_code: None,
             has_error,
+            cancelled,
             rtk_original,
             expanded,
         }

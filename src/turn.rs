@@ -308,7 +308,7 @@ pub async fn run_turn_with_input(
             app.config.model_name.clone(),
             app.config.context_window,
             app.config.cwd.to_string_lossy().to_string(),
-        );
+        )?;
         // Fresh session — the history guard must not compare against the
         // previous session's baseline.
         app.session.reset_history_guard();

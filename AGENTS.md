@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **166 `.rs` files**, ~33.3K lines total (23.6K production, 9.6K tests)
+- **168 `.rs` files**, ~34.1K lines total (24.4K production, 9.7K tests)
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (993 total)
+cargo test --workspace                         # all tests (1018 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **993 tests** (775 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1056 tests** (838 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -93,6 +93,15 @@ cargo test --workspace                       # all tests pass
 - The synthetic `hook_instruction` message pair is sent to the LLM but never persisted; it gets `None` digests so the guard skips it.
 - Reset the guard baseline after legitimate rewrites: new session, session resume, and compaction (`SessionState::reset_history_guard`).
 - Streaming `ContentBlock`s are filtered by `finalize_tool_calls` (provider/mod.rs) before use — empty id/name placeholders and unparseable `arguments` JSON are dropped so they can't leak into persisted or resent content.
+
+### Image / Vision Support
+
+- The `read` tool is the only image ingestion path. It sniffs the MIME from magic bytes (never the extension), rejects animated GIFs (frame count via `0x2C` bytes), resizes to ≤2000px (Lanczos3, only when a dimension exceeds), re-encodes (JPEG→JPEG; PNG/GIF/WebP→PNG), caps at 4.5 MB, then base64-encodes into an `ImageContent` (`src/image.rs`).
+- The base64 is frozen at ingestion and stored inline in the JSONL. Re-injection at the wire is pure/deterministic (`agent_messages_to_provider_messages`), so the byte-prefix stays stable for vLLM prefix caching. `HistoryGuard` needs no change — the digest already covers the stable base64.
+- OpenAI completions can't carry images in tool results, so a tool message with images is followed by a synthetic `Message::User { content: "", images }` at the wire only (never persisted). The `read` tool card shows a text note with dimensions; no new TUI message type.
+- The `vision: bool` config (default `true`) gates in the agent loop (`apply_vision_gate`), not the tool — the tool stays config-agnostic. When off, image attachments are replaced with a text note so the model is never sent images it can't see.
+- `ToolHandler::execute` / `ToolRegistry::execute` return `anyhow::Result<ToolOutput>` where `ToolOutput { content, images }` (was `Result<String>`). Only `read` populates `images`.
+- `estimate_image_tokens(w,h) = 1600 + (w·h / 1024²) × 448` on post-resize dimensions; used in `token_estimation.rs` and the compaction fallback. Provider `prompt_tokens` corrects the running total.
 
 ### Scroll Model
 
@@ -110,6 +119,14 @@ cargo test --workspace                       # all tests pass
 - Multi-tool-call responses must save `SaveAssistantMessage` + `SaveToolResult` per tool call to maintain `assistant→tool→assistant→tool` alternation pattern.
 - First tool call gets full content blocks (text, thinking, tool call). Subsequent ones get just the tool call block.
 - Without per-call saves, JSONL has consecutive `tool→tool` messages, corrupting context rebuild.
+
+### Tool Cancellation (Esc)
+
+- `CancelGuard` is created per tool call in `src/agent/mod.rs`; a `tokio::spawn` watcher task bridges the watch channel → `guard.cancel()`. The watcher is aborted after the tool returns.
+- `cancelled` is computed as `has_error && tool_cancel.is_cancelled()` — a tool error that coincides with a set guard is a user-initiated cancellation.
+- The bash tool spawns the child with `setpgid(0,0)` in `pre_exec` so the whole process group (including grandchildren) can be SIGKILLed at once. `kill_process_group()` is async (reaps the child via `wait()`).
+- `cancelled` is not persisted (no JSONL schema change); reloaded cards show the result text without the `⚠ cancelled` marker.
+- Header color: `has_error` takes precedence over `cancelled` (red > orange).
 
 ### Compaction Pattern
 
@@ -153,6 +170,7 @@ cargo test --workspace                       # all tests pass
 | `src/config.rs`          | Config loading from `~/.config/respondami/config.yaml`                 |
 | `src/commands.rs`        | Command palette commands and descriptions                              |
 | `src/history_guard.rs`   | Per-message digests + append-only prefix guard (vLLM cache stability)  |
+| `src/image.rs`           | Image normalization: `ImageContent`, `process_image`, MIME sniff, token estimate |
 
 ### Provider Layer
 
@@ -289,7 +307,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (775 tests)
+### Root Crate Tests (838 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -301,7 +319,8 @@ cargo test --workspace                       # all tests pass
 | `src/config_tests.rs`                         | Config loading and validation                           |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
 | `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `poll_compaction_task` (not finished / idle / pending-turn launch) |
-| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip |
+| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability |
+| `src/image_tests.rs`                          | MIME sniff, process_image (png/jpeg/gif/webp), animated-GIF reject, resize, token estimate |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
 | `src/key_handler/layers/input_tests.rs`       | Input layer key handling                                |
@@ -319,7 +338,8 @@ cargo test --workspace                       # all tests pass
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
 | `src/sse_debug_tests.rs`                      | SSE debug utilities                                     |
 | `src/tools/activate_skill_tests.rs`           | activate_skill tool                                     |
-| `src/tools/bash_tests.rs`                     | Bash tool execution, truncation                         |
+| `src/tools/mod_tests.rs`                  | CancelGuard (new/clones/cancel propagation)   |
+| `src/tools/bash_tests.rs`                     | Bash tool execution, truncation, cancellation (pre-cancelled, mid-execution, success) |
 | `src/tools/edit_diff_tests.rs`                | Diff generation for edit tool                           |
 | `src/tools/file_queue_tests.rs`               | File queue operations                                   |
 | `src/tools/read_tests.rs`                     | Read tool with offset/limit                             |

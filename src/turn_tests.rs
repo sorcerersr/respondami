@@ -189,7 +189,7 @@ fn rollback_pending_turn_restores_pre_turn_state() {
     app.add_system_message("Context approaching limit. Compacting before sending...");
     app.session
         .session_store
-        .create_session("model".to_string(), 32768, ".".to_string());
+        .create_session("model".to_string(), 32768, ".".to_string()).unwrap();
     app.active_skills = HashSet::from(["refine".to_string()]);
     app.editor.input_buffer = "later typing".to_string();
     app.editor.cursor_pos = 0;
@@ -222,7 +222,7 @@ fn rollback_pending_turn_keeps_existing_session_when_not_created_by_turn() {
     // must NOT discard it.
     app.session
         .session_store
-        .create_session("model".to_string(), 32768, ".".to_string());
+        .create_session("model".to_string(), 32768, ".".to_string()).unwrap();
     let session_id = app
         .session
         .session_store

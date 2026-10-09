@@ -186,27 +186,42 @@ impl HeightAware for ToolCallMessage {
         }
 
         // Non-pending variants
-        let (content_lines, has_error, expanded, meta) = match &self.variant {
+        let (content_lines, has_error, cancelled, expanded, meta) = match &self.variant {
             ToolCallVariant::Read(msg) => (
                 msg.content_lines(),
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
                 None,
             ),
             ToolCallVariant::Write(msg) => (
                 msg.content_lines(),
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
                 Some(format!("({} bytes)", msg.content.len())),
             ),
             ToolCallVariant::Edit(msg) => (
                 msg.content_lines(),
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
                 Some(format!("({} edit(s))", msg.edits.len())),
             ),
-            ToolCallVariant::Bash(msg) => (msg.content_lines(), msg.has_error, msg.is_expanded(), None),
-            ToolCallVariant::Unknown(msg) => (msg.content_lines(), msg.has_error, msg.is_expanded(), None),
+            ToolCallVariant::Bash(msg) => (
+                msg.content_lines(),
+                msg.has_error,
+                msg.cancelled,
+                msg.is_expanded(),
+                None,
+            ),
+            ToolCallVariant::Unknown(msg) => (
+                msg.content_lines(),
+                msg.has_error,
+                msg.cancelled,
+                msg.is_expanded(),
+                None,
+            ),
             ToolCallVariant::Pending { .. } => unreachable!(),
         };
 
@@ -215,7 +230,9 @@ impl HeightAware for ToolCallMessage {
         let collapsed = content.is_none();
         let content_lines_for_height = content.unwrap_or_default();
 
-        let widget = FilledHeaderBar::new("tool")
+        let header_text = if cancelled { "⚠ cancelled".to_string() } else { "tool".to_string() };
+
+        let widget = FilledHeaderBar::new(&header_text)
             .content(content_lines_for_height)
             .collapsed(collapsed);
         widget.height(width)
@@ -250,8 +267,8 @@ impl ToolCallMessage {
             let header_text = format!("{tool_name}: {target}");
             let content_lines = build_pending_content_lines(output, theme);
             let widget = FilledHeaderBar::new(&header_text)
-                .header_color(theme.tool_header_color(tool_name, false))
-                .border_color(theme.tool_header_color(tool_name, false))
+                .header_color(theme.tool_header_color(tool_name, false, false))
+                .border_color(theme.tool_header_color(tool_name, false, false))
                 .content(content_lines)
                 .content_bg(theme.bg)
                 .content_fg(theme.text)
@@ -262,12 +279,13 @@ impl ToolCallMessage {
         }
 
         // Non-pending variants
-        let (tool_name, target, meta, has_error, _expanded) = match &self.variant {
+        let (tool_name, target, meta, has_error, cancelled, _expanded) = match &self.variant {
             ToolCallVariant::Read(msg) => (
                 "read",
                 msg.path.clone(),
                 None,
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
             ),
             ToolCallVariant::Write(msg) => (
@@ -275,6 +293,7 @@ impl ToolCallMessage {
                 msg.path.clone(),
                 Some(format!("({} bytes)", msg.content.len())),
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
             ),
             ToolCallVariant::Edit(msg) => (
@@ -282,6 +301,7 @@ impl ToolCallMessage {
                 msg.path.clone(),
                 Some(format!("({} edit(s))", msg.edits.len())),
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
             ),
             ToolCallVariant::Bash(msg) => {
@@ -297,13 +317,14 @@ impl ToolCallMessage {
                 } else {
                     (msg.command.clone(), None)
                 };
-                ("bash", target, meta, msg.has_error, msg.is_expanded())
+                ("bash", target, meta, msg.has_error, msg.cancelled, msg.is_expanded())
             }
             ToolCallVariant::Unknown(msg) => (
                 "unknown",
                 msg.tool_name.clone(),
                 None,
                 msg.has_error,
+                msg.cancelled,
                 msg.is_expanded(),
             ),
             ToolCallVariant::Pending { .. } => unreachable!(),
@@ -318,8 +339,12 @@ impl ToolCallMessage {
             ToolCallVariant::Pending { .. } => unreachable!(),
         };
 
-        let header_text = format!("{tool_name}: {target}");
-        let header_color = theme.tool_header_color(tool_name, has_error);
+        let header_text = if cancelled {
+            format!("⚠ cancelled: {tool_name}: {target}")
+        } else {
+            format!("{tool_name}: {target}")
+        };
+        let header_color = theme.tool_header_color(tool_name, has_error, cancelled);
 
         let content = build_content_lines(&content_lines, has_error, expanded, meta, theme);
         let collapsed = content.is_none();
@@ -362,19 +387,21 @@ pub fn build_tool_call_variant(
     tool_name: &str,
     result: &str,
     has_error: bool,
+    cancelled: bool,
     tool_args: Option<serde_json::Value>,
     rtk_original: Option<String>,
     expanded: bool,
 ) -> ToolCallVariant {
     match tool_name {
-        "read" => ToolCallVariant::Read(ReadToolCall::from_args(result, has_error, tool_args.as_ref(), expanded)),
-        "write" => ToolCallVariant::Write(WriteToolCall::from_args(result, has_error, tool_args.as_ref(), expanded)),
-        "edit" => ToolCallVariant::Edit(EditToolCall::from_args(result, has_error, tool_args.as_ref(), expanded)),
-        "bash" => ToolCallVariant::Bash(BashToolCall::from_args(result, has_error, tool_args.as_ref(), rtk_original, expanded)),
+        "read" => ToolCallVariant::Read(ReadToolCall::from_args(result, has_error, cancelled, tool_args.as_ref(), expanded)),
+        "write" => ToolCallVariant::Write(WriteToolCall::from_args(result, has_error, cancelled, tool_args.as_ref(), expanded)),
+        "edit" => ToolCallVariant::Edit(EditToolCall::from_args(result, has_error, cancelled, tool_args.as_ref(), expanded)),
+        "bash" => ToolCallVariant::Bash(BashToolCall::from_args(result, has_error, cancelled, tool_args.as_ref(), rtk_original, expanded)),
         _ => ToolCallVariant::Unknown(UnknownToolCall {
             tool_name: tool_name.to_string(),
             result: result.to_string(),
             has_error,
+            cancelled,
             expanded,
         }),
     }

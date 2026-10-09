@@ -198,9 +198,9 @@ pub async fn process_agent_events(
                 app.add_pending_tool_call(&tool_call_id, &tool_name, &tool_args);
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::ToolCallDone { tool_call_id, result, has_error, rtk_original })) => {
+            Ok(Some(AgentEvent::ToolCallDone { tool_call_id, result, has_error, cancelled, rtk_original })) => {
                 app.agent.tracker.pause_timing(); // Exclude tool exec time from streaming time
-                app.update_tool_call_result(&tool_call_id, &result, has_error, rtk_original);
+                app.update_tool_call_result(&tool_call_id, &result, has_error, cancelled, rtk_original);
                 app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolOutput(text))) => {
@@ -256,12 +256,12 @@ pub async fn process_agent_events(
                     }
                 }
             }
-            Ok(Some(AgentEvent::SaveToolResult { tool_call_id, tool_name, tool_args, result })) => {
+            Ok(Some(AgentEvent::SaveToolResult { tool_call_id, tool_name, tool_args, result, images })) => {
                 if app.session.session_store.has_active_session() {
                     let parent_id = app.session.session_store.last_entry_id();
                     if let Err(e) = app.session.session_store.append_message(
                         parent_id,
-                        crate::session::AgentMessage::tool(tool_call_id, tool_name, tool_args, result),
+                        crate::session::AgentMessage::tool(tool_call_id, tool_name, tool_args, result, images),
                     ) {
                         tracing::error!("Failed to save tool result: {}", e);
                     }

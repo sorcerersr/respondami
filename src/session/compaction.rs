@@ -207,11 +207,16 @@ impl CompactionEngine {
             }
         }
 
-        // Fallback: character estimates + system overhead
+        // Fallback: character estimates + system overhead + image tokens
         let mut total: u32 = 0;
         for entry in entries {
             if let SessionEntry::Message { message, .. } = entry {
                 total += CompactionSettings::estimate_tokens(message.content());
+                if let AgentMessage::Tool { images, .. } = message {
+                    for img in images {
+                        total = total.saturating_add(crate::image::estimate_image_tokens(img.width, img.height));
+                    }
+                }
             }
         }
         total.saturating_add(system_overhead)
@@ -262,7 +267,10 @@ impl CompactionEngine {
 
         let messages = vec![
             Message::System { content: system_prompt },
-            Message::User { content: user_prompt.to_string() },
+            Message::User {
+                content: user_prompt.to_string(),
+                images: Vec::new(),
+            },
         ];
 
         let max_tokens = std::cmp::min(
@@ -461,7 +469,11 @@ impl CompactionSettings {
                     }
                     AgentMessage::Tool { result, .. } => {
                         let truncated = if result.len() > 4096 {
-                            format!("{}... (truncated, {} chars total)", &result[..4096], result.len())
+                            // 4096 is a byte index; floor to a char boundary so a
+                            // multi-byte char straddling it is dropped whole
+                            // (a raw `&result[..4096]` panics mid-char).
+                            let safe = result.floor_char_boundary(4096);
+                            format!("{}... (truncated, {} bytes total)", &result[..safe], result.len())
                         } else {
                             result.clone()
                         };

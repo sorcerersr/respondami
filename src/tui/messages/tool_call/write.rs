@@ -11,17 +11,20 @@ pub struct WriteToolCall {
     pub path: String,
     pub content: String,
     pub has_error: bool,
+    /// User-initiated cancellation (Esc) — header shows `⚠ cancelled`.
+    pub cancelled: bool,
     pub expanded: bool,
 }
 
 impl WriteToolCall {
     #[must_use]
-    pub fn from_args(_result: &str, has_error: bool, tool_args: Option<&serde_json::Value>, expanded: bool) -> Self {
+    pub fn from_args(_result: &str, has_error: bool, cancelled: bool, tool_args: Option<&serde_json::Value>, expanded: bool) -> Self {
         if has_error {
             return Self {
                 path: tool_args.and_then(|a| a.get("path").and_then(|v| v.as_str())).unwrap_or("unknown").to_string(),
                 content: String::new(),
                 has_error: true,
+                cancelled: false,
                 expanded,
             };
         }
@@ -33,7 +36,7 @@ impl WriteToolCall {
             .unwrap_or("")
             .to_string();
 
-        Self { path, content, has_error: false, expanded }
+        Self { path, content, has_error: false, cancelled, expanded }
     }
 }
 

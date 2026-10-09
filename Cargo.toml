@@ -16,6 +16,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 async-openai = { version = "0.42.0", features = ["chat-completion"] }
 async-trait = "0.1"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
@@ -23,6 +24,8 @@ dirs = "7"
 dashmap = "6"
 fastrand = "2"
 ignore = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+libc = "0.2"
 futures-util = "0.3"
 reqwest = { version = "0.13", features = ["json", "stream"], default-features = false }
 partial-json-fixer = "0.5"

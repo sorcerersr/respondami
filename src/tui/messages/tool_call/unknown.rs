@@ -11,6 +11,8 @@ pub struct UnknownToolCall {
     pub tool_name: String,
     pub result: String,
     pub has_error: bool,
+    /// User-initiated cancellation (Esc) — header shows `⚠ cancelled`.
+    pub cancelled: bool,
     pub expanded: bool,
 }
 

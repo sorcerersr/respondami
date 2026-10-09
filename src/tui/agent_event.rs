@@ -3,6 +3,7 @@
 //! Defines `AgentEvent` (messages from agent task to TUI loop), `PartialToolCall`
 //! (accumulated during streaming), `CompactionReason`, and `AbortReason`.
 
+use crate::image::ImageContent;
 use crate::session::{ContentBlock, Usage};
 
 /// A partial tool call being accumulated during streaming.
@@ -38,7 +39,10 @@ pub enum AgentEvent {
     /// Incremental output from a running tool call; append to pending message.
     ToolOutput(String),
     /// A tool call finished; update the pending message with results.
-    ToolCallDone { tool_call_id: String, result: String, has_error: bool, rtk_original: Option<String> },
+    /// `cancelled` marks a user-initiated cancellation (Esc) — displayed as a
+    /// neutral warning, not an error. It is not persisted (no JSONL schema
+    /// change); a reloaded card shows the result text without the marker.
+    ToolCallDone { tool_call_id: String, result: String, has_error: bool, cancelled: bool, rtk_original: Option<String> },
     /// Token usage from an LLM response.
     Usage(Usage),
     /// Compaction completed (display message).
@@ -54,6 +58,7 @@ pub enum AgentEvent {
         tool_name: String,
         tool_args: serde_json::Value,
         result: String,
+        images: Vec<ImageContent>,
     },
     /// Agent signals that compaction is needed.
     /// Main thread performs compaction and restarts the agent.
