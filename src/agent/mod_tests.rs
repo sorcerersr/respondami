@@ -29,6 +29,10 @@ fn vision_gate_disabled_drops_images_with_note() {
     assert!(images.is_empty(), "images must be dropped when vision is off");
     assert!(content.contains("Vision disabled"), "note must explain the drop: {content}");
     assert!(content.contains("1 image"), "note must state the count: {content}");
+    assert!(
+        content.contains("provider.vision: true"),
+        "note must point at the provider-level config key: {content}"
+    );
 }
 
 #[test]

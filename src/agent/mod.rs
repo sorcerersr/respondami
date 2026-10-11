@@ -692,7 +692,7 @@ pub async fn run_agent_with_snapshot(
 
             // Vision gate: drop image attachments when the model can't see them.
             let (final_result, tool_images) =
-                apply_vision_gate(config.vision, final_result, tool_images);
+                apply_vision_gate(config.provider.vision, final_result, tool_images);
 
             // Run PostToolUse hooks (only for successful tool calls).
             // Collect hook output as instructions for the LLM (injected as synthetic tool call).
@@ -941,7 +941,7 @@ pub(crate) fn apply_vision_gate(
         (
             format!(
                 "[Vision disabled: read {} image(s) but the model cannot see them. \
-                 Set `vision: true` in config to enable image support.]",
+                 Set `provider.vision: true` in config to enable image support.]",
                 images.len()
             ),
             Vec::new(),
