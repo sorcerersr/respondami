@@ -10,8 +10,10 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::config::Config;
 use crate::session::CompactionPlan;
+use crate::skills::{Skill, SkillSource};
 use crate::turn::{rollback_pending_turn, run_turn_with_input, start_turn, PendingTurn};
 use crate::tui::{App, AppState, ChatMessage};
+use tempfile::TempDir;
 
 /// Build a terminal that never queries the real terminal size.
 ///
@@ -170,6 +172,52 @@ async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
         .iter()
         .any(|m| matches!(m, ChatMessage::User(u) if u.content == display)));
 
+    if let Some(task) = app.compaction_task.take() {
+        task.abort();
+    }
+}
+
+// ---- /skillname activation persistence ----
+
+#[tokio::test]
+async fn skill_activation_persists_to_session_header() {
+    let tmp = TempDir::new().unwrap();
+    let skill_dir = tmp.path().join("my-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let skill_path = skill_dir.join("SKILL.md");
+    std::fs::write(&skill_path, "---\nname: my-skill\ndescription: test\n---\nSkill body.").unwrap();
+
+    let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.config.skills = vec![Skill {
+        name: "my-skill".to_string(),
+        description: "test".to_string(),
+        license: None,
+        metadata: std::collections::HashMap::new(),
+        file_path: skill_path,
+        base_dir: skill_dir,
+        source: SkillSource::Global,
+    }];
+    // Existing session: the header must receive the activation.
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, ".".to_string())
+        .unwrap();
+
+    app.editor.input_buffer = "/my-skill".to_string();
+    let mut terminal = make_terminal();
+
+    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+
+    assert!(!quit);
+    assert!(app.active_skills.contains("my-skill"));
+    assert!(app
+        .session
+        .session_store
+        .get_activated_skills()
+        .contains(&"my-skill".to_string()));
+
+    // The tiny context window deferred the turn to background compaction;
+    // the header-only session makes it a no-op. Abort to stay hermetic.
     if let Some(task) = app.compaction_task.take() {
         task.abort();
     }

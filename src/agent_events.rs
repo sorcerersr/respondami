@@ -76,10 +76,7 @@ pub async fn process_agent_events(
             let handle = compaction.handle;
 
             match crate::event_loop::handle_compaction_result(app, handle, true).await {
-                crate::event_loop::CompactionResult::Success {
-                    tokens_after: ta,
-                    ..
-                } => {
+                crate::event_loop::CompactionResult::Success { .. } => {
                     // Restart agent after compaction (overflow recovery or threshold auto-continue).
                     if let Some(user_msg) = retry_user_message {
                         let system_msg = match reason {
@@ -89,14 +86,6 @@ pub async fn process_agent_events(
                         app.add_system_message(system_msg);
                         app.maybe_auto_scroll();
 
-                        // Reset tracking for the retry.
-                        // Use post-compaction token estimate instead of zero to avoid
-                        // 0% flicker in the status bar during the gap before first Usage event.
-                        app.session.current_request_usage = crate::session::RequestTokenUsage {
-                            input_tokens: ta,
-                            output_tokens: 0,
-                            estimated: false,
-                        };
                         app.start_streaming(&user_msg);
                         app.agent.tracker.start();
 

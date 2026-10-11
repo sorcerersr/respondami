@@ -192,6 +192,15 @@ impl Provider {
         Provider { inner: self.inner.clone_box() }
     }
 
+    /// Construct a provider from an arbitrary trait implementation.
+    ///
+    /// Used by tests to inject mock providers (the `inner` field is private).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_trait(inner: Box<dyn ProviderTrait>) -> Self {
+        Self { inner }
+    }
+
     /// Stream a chat completion, sending normalized chunks through `tx`.
     ///
     /// # Errors

@@ -172,8 +172,10 @@ async fn handle_skill_activation(
         // deferred turn restores the exact pre-turn set.
         let pre_turn_skills = app.active_skills.clone();
 
-        // Activate the skill
+        // Activate the skill (in-memory set + session header, so the header
+        // stays the source of truth for compaction re-injection).
         app.activate_skill(name);
+        app.session.session_store.add_activated_skill(name);
 
         // Delegate to run_turn_with_input
         // Display only the original user input (e.g. "/refine some prompt") in chat.
@@ -312,6 +314,13 @@ pub async fn run_turn_with_input(
         // Fresh session — the history guard must not compare against the
         // previous session's baseline.
         app.session.reset_history_guard();
+        // A skill activated before the session existed (e.g. a `/skillname`
+        // first message) was not persisted by `add_activated_skill` (no
+        // header yet). Sync the header so it stays the source of truth for
+        // compaction re-injection.
+        for name in &app.active_skills {
+            app.session.session_store.add_activated_skill(name);
+        }
     }
 
     // Pre-prompt compaction check: if context is near the threshold, compact before sending

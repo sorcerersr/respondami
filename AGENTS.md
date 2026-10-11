@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1056 tests** (838 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1066 tests** (848 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -99,7 +99,7 @@ cargo test --workspace                       # all tests pass
 - The `read` tool is the only image ingestion path. It sniffs the MIME from magic bytes (never the extension), rejects animated GIFs (frame count via `0x2C` bytes), resizes to ≤2000px (Lanczos3, only when a dimension exceeds), re-encodes (JPEG→JPEG; PNG/GIF/WebP→PNG), caps at 4.5 MB, then base64-encodes into an `ImageContent` (`src/image.rs`).
 - The base64 is frozen at ingestion and stored inline in the JSONL. Re-injection at the wire is pure/deterministic (`agent_messages_to_provider_messages`), so the byte-prefix stays stable for vLLM prefix caching. `HistoryGuard` needs no change — the digest already covers the stable base64.
 - OpenAI completions can't carry images in tool results, so a tool message with images is followed by a synthetic `Message::User { content: "", images }` at the wire only (never persisted). The `read` tool card shows a text note with dimensions; no new TUI message type.
-- The `vision: bool` config (default `true`) gates in the agent loop (`apply_vision_gate`), not the tool — the tool stays config-agnostic. When off, image attachments are replaced with a text note so the model is never sent images it can't see.
+- The `provider.vision` config (default `true`) gates in the agent loop (`apply_vision_gate`), not the tool — the tool stays config-agnostic. When off, image attachments are replaced with a text note so the model is never sent images it can't see. It lives in the `provider` block (per-model); a legacy top-level `vision` key is ignored.
 - `ToolHandler::execute` / `ToolRegistry::execute` return `anyhow::Result<ToolOutput>` where `ToolOutput { content, images }` (was `Result<String>`). Only `read` populates `images`.
 - `estimate_image_tokens(w,h) = 1600 + (w·h / 1024²) × 448` on post-resize dimensions; used in `token_estimation.rs` and the compaction fallback. Provider `prompt_tokens` corrects the running total.
 
@@ -307,7 +307,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (838 tests)
+### Root Crate Tests (848 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -318,7 +318,7 @@ cargo test --workspace                       # all tests pass
 | `src/commands_tests.rs`                       | Command palette commands                                |
 | `src/config_tests.rs`                         | Config loading and validation                           |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
-| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `poll_compaction_task` (not finished / idle / pending-turn launch) |
+| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, `poll_compaction_task` (not finished / idle / pending-turn launch) |
 | `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability |
 | `src/image_tests.rs`                          | MIME sniff, process_image (png/jpeg/gif/webp), animated-GIF reject, resize, token estimate |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
@@ -332,7 +332,7 @@ cargo test --workspace                       # all tests pass
 | `src/provider/llamacpp_tests.rs`              | LlamaCpp provider, request building                     |
 | `src/provider/mod_tests.rs`                   | Provider trait, error classification, tool call parsing |
 | `src/provider/sse_tests.rs`                   | SSE parsing, cancellation                               |
-| `src/session/compaction_tests.rs`             | Compaction engine, summarization                        |
+| `src/session/compaction_tests.rs`             | Compaction engine, summarization, active-skill re-injection (`format_active_skills` + end-to-end) |
 | `src/session/entry_tests.rs`                  | Session entry serialization                             |
 | `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage      |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
@@ -362,7 +362,7 @@ cargo test --workspace                       # all tests pass
 | `src/tui/status_bar_tests.rs`                 | Status bar rendering                                    |
 | `src/tui/thinking_display_tests.rs`           | Thinking display toggle                                 |
 | `src/tui/tracker_tests.rs`                    | Token tracker display                                   |
-| `src/turn_tests.rs`                           | Pre-prompt deferral, in-progress guards, pending-turn rollback |
+| `src/turn_tests.rs`                           | Pre-prompt deferral, in-progress guards, pending-turn rollback, `/skillname` header persistence |
 
 ### Widget Crate Tests
 

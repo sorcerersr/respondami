@@ -128,6 +128,17 @@ pub async fn handle_compaction_result(
                     // outgoing prefix is legitimately different, so reset the
                     // history guard baseline (see `crate::history_guard`).
                     app.session.reset_history_guard();
+                    // Reset the context-usage percentage to the
+                    // post-compaction estimate so the status bar reflects the
+                    // rewrite immediately (avoids the 0% flicker and the
+                    // stuck pre-compaction value — `accumulate_token_usage`
+                    // never decreases). The next real Usage event corrects it
+                    // via the max+delta pattern.
+                    app.session.current_request_usage = crate::session::RequestTokenUsage {
+                        input_tokens: ta,
+                        output_tokens: 0,
+                        estimated: false,
+                    };
                     if pinned_scroll_guard {
                         app.maybe_auto_scroll();
                     } else {

@@ -6,8 +6,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use crate::event_loop::{CompactionPollResult, CompactionResult, join_panic_message, poll_compaction_task, transition_to_idle};
-use crate::session::CompactionPlan;
+use crate::event_loop::{CompactionPollResult, CompactionResult, handle_compaction_result, join_panic_message, poll_compaction_task, transition_to_idle};
+use crate::session::{CompactionPlan, RequestTokenUsage};
 use crate::turn::PendingTurn;
 use crate::tui::{App, AppState, ChatMessage};
 
@@ -281,6 +281,65 @@ async fn poll_panicking_task_shows_first_line_only() {
         app.chat.chat_messages.last(),
         Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked: first line"
     ));
+}
+
+// ---- handle_compaction_result usage-reset tests ----
+
+/// Seed a pre-compaction usage the status bar would otherwise keep showing
+/// (`accumulate_token_usage` never decreases, so a stale value sticks).
+fn seed_pre_compaction_usage(app: &mut App) {
+    app.session.current_request_usage = RequestTokenUsage {
+        input_tokens: 5000,
+        output_tokens: 300,
+        estimated: false,
+    };
+}
+
+#[tokio::test]
+async fn handle_compaction_result_success_resets_request_usage() {
+    let mut app = make_poll_app();
+    seed_pre_compaction_usage(&mut app);
+    let handle = tokio::spawn(async move {
+        Ok::<_, anyhow::Error>(noop_plan())
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Success { .. }));
+    // `noop_plan` is a no-op apply → tokens_after == tokens_before (1000).
+    assert_eq!(app.session.current_request_usage.input_tokens, 1000);
+    assert_eq!(app.session.current_request_usage.output_tokens, 0);
+    assert!(!app.session.current_request_usage.estimated);
+}
+
+#[tokio::test]
+async fn handle_compaction_result_failure_keeps_request_usage() {
+    let mut app = make_poll_app();
+    seed_pre_compaction_usage(&mut app);
+    let handle = tokio::spawn(async move {
+        Err::<CompactionPlan, anyhow::Error>(anyhow::anyhow!("provider down"))
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Failed(_)));
+    assert_eq!(app.session.current_request_usage.input_tokens, 5000);
+    assert_eq!(app.session.current_request_usage.output_tokens, 300);
+}
+
+#[tokio::test]
+async fn handle_compaction_result_panic_keeps_request_usage() {
+    let mut app = make_poll_app();
+    seed_pre_compaction_usage(&mut app);
+    let handle = tokio::spawn(async move {
+        panic!("compaction panic");
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Panicked));
+    assert_eq!(app.session.current_request_usage.input_tokens, 5000);
+    assert_eq!(app.session.current_request_usage.output_tokens, 300);
 }
 
 #[tokio::test]
