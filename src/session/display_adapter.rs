@@ -82,6 +82,7 @@ impl SessionDisplayAdapter {
                             tool_name,
                             result,
                             false, // tool call results from session are not errors
+                            false, // cancelled flag is not persisted (no JSONL schema change)
                             Some(tool_arguments.clone()),
                             None, // no RTK original in session
                             self.tool_output_expanded,

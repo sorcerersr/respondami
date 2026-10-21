@@ -67,7 +67,7 @@ use tempfile::TempDir;
         let entries = vec![mk_file("src/main.rs"), mk_file("src/lib.rs"), mk_file("Cargo.toml")];
         let results = FileDiscovery::fuzzy_match(&entries, "mnr", 5, true);
         // "mnr" fuzzy matches "main.rs" (m-a-i-n → m, n)
-        assert!(!results.is_empty());
+        assert_ne!(results, [] as [FileMatch; 0]);
         assert!(results.iter().any(|f| f.path.contains("main")));
     }
 
@@ -89,7 +89,7 @@ use tempfile::TempDir;
     fn fuzzy_match_no_results() {
         let entries = vec![mk_file("a.rs"), mk_file("b.txt")];
         let results = FileDiscovery::fuzzy_match(&entries, "xyz", 5, true);
-        assert!(results.is_empty());
+        assert_eq!(results, [] as [FileMatch; 0]);
     }
 
     #[test]
@@ -97,7 +97,7 @@ use tempfile::TempDir;
         let entries = vec![mk_file("main.rs"), mk_file("lib.rs"), mk_file("m.rs")];
         let results = FileDiscovery::fuzzy_match(&entries, "m", 5, true);
         // All match "m" but "m.rs" has consecutive bonus (exact single char)
-        assert!(!results.is_empty());
+        assert_ne!(results, [] as [FileMatch; 0]);
     }
 
     #[test]
@@ -335,7 +335,7 @@ use tempfile::TempDir;
         ];
         // Query "env" matches .env, but hidden filter removes it
         let results = FileDiscovery::fuzzy_match(&entries, "env", 100, false);
-        assert!(results.is_empty());
+        assert_eq!(results, [] as [FileMatch; 0]);
     }
 
     // ---------------------------------------------------------------------------

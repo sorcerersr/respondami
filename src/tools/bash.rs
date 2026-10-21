@@ -5,12 +5,19 @@
 //! characters before returning results to the LLM context. Supports cooperative
 //! cancellation via `CancelGuard`.
 
-use super::{CancelGuard, ToolDefinition, ToolHandler};
+use super::{CancelGuard, ToolDefinition, ToolHandler, ToolOutput};
 use async_trait::async_trait;
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::sync::mpsc;
+
+/// Polling interval for the cooperative cancellation check in the bash tool.
+///
+/// 100ms is short enough to feel instant to the user (the kill lands well under
+/// a second) while keeping the busy loop cheap. Changing this only affects how
+/// quickly Esc is observed, not correctness.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct BashTool;
 
@@ -49,7 +56,7 @@ impl ToolHandler for BashTool {
         cwd: &Path,
         output_tx: Option<&mpsc::Sender<String>>,
         cancel: &CancelGuard,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ToolOutput> {
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => {
@@ -68,24 +75,46 @@ impl ToolHandler for BashTool {
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
-        // Spawn the process with piped stdout/stderr
-        let mut child = match tokio::process::Command::new(&shell)
-            .arg("-c")
+        // Spawn the process with piped stdout/stderr. The child becomes the
+        // leader of a new process group (setpgid(0,0) in pre_exec) so the
+        // whole tree — including grandchildren like `sleep 30 &` — can be
+        // killed at once on cancel or timeout.
+        //
+        // pre_exec is unsafe: the closure runs in the child between fork and
+        // exec. It only calls setpgid (a single, async-signal-safe syscall
+        // that never allocates or locks), so it is safe here. A failure
+        // fails the spawn — a non-leader child can't be group-killed reliably.
+        let mut cmd = tokio::process::Command::new(&shell);
+        cmd.arg("-c")
             .arg(&command)
             .current_dir(cwd)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
+            .stderr(std::process::Stdio::piped());
+        // Safety: the closure only calls setpgid, an async-signal-safe syscall.
+        unsafe {
+            cmd.pre_exec(|| {
+                let rc = libc::setpgid(0, 0);
+                if rc == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        };
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 return Err(anyhow::anyhow!("Failed to execute command: {e}"));
             }
         };
 
+        // Group id = the child's pid (it is the group leader). Captured right
+        // after spawn; used by kill_process_group on cancel/timeout.
+        let pgid = child.id().map(|pid| pid as libc::pid_t);
+
         // Check cancel after spawn
         if cancel.is_cancelled() {
-            let _ = child.kill().await;
+            kill_process_group(&mut child, pgid).await;
             return Err(anyhow::anyhow!("Operation cancelled"));
         }
 
@@ -116,7 +145,7 @@ impl ToolHandler for BashTool {
                 if cancel.is_cancelled() {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
             }
         };
 
@@ -140,8 +169,8 @@ impl ToolHandler for BashTool {
                 Ok(Ok(status)) => status.code().unwrap_or(-1),
                 Ok(Err(_)) => -1,
                 Err(_) => {
-                    // Timed out — kill child and return collected output
-                    let _ = child.kill().await;
+                    // Timed out — kill the whole process group and return collected output
+                    kill_process_group(&mut child, pgid).await;
                     let sanitized = sanitize_output(&combined);
                     let output_text = if sanitized.len() > MAX_OUTPUT_BYTES {
                         let truncated = truncate_to_bytes(&sanitized, MAX_OUTPUT_BYTES);
@@ -181,13 +210,48 @@ impl ToolHandler for BashTool {
                 format!("{}\nExit code: {}", sanitized.trim_end(), exit_code)
             };
 
-            Ok(output_text)
+            Ok(ToolOutput::text(output_text))
         } else {
-            // Cancelled — kill child, discard partial output
-            let _ = child.kill().await;
+            // Cancelled — kill the whole process group, discard partial output
+            kill_process_group(&mut child, pgid).await;
             Err(anyhow::anyhow!("Operation cancelled"))
         }
     }
+}
+
+/// SIGKILL the child's entire process group (Unix).
+///
+/// The group id is the child's pid (the child is the group leader, set up in
+/// `pre_exec`). Killing the group reaches grandchildren that `child.kill()`
+/// would orphan. Falls back to killing the child alone if the group kill
+/// fails (e.g. the child already exited between check and kill).
+///
+/// # Safety
+///
+/// `libc::kill` is a raw syscall. It is only called with a pid we obtained
+/// from a child we spawned and `SIGKILL`, so no UB is possible; the unsafe
+/// block is confined to the single FFI call.
+#[cfg(unix)]
+async fn kill_process_group(child: &mut tokio::process::Child, pgid: Option<libc::pid_t>) {
+    if let Some(pgid) = pgid
+        && pgid > 0
+    {
+        // Safety: single FFI call with a pid we own and SIGKILL.
+        let ret = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        if ret == 0 {
+            // Reap the child so its resources are released.
+            let _ = child.wait().await;
+            return;
+        }
+    }
+    // Fallback: group kill failed (child already exited, non-Unix, etc.)
+    let _ = child.kill().await;
+}
+
+/// Non-Unix fallback: kill only the child (no process groups on Windows).
+#[cfg(not(unix))]
+async fn kill_process_group(child: &mut tokio::process::Child, _pgid: Option<u32>) {
+    let _ = child.kill().await;
 }
 
 /// Sanitize bash output for inclusion in LLM context.

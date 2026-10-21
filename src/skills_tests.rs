@@ -65,43 +65,43 @@ fn parse_frontmatter_empty_block() {
 
 #[test]
 fn validate_name_valid() {
-    assert!(validate_name("my-skill").is_empty());
-    assert!(validate_name("pdf").is_empty());
-    assert!(validate_name("skill-123").is_empty());
-    assert!(validate_name("a").is_empty());
+    assert_eq!(validate_name("my-skill"), [] as [String; 0]);
+    assert_eq!(validate_name("pdf"), [] as [String; 0]);
+    assert_eq!(validate_name("skill-123"), [] as [String; 0]);
+    assert_eq!(validate_name("a"), [] as [String; 0]);
 }
 
 #[test]
 fn validate_name_too_long() {
     let long = "a".repeat(65);
     let warnings = validate_name(&long);
-    assert!(!warnings.is_empty());
+    assert_ne!(warnings, [] as [String; 0]);
 }
 
 #[test]
 fn validate_name_leading_hyphen() {
     let warnings = validate_name("-bad");
-    assert!(!warnings.is_empty());
+    assert_ne!(warnings, [] as [String; 0]);
 }
 
 #[test]
 fn validate_name_trailing_hyphen() {
     let warnings = validate_name("bad-");
-    assert!(!warnings.is_empty());
+    assert_ne!(warnings, [] as [String; 0]);
 }
 
 #[test]
 fn validate_name_consecutive_hyphens() {
     let warnings = validate_name("bad--name");
-    assert!(!warnings.is_empty());
+    assert_ne!(warnings, [] as [String; 0]);
 }
 
 #[test]
 fn validate_name_invalid_characters() {
     let warnings = validate_name("bad_name");
-    assert!(!warnings.is_empty());
+    assert_ne!(warnings, [] as [String; 0]);
     let warnings = validate_name("BadName");
-    assert!(!warnings.is_empty());
+    assert_ne!(warnings, [] as [String; 0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ fn parse_skill_missing_description_returns_empty() {
     fs::write(skill_dir.join("SKILL.md"), "---\nname: no-desc\n---\nNo description provided.").unwrap();
 
     let result = parse_skill(&skill_dir.join("SKILL.md"), SkillSource::Global).unwrap();
-    assert!(result.0.description.is_empty());
+    assert_eq!(result.0.description, "");
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn load_skills_no_collision() {
 
 #[test]
 fn format_skills_for_prompt_empty() {
-    assert!(format_skills_for_prompt(&[]).is_empty());
+    assert_eq!(format_skills_for_prompt(&[]), "");
 }
 
 #[test]

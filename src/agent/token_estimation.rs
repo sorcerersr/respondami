@@ -71,12 +71,17 @@ fn estimate_message_tokens(msg: &AgentMessage) -> u32 {
             tool_name,
             tool_arguments,
             result,
+            images,
         } => {
-            approx_token_count("tool")
+            let mut tokens = approx_token_count("tool")
                 + approx_token_count(tool_call_id)
                 + approx_token_count(tool_name)
                 + approx_token_count(&tool_arguments.to_string())
-                + approx_token_count(result)
+                + approx_token_count(result);
+            for img in images {
+                tokens += crate::image::estimate_image_tokens(img.width, img.height);
+            }
+            tokens
         }
     }
 }

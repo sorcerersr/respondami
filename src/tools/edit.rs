@@ -8,7 +8,7 @@
 use super::edit_diff::{
     apply_edits, detect_line_ending, normalize_to_lf, restore_line_endings, strip_bom,
 };
-use super::{CancelGuard, ToolDefinition, ToolHandler};
+use super::{CancelGuard, ToolDefinition, ToolHandler, ToolOutput};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -119,7 +119,7 @@ impl ToolHandler for EditTool {
         cwd: &Path,
         _output_tx: Option<&mpsc::Sender<String>>,
         cancel: &CancelGuard,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ToolOutput> {
         // Prepare and validate arguments
         let prepared = prepare_args(&args)
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -183,11 +183,11 @@ impl ToolHandler for EditTool {
             &prepared.path,
         );
 
-        Ok(format!(
+        Ok(ToolOutput::text(format!(
             "Successfully replaced {} block(s) in {}.\n\n{}",
             prepared.edits.len(),
             prepared.path,
             diff
-        ))
+        )))
     }
 }

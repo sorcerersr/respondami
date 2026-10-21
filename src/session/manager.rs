@@ -70,10 +70,10 @@ impl SessionStore {
 
     /// Create a new session and return its ID.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// - If writing the session header to disk fails (should not happen in normal operation).
-    pub fn create_session(&mut self, model: String, context_window: u32, cwd: String) -> String {
+    /// - File I/O errors when writing the session header to disk.
+    pub fn create_session(&mut self, model: String, context_window: u32, cwd: String) -> anyhow::Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let filename = format!("{id}.jsonl");
         let path = self.sessions_dir.join(&filename);
@@ -88,11 +88,12 @@ impl SessionStore {
 
         self.entries.clear();
         self.entries.push(header.clone());
-        self.append_entry_to_disk(&header, &path).expect("Failed to write session header");
+        self.append_entry_to_disk(&header, &path)
+            .with_context(|| format!("Failed to write session header to {}", path.display()))?;
 
         self.current_session_path = Some(path);
         self.current_session_id = Some(id.clone());
-        id
+        Ok(id)
     }
 
     /// Add a skill to the activated skills list and persist it.

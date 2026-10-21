@@ -42,9 +42,41 @@ fn provider_config_defaults() {
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
     assert_eq!(config.model, "llama3.2");
     assert_eq!(config.context_window, 32768);
+    assert!(config.vision, "vision defaults to true");
     let ProviderSettings::LlamaCpp(s) = &config.settings;
     assert_eq!(s.url, "http://localhost:8080");
     assert_eq!(s.api_key, "");
+}
+
+#[test]
+fn provider_config_vision_false() {
+    let json = r#"{
+    "type": "llamacpp",
+    "url": "http://example.com:8080",
+    "model": "my-model",
+    "context_window": 4096,
+    "vision": false
+}"#;
+    let config: ProviderConfig = serde_json::from_str(json).unwrap();
+    assert!(!config.vision, "vision: false must be honored");
+}
+
+#[test]
+fn config_top_level_vision_ignored() {
+    // Legacy top-level `vision` is not a valid config location; it must be
+    // ignored in favor of `provider.vision` (default true).
+    let json = r#"{
+    "provider": {
+        "type": "llamacpp",
+        "url": "http://localhost:8080",
+        "model": "llama3.2",
+        "context_window": 32768
+    },
+    "compaction": { "enabled": true, "reserve_tokens": 16384, "keep_recent_tokens": 16384 },
+    "vision": false
+}"#;
+    let config: Config = serde_json::from_str(json).unwrap();
+    assert!(config.provider.vision, "top-level vision must be ignored");
 }
 
 #[test]
@@ -71,12 +103,18 @@ fn provider_config_roundtrip() {
         }),
         model: "my-model".to_string(),
         context_window: 4096,
+        vision: false,
     };
     let json = serde_json::to_string(&config).unwrap();
     let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.model, config.model);
     assert_eq!(decoded.context_window, config.context_window);
     assert_eq!(decoded.provider_type(), config.provider_type());
+    assert!(!decoded.vision, "vision must round-trip inside the provider object");
+    assert!(
+        json.contains("\"vision\":false"),
+        "vision must serialize inside the provider object: {json}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +126,7 @@ fn config_default_values() {
     let config = Config::default();
     assert_eq!(config.provider.model, "llama3.2");
     assert_eq!(config.provider.context_window, 32768);
+    assert!(config.provider.vision);
     assert!(config.compaction.enabled);
     assert_eq!(config.compaction.reserve_tokens, 16384);
     assert_eq!(config.compaction.keep_recent_tokens, 16384);
@@ -218,7 +257,7 @@ fn ui_config_file_always_visible_replaces_default_wholesale() {
 
     let json = r#"{"file_always_visible": []}"#;
     let ui: UiConfig = serde_json::from_str(json).unwrap();
-    assert!(ui.file_always_visible.is_empty());
+    assert_eq!(ui.file_always_visible, [] as [String; 0]);
 }
 
 // ---------------------------------------------------------------------------

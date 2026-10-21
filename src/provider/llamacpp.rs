@@ -6,9 +6,12 @@ use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
     ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage,
+    ChatCompletionRequestMessageContentPartImage,
     ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestToolMessageArgs,
     ChatCompletionRequestUserMessageArgs,
+    ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart,
     ChatCompletionMessageToolCall,
     ChatCompletionMessageToolCalls,
     ChatCompletionTool,
@@ -17,6 +20,7 @@ use async_openai::types::chat::{
     CreateChatCompletionRequestArgs,
     FunctionCall,
     FunctionObject,
+    ImageUrl,
 };
 use async_openai::Client;
 
@@ -371,12 +375,35 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
                 .build()
                 .expect("invalid system message"),
         )),
-        Message::User { content } => Some(ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessageArgs::default()
-                .content(content.clone())
-                .build()
-                .expect("invalid user message"),
-        )),
+        Message::User { content, images } => {
+            // Vision: when the message carries images, use the array content form
+            // (data-URL image parts). Text-only messages keep the plain string form.
+            let content_value = if images.is_empty() {
+                ChatCompletionRequestUserMessageContent::Text(content.clone())
+            } else {
+                let parts: Vec<ChatCompletionRequestUserMessageContentPart> = images
+                    .iter()
+                    .map(|img| {
+                        ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                            ChatCompletionRequestMessageContentPartImage {
+                                image_url: ImageUrl {
+                                    url: format!("data:{};base64,{}", img.mime_type, img.data),
+                                    detail: None,
+                                },
+                                prompt_cache_breakpoint: None,
+                            },
+                        )
+                    })
+                    .collect();
+                ChatCompletionRequestUserMessageContent::Array(parts)
+            };
+            Some(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(content_value)
+                    .build()
+                    .expect("invalid user message"),
+            ))
+        },
         Message::Assistant {
             content,
             tool_calls,

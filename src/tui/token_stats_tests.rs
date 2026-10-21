@@ -45,7 +45,7 @@ fn returns_none_when_no_jsonl_files() {
 fn computes_stats_from_single_session() {
     let dir = temp_dir();
     let mut store = SessionStore::new(&dir);
-    store.create_session("test-model".to_string(), 8192, "/test".to_string());
+    store.create_session("test-model".to_string(), 8192, "/test".to_string()).unwrap();
 
     let msg = AgentMessage::assistant(
         "response".to_string(),
@@ -74,7 +74,7 @@ fn aggregates_across_multiple_sessions() {
 
     // Session 1
     let mut store = SessionStore::new(&dir);
-    store.create_session("test-model".to_string(), 8192, "/test".to_string());
+    store.create_session("test-model".to_string(), 8192, "/test".to_string()).unwrap();
     let msg = AgentMessage::assistant(
         "r1".to_string(),
         String::new(),
@@ -88,7 +88,7 @@ fn aggregates_across_multiple_sessions() {
     store.append_message(None, msg).unwrap();
 
     // Session 2
-    store.create_session("test-model".to_string(), 8192, "/test".to_string());
+    store.create_session("test-model".to_string(), 8192, "/test".to_string()).unwrap();
     let msg = AgentMessage::assistant(
         "r2".to_string(),
         String::new(),
@@ -113,7 +113,7 @@ fn aggregates_across_multiple_sessions() {
 fn skips_assistant_messages_without_usage() {
     let dir = temp_dir();
     let mut store = SessionStore::new(&dir);
-    store.create_session("test-model".to_string(), 8192, "/test".to_string());
+    store.create_session("test-model".to_string(), 8192, "/test".to_string()).unwrap();
 
     // Assistant message with no usage data
     let msg = AgentMessage::assistant("response".to_string(), String::new(), Vec::new(), None);
@@ -129,7 +129,7 @@ fn skips_assistant_messages_without_usage() {
 fn skips_corrupted_lines() {
     let dir = temp_dir();
     let mut store = SessionStore::new(&dir);
-    store.create_session("test-model".to_string(), 8192, "/test".to_string());
+    store.create_session("test-model".to_string(), 8192, "/test".to_string()).unwrap();
 
     // Append a valid assistant message
     let msg = AgentMessage::assistant(

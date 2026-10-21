@@ -3,7 +3,7 @@
 //! These tools are intercepted by the agent loop and never reach this handler.
 //! They exist in the registry only so the model knows they are available.
 
-use super::{ToolDefinition, ToolHandler};
+use super::{ToolDefinition, ToolHandler, ToolOutput};
 use async_trait::async_trait;
 use std::path::Path;
 use tokio::sync::mpsc;
@@ -23,9 +23,9 @@ impl ToolHandler for ActivateSkillTool {
         _cwd: &Path,
         _output_tx: Option<&mpsc::Sender<String>>,
         _cancel: &super::CancelGuard,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ToolOutput> {
         // Should never be reached — intercepted by agent loop
-        Ok("Skill activated".to_string())
+        Ok(ToolOutput::text("Skill activated"))
     }
 }
 

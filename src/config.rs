@@ -1,8 +1,8 @@
 //! Application configuration — loading, validation, and schema migration.
 //!
-//! Reads `config.json` from `~/.config/respondami/` and `.respondami/config.json`
-//! (project-level overrides). Handles legacy config migration, provider settings,
-//! compaction thresholds, UI display modes, and RTK integration settings.
+//! Reads `config.json` from `~/.config/respondami/`. Handles legacy config
+//! migration, provider settings, compaction thresholds, UI display modes, and
+//! RTK integration settings.
 
 use anyhow::Context;
 use serde::ser::Error;
@@ -23,6 +23,9 @@ pub struct ProviderConfig {
     pub settings: ProviderSettings,
     pub model: String,
     pub context_window: u32,
+    /// Whether this model supports vision (images). When false, the `read`
+    /// tool returns a text note instead of an image attachment.
+    pub vision: bool,
 }
 
 impl ProviderConfig {
@@ -66,6 +69,10 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             .get("context_window")
             .and_then(serde_json::Value::as_u64)
             .map_or(32768, |v| v as u32);
+        let vision = obj
+            .get("vision")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
 
         // Build settings based on `type` field (or default to llamacpp for legacy)
         let settings = match obj
@@ -92,6 +99,7 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             settings,
             model,
             context_window,
+            vision,
         })
     }
 }
@@ -122,6 +130,7 @@ impl Serialize for ProviderConfig {
             "context_window".to_string(),
             serde_json::Value::Number(self.context_window.into()),
         );
+        map.insert("vision".to_string(), serde_json::Value::Bool(self.vision));
 
         map.serialize(serializer)
     }
@@ -285,6 +294,7 @@ impl Default for Config {
                 }),
                 model: "llama3.2".to_string(),
                 context_window: 32768,
+                vision: true,
             },
             compaction: CompactionConfig {
                 enabled: default_compaction_enabled(),
@@ -338,7 +348,9 @@ impl Config {
         // Check if the raw JSON has newer sections (for migrate-on-load)
         let raw: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse config {}", path.display()))?;
-        let needs_migration = raw.get("ui").is_none() || raw.get("rtk").is_none();
+        let needs_migration = raw.get("ui").is_none()
+            || raw.get("rtk").is_none()
+            || raw.get("provider").and_then(|p| p.get("vision")).is_none();
 
         let config: Self = serde_json::from_value(raw)
             .with_context(|| format!("Failed to parse config {}", path.display()))?;

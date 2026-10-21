@@ -105,12 +105,68 @@ use super::{SessionEntry, AgentMessage, ToolCall, Usage, RequestTokenUsage, Toke
     #[test]
     fn agent_message_tool_roundtrip() {
         let args = serde_json::json!({"path": "src/main.rs"});
-        let msg = AgentMessage::tool("call_1".to_string(), "read".to_string(), args, "file contents".to_string());
+        let msg = AgentMessage::tool("call_1".to_string(), "read".to_string(), args, "file contents".to_string(), Vec::new());
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"tool\""));
         assert!(json.contains("\"tool_name\":\"read\""));
         let decoded: AgentMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.content(), "file contents");
+    }
+
+    #[test]
+    fn agent_message_tool_with_images_roundtrip() {
+        use crate::image::ImageContent;
+        let img = ImageContent {
+            data: "aW1hZ2U=".to_string(),
+            mime_type: "image/png".to_string(),
+            width: 100,
+            height: 50,
+        };
+        let msg = AgentMessage::tool(
+            "call_1".to_string(),
+            "read".to_string(),
+            serde_json::json!({}),
+            "Image: x".to_string(),
+            vec![img.clone()],
+        );
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"images\""), "non-empty images must be serialized");
+        let decoded: AgentMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            AgentMessage::Tool { images, .. } => {
+                assert_eq!(images.len(), 1);
+                assert_eq!(images[0], img);
+            }
+            _ => panic!("expected Tool message"),
+        }
+    }
+
+    #[test]
+    fn agent_message_tool_empty_images_omitted() {
+        // Backward compat: empty images are skipped so old JSONL stays valid.
+        let msg = AgentMessage::tool(
+            "call_1".to_string(),
+            "read".to_string(),
+            serde_json::json!({}),
+            "result".to_string(),
+            Vec::new(),
+        );
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("\"images\""), "empty images must be omitted from JSON");
+    }
+
+    #[test]
+    fn agent_message_tool_deserializes_without_images_field() {
+        // Old JSONL lines have no `images` key — must deserialize with default.
+        let json = r#"{"role":"tool","tool_call_id":"t1","tool_name":"read","tool_arguments":{},"result":"old"}"#;
+        let decoded: AgentMessage = serde_json::from_str(json).unwrap();
+        match decoded {
+            AgentMessage::Tool { images, result, .. } => {
+                assert_eq!(images, Vec::new());
+                assert_eq!(result, "old");
+            }
+            _ => panic!("expected Tool message"),
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -122,7 +178,7 @@ use super::{SessionEntry, AgentMessage, ToolCall, Usage, RequestTokenUsage, Toke
         assert_eq!(AgentMessage::system("sys".to_string()).content(), "sys");
         assert_eq!(AgentMessage::user("user".to_string()).content(), "user");
         assert_eq!(AgentMessage::assistant("assistant".to_string(), String::new(), Vec::new(), None).content(), "assistant");
-        assert_eq!(AgentMessage::tool("id".to_string(), "read".to_string(), serde_json::json!({}), "tool result".to_string()).content(), "tool result");
+        assert_eq!(AgentMessage::tool("id".to_string(), "read".to_string(), serde_json::json!({}), "tool result".to_string(), Vec::new()).content(), "tool result");
     }
 
     // ---------------------------------------------------------------------------
@@ -194,7 +250,7 @@ use super::{SessionEntry, AgentMessage, ToolCall, Usage, RequestTokenUsage, Toke
         assert_eq!(session.id(), "sess-1");
 
         let msg = SessionEntry::new_message(Some("sess-1".to_string()), AgentMessage::user("hi".to_string()));
-        assert!(!msg.id().is_empty());
+        assert_ne!(msg.id(), "");
         assert_eq!(msg.parent_id(), Some("sess-1".to_string()));
     }
 

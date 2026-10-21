@@ -18,7 +18,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
                 {"oldText": "x = 1", "newText": "x = 2"}
             ]
         });
-        let edit = EditToolCall::from_args("ok", false, Some(&args), false);
+        let edit = EditToolCall::from_args("ok", false, false, Some(&args), false);
         assert_eq!(edit.path, "src/main.rs");
         assert_eq!(edit.edits.len(), 2);
         assert!(!edit.has_error);
@@ -31,7 +31,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
         let args = serde_json::json!({
             "path": "src/main.rs"
         });
-        let edit = EditToolCall::from_args("file not found", true, Some(&args), false);
+        let edit = EditToolCall::from_args("file not found", true, false, Some(&args), false);
         assert_eq!(edit.path, "src/main.rs");
         assert!(edit.has_error);
         assert!(edit.edits.is_empty());
@@ -39,7 +39,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
 
     #[test]
     fn edit_from_args_no_args() {
-        let edit = EditToolCall::from_args("", false, None, false);
+        let edit = EditToolCall::from_args("", false, false, None, false);
         assert_eq!(edit.path, "unknown");
         assert!(edit.edits.is_empty());
     }
@@ -50,7 +50,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
             "path": "src/main.rs",
             "edits": []
         });
-        let edit = EditToolCall::from_args("", false, Some(&args), false);
+        let edit = EditToolCall::from_args("", false, false, Some(&args), false);
         assert_eq!(edit.edits.len(), 0);
     }
 
@@ -63,7 +63,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
                 {"oldText": "c"}
             ]
         });
-        let edit = EditToolCall::from_args("", false, Some(&args), false);
+        let edit = EditToolCall::from_args("", false, false, Some(&args), false);
         assert_eq!(edit.edits.len(), 1);
     }
 
@@ -76,7 +76,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
         let args = serde_json::json!({
             "command": "ls -la"
         });
-        let bash = BashToolCall::from_args("file1\nfile2", false, Some(&args), None, false);
+        let bash = BashToolCall::from_args("file1\nfile2", false, false, Some(&args), None, false);
         assert_eq!(bash.command, "ls -la");
         assert_eq!(bash.output, "file1\nfile2");
         assert!(!bash.has_error);
@@ -87,13 +87,13 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
         let args = serde_json::json!({
             "command": "cat missing.txt"
         });
-        let bash = BashToolCall::from_args("No such file", true, Some(&args), None, false);
+        let bash = BashToolCall::from_args("No such file", true, false, Some(&args), None, false);
         assert!(bash.has_error);
     }
 
     #[test]
     fn bash_from_args_no_args() {
-        let bash = BashToolCall::from_args("output", false, None, None, false);
+        let bash = BashToolCall::from_args("output", false, false, None, None, false);
         assert_eq!(bash.command, "unknown");
     }
 
@@ -103,14 +103,14 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
 
     #[test]
     fn render_content_lines_empty() {
-        let bash = BashToolCall::from_args("", false, None, None, false);
+        let bash = BashToolCall::from_args("", false, false, None, None, false);
         let lines = bash.content_lines();
-        assert!(lines.is_empty());
+        assert_eq!(lines, [] as [String; 0]);
     }
 
     #[test]
     fn render_content_lines_under_limit() {
-        let bash = BashToolCall::from_args("line 0\nline 1\nline 2\nline 3\nline 4", false, None, None, false);
+        let bash = BashToolCall::from_args("line 0\nline 1\nline 2\nline 3\nline 4", false, false, None, None, false);
         let lines = bash.content_lines();
         assert_eq!(lines.len(), 5);
     }
@@ -118,7 +118,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     #[test]
     fn render_content_lines_at_limit() {
         let output: String = (0..10).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashToolCall::from_args(&output, false, None, None, false);
+        let bash = BashToolCall::from_args(&output, false, false, None, None, false);
         let lines = bash.content_lines();
         assert_eq!(lines.len(), 10);
     }
@@ -126,7 +126,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     #[test]
     fn render_content_lines_over_limit() {
         let output: String = (0..15).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashToolCall::from_args(&output, false, None, None, false);
+        let bash = BashToolCall::from_args(&output, false, false, None, None, false);
         let lines = bash.content_lines();
         assert_eq!(lines.len(), 15);
     }
@@ -142,7 +142,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     #[test]
     fn tool_call_height_empty_content() {
         // Empty non-error output: shows "(no output)" = 1 content line
-        let bash = BashTC::from_args("", false, None, None, false);
+        let bash = BashTC::from_args("", false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // FilledHeaderBar: 2 (header+border) + 1 ("(no output)") = 3
         assert_eq!(msg.height(80, &dummy_theme()), 3);
@@ -152,7 +152,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn tool_call_height_under_limit() {
         // 5 lines of short content → 5 content lines
         let output: String = (0..5).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashTC::from_args(&output, false, None, None, false);
+        let bash = BashTC::from_args(&output, false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // 2 (header+border) + 5 content = 7
         assert_eq!(msg.height(80, &dummy_theme()), 7);
@@ -162,7 +162,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn tool_call_height_at_limit() {
         // Exactly MAX_CONTENT_LINES (10) → no truncation summary
         let output: String = (0..MAX_CONTENT_LINES).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashTC::from_args(&output, false, None, None, false);
+        let bash = BashTC::from_args(&output, false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // 2 + 10 = 12
         assert_eq!(msg.height(80, &dummy_theme()), 12);
@@ -172,7 +172,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn tool_call_height_over_limit_collapsed() {
         // 100 lines, collapsed → FilledHeaderBar::collapsed(true) = header(2) + 1 collapsed indicator = 3
         let output: String = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashTC::from_args(&output, false, None, None, false);
+        let bash = BashTC::from_args(&output, false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         assert_eq!(msg.height(80, &dummy_theme()), 3);
     }
@@ -181,7 +181,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn tool_call_height_error_shows_all_lines() {
         // Error output: no truncation — all lines counted
         let output: String = (0..50).map(|i| format!("error line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashTC::from_args(&output, true, None, None, false);
+        let bash = BashTC::from_args(&output, true, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // 2 + 50 = 52
         assert_eq!(msg.height(80, &dummy_theme()), 52);
@@ -191,7 +191,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn tool_call_height_wraps_long_lines() {
         // One very long line that wraps across 3 rows at width=40
         let long_line = "x".repeat(100);
-        let bash = BashTC::from_args(&long_line, false, None, None, false);
+        let bash = BashTC::from_args(&long_line, false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // Effective width = 40 - 2 = 38. 100 / 38 = 3 (ceil)
         // 2 + 3 = 5
@@ -200,7 +200,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
 
     #[test]
     fn tool_call_height_zero_width() {
-        let bash = BashTC::from_args("hello", false, None, None, false);
+        let bash = BashTC::from_args("hello", false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         assert_eq!(msg.height(0, &dummy_theme()), 4);
     }
@@ -316,7 +316,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn tail_rendering_shows_collapsed() {
         // 100 lines → collapsed, FilledHeaderBar::collapsed(true)
         let output: String = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashTC::from_args(&output, false, None, None, false);
+        let bash = BashTC::from_args(&output, false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // Collapsed: 2 (header) + 1 (collapsed indicator) = 3
         assert_eq!(msg.height(80, &dummy_theme()), 3);
@@ -327,7 +327,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
         // 100 lines, expanded → tail view: 1 summary + 10 content + 1 meta (write has bytes)
         let output: String = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let args = serde_json::json!({"path": "test.txt", "content": output.clone()});
-        let mut write = WriteToolCall::from_args("", false, Some(&args), false);
+        let mut write = WriteToolCall::from_args("", false, false, Some(&args), false);
         write.expanded = true;
         let msg = ToolCallMessage { variant: ToolCallVariant::Write(write) };
         // 2 (header) + 1 summary + 10 content + 1 meta = 14
@@ -338,7 +338,7 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
     fn small_output_no_toggle() {
         // 5 lines → no truncation
         let output: String = (0..5).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let bash = BashTC::from_args(&output, false, None, None, false);
+        let bash = BashTC::from_args(&output, false, false, None, None, false);
         let msg = ToolCallMessage { variant: ToolCallVariant::Bash(bash) };
         // 2 (header) + 5 content = 7
         assert_eq!(msg.height(80, &dummy_theme()), 7);
@@ -378,4 +378,59 @@ use super::{EditToolCall, BashToolCall, WriteToolCall, ToolCallRender, ToolCallM
         };
         // 2 (header) + 5 content + 1 executing = 8
         assert_eq!(msg.height(80, &dummy_theme()), 8);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Cancelled flag
+    // ---------------------------------------------------------------------------
+
+    /// A cancelled bash tool call must carry the `cancelled` flag.
+    #[test]
+    fn bash_from_args_cancelled() {
+        let args = serde_json::json!({"command": "sleep 10"});
+        let bash = BashTC::from_args("Operation cancelled", true, true, Some(&args), None, false);
+        assert!(bash.cancelled, "cancelled flag must be set");
+        assert!(bash.has_error, "cancelled is also an error");
+    }
+
+    /// A non-cancelled bash tool call must not carry the `cancelled` flag.
+    #[test]
+    fn bash_from_args_not_cancelled() {
+        let args = serde_json::json!({"command": "echo hi"});
+        let bash = BashTC::from_args("hi", false, false, Some(&args), None, false);
+        assert!(!bash.cancelled, "cancelled flag must be unset");
+    }
+
+    /// A cancelled error must take precedence over a plain error in the header color.
+    #[test]
+    fn cancelled_header_color_is_warning() {
+        let theme = dummy_theme();
+        // A cancelled call is a warning (orange), not an error (red).
+        let color = theme.tool_header_color("bash", false, true);
+        assert_eq!(color, theme.orange, "cancelled header must be orange");
+    }
+
+    /// A plain error (not cancelled) must be red.
+    #[test]
+    fn error_header_color_is_red() {
+        let theme = dummy_theme();
+        let color = theme.tool_header_color("bash", true, false);
+        assert_eq!(color, theme.red, "error header must be red");
+    }
+
+    /// A successful call (not cancelled) must be the tool's semantic color.
+    #[test]
+    fn success_header_color_is_tool_semantic() {
+        let theme = dummy_theme();
+        let color = theme.tool_header_color("bash", false, false);
+        assert_eq!(color, theme.blue_bright, "bash success header must be blue_bright");
+    }
+
+    /// A cancelled error must show the warning color, not the error color.
+    #[test]
+    fn cancelled_error_header_color_is_warning() {
+        let theme = dummy_theme();
+        // Even with has_error=true, cancelled takes precedence → orange.
+        let color = theme.tool_header_color("bash", true, true);
+        assert_eq!(color, theme.red, "has_error takes precedence over cancelled");
     }

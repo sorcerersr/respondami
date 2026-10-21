@@ -87,6 +87,59 @@ pub fn init() {
     }
 }
 
+/// Format the panic payload, location, and a forced backtrace into a single
+/// log message. Factored out of the panic hook so the formatting can be unit
+/// tested without a live tracing subscriber.
+#[must_use]
+pub fn format_panic_info(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let thread = std::thread::current();
+    let thread_name = thread.name().unwrap_or("<unnamed>");
+    let (file, line, col) = info
+        .location()
+        .map(|l| (l.file(), l.line(), l.column()))
+        .unwrap_or(("unknown", 0, 0));
+
+    let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    };
+
+    // `force_capture` works without RUST_BACKTRACE=1, giving a persistent,
+    // backtraced record for post-hoc inspection.
+    let backtrace = std::backtrace::Backtrace::force_capture();
+
+    format!(
+        "thread '{thread_name}' panicked at {file}:{line}:{col}\nmessage: {message}\nbacktrace:\n{backtrace}"
+    )
+}
+
+/// Install a global panic hook that logs the panic payload, location, and
+/// backtrace to the rolling file log, then calls the default hook for
+/// immediate stderr feedback.
+///
+/// Call after [`init`] so the tracing subscriber is live. The hook is
+/// installed only once; repeated calls are a no-op. The file log gives a
+/// persistent, backtraced record; the default hook keeps live terminal
+/// feedback.
+pub fn install_panic_hook() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.get().is_some() {
+        return;
+    }
+
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = format_panic_info(info);
+        tracing::error!("{message}");
+        default_hook(info);
+    }));
+
+    let _ = INSTALLED.set(());
+}
+
 /// Resolve the log directory: `<CWD>/.respondami/logs/`.
 pub(crate) fn log_dir_path() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

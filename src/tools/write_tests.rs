@@ -5,7 +5,8 @@ use tempfile::TempDir;
 
 async fn run_write(cwd: &Path, args: serde_json::Value) -> anyhow::Result<String> {
     let cancel = CancelGuard::new();
-    WriteTool.execute(args, cwd, None, &cancel).await
+    let out = WriteTool.execute(args, cwd, None, &cancel).await?;
+    Ok(out.content)
 }
 
 async fn run_write_with_cancel(
@@ -13,7 +14,8 @@ async fn run_write_with_cancel(
     args: serde_json::Value,
     cancel: &CancelGuard,
 ) -> anyhow::Result<String> {
-    WriteTool.execute(args, cwd, None, cancel).await
+    let out = WriteTool.execute(args, cwd, None, cancel).await?;
+    Ok(out.content)
 }
 
 // ============ Basic writes ============

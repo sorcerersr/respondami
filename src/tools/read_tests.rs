@@ -9,9 +9,8 @@ fn get_tool() -> ReadTool {
 
 async fn run_read(cwd: &Path, args: serde_json::Value) -> anyhow::Result<String> {
     let cancel = CancelGuard::new();
-    get_tool()
-        .execute(args, cwd, None, &cancel)
-        .await
+    let out = get_tool().execute(args, cwd, None, &cancel).await?;
+    Ok(out.content)
 }
 
 async fn run_read_with_cancel(
@@ -19,7 +18,8 @@ async fn run_read_with_cancel(
     args: serde_json::Value,
     cancel: &CancelGuard,
 ) -> anyhow::Result<String> {
-    get_tool().execute(args, cwd, None, cancel).await
+    let out = get_tool().execute(args, cwd, None, cancel).await?;
+    Ok(out.content)
 }
 
 // ============ Basic reads ============

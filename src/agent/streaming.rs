@@ -6,8 +6,8 @@
 
 use crate::config::Config;
 use crate::provider::{
-    accumulate_tool_call, agent_message_to_message, finalize_tool_calls, ChatChunk, ChatRequest, Message,
-    PartialToolCall, Provider, ProviderError, ToolDef,
+    accumulate_tool_call, agent_messages_to_provider_messages, finalize_tool_calls, ChatChunk, ChatRequest,
+    Message, PartialToolCall, Provider, ProviderError, ToolDef,
 };
 use crate::session::{AgentMessage, CompactionSettings, ContentBlock, ToolCall, Usage};
 use crate::tools::ToolRegistry;
@@ -119,7 +119,7 @@ pub async fn stream_response_from_messages(
     cancel_rx: watch::Receiver<bool>,
 ) -> Result<AgentResponse, anyhow::Error> {
     let (chunk_tx, mut chunk_rx) = mpsc::channel::<ChatChunk>(256);
-    let messages: Vec<Message> = context_messages.iter().map(agent_message_to_message).collect();
+    let messages: Vec<Message> = agent_messages_to_provider_messages(context_messages);
 
     let tools: Vec<ToolDef> = tool_registry
         .get_definitions()

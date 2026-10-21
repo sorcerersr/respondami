@@ -3,6 +3,11 @@
 
 use super::*;
 
+use crate::provider::{ChatChunk, ChatRequest, CompletionResponse, Provider, ProviderError, ProviderTrait};
+use crate::skills::{Skill, SkillSource};
+use async_trait::async_trait;
+use tempfile::TempDir;
+
     fn make_message_entry(content: &str, role: &str) -> SessionEntry {
         let message = match role {
             "user" => AgentMessage::User { content: content.to_string() },
@@ -16,6 +21,7 @@ use super::*;
                 tool_name: "test".to_string(),
                 tool_arguments: serde_json::json!({}),
                 result: content.to_string(),
+                images: Vec::new(),
             },
             _ => panic!("unknown role: {role}"),
         };
@@ -163,7 +169,7 @@ use super::*;
         ];
 
         let (read_files, modified_files) = CompactionSettings::extract_file_operations(&entries, 2);
-        assert!(read_files.is_empty());
+        assert_eq!(read_files, [] as [String; 0]);
         assert_eq!(modified_files, vec!["src/edit.rs"]);
     }
 
@@ -400,4 +406,231 @@ use super::*;
             .count();
         assert_eq!(kept_at_4, 3);
         assert!(kept_at_4 < CompactionSettings::MIN_KEEP_MESSAGES);
+    }
+
+    // ---------------------------------------------------------------------------
+    // serialize_for_summary
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn serialize_for_summary_truncates_tool_result_at_char_boundary() {
+        // Regression: `§` (U+00A7, 2 bytes) straddles byte 4096 (bytes
+        // 4095..4097). A raw `&result[..4096]` panics with
+        // "byte index 4096 is not a char boundary". The fix floors the
+        // slice to a char boundary, dropping the multi-byte char whole.
+        let mut result = "a".repeat(4095);
+        result.push('§');
+        result.push_str("rest of the tool output");
+        assert_eq!(result.len(), 4120);
+
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry(&result, "tool"),
+        ];
+
+        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+
+        // The truncated content is the first 4095 bytes (the `§` is dropped
+        // whole because 4096 is not a char boundary).
+        let expected_prefix = format!("[Tool Result] {}", "a".repeat(4095));
+        assert!(text.starts_with(&expected_prefix), "should keep the 4095 ASCII bytes");
+        assert!(text.ends_with("... (truncated, 4120 bytes total)"));
+        // The multi-byte char must not leak into the truncated output.
+        assert!(!text.contains('§'));
+    }
+
+    #[test]
+    fn serialize_for_summary_truncates_tool_result_on_exact_boundary() {
+        // When 4096 lands exactly on a char boundary, the full 4096 bytes are
+        // kept (no char is dropped) and the label reports the byte total.
+        let result = "b".repeat(4100);
+
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry(&result, "tool"),
+        ];
+
+        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+
+        let expected_prefix = format!("[Tool Result] {}", "b".repeat(4096));
+        assert!(text.starts_with(&expected_prefix), "exact boundary keeps all 4096 bytes");
+        assert!(text.ends_with("... (truncated, 4100 bytes total)"));
+    }
+
+    #[test]
+    fn serialize_for_summary_keeps_short_tool_result() {
+        // A tool result under 4096 bytes is emitted verbatim, no truncation.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry("short output", "tool"),
+        ];
+
+        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        assert_eq!(text, "[Tool Result] short output");
+    }
+
+// ---- format_active_skills ----
+
+/// Write a SKILL.md (frontmatter + body) into `tmp` and return a matching
+/// `Skill` plus the file path.
+fn make_test_skill_file(tmp: &TempDir, name: &str, body: &str) -> (Skill, std::path::PathBuf) {
+    let dir = tmp.path().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("SKILL.md");
+    std::fs::write(&path, format!("---\nname: {name}\ndescription: test skill\n---\n{body}")).unwrap();
+    (
+        Skill {
+            name: name.to_string(),
+            description: "test skill".to_string(),
+            license: None,
+            metadata: std::collections::HashMap::new(),
+            file_path: path.clone(),
+            base_dir: dir,
+            source: SkillSource::Global,
+        },
+        path,
+    )
+}
+
+    #[test]
+    fn format_active_skills_empty_returns_empty_string() {
+        assert_eq!(crate::session::compaction::format_active_skills(&[], &[]), "");
+    }
+
+    #[test]
+    fn format_active_skills_skips_missing_and_unreadable() {
+        let tmp = TempDir::new().unwrap();
+        let (found, _) = make_test_skill_file(&tmp, "found", "Found body.");
+        // In the skills vec but the file was deleted → skipped silently.
+        let gone = Skill {
+            name: "gone".to_string(),
+            description: "test skill".to_string(),
+            license: None,
+            metadata: std::collections::HashMap::new(),
+            file_path: tmp.path().join("gone").join("SKILL.md"),
+            base_dir: tmp.path().join("gone"),
+            source: SkillSource::Global,
+        };
+        let skills = vec![found, gone];
+        // "missing" is not in the skills vec at all.
+        let active = vec!["found".to_string(), "missing".to_string(), "gone".to_string()];
+
+        let out = crate::session::compaction::format_active_skills(&active, &skills);
+
+        assert!(out.starts_with("<active-skills>"));
+        assert!(out.ends_with("</active-skills>"));
+        assert!(out.contains("<skill_instructions name=\"found\">"));
+        assert!(out.contains("Found body."));
+        assert!(!out.contains("missing"));
+        assert!(!out.contains("gone"));
+    }
+
+    #[test]
+    fn format_active_skills_follows_active_order() {
+        let tmp = TempDir::new().unwrap();
+        let (alpha, _) = make_test_skill_file(&tmp, "alpha", "Alpha body.");
+        let (beta, _) = make_test_skill_file(&tmp, "beta", "Beta body.");
+        // skills vec order: alpha, beta — active list order: beta, alpha.
+        let skills = vec![alpha, beta];
+        let active = vec!["beta".to_string(), "alpha".to_string()];
+
+        let out = crate::session::compaction::format_active_skills(&active, &skills);
+
+        let beta_pos = out.find("name=\"beta\"").expect("beta block present");
+        let alpha_pos = out.find("name=\"alpha\"").expect("alpha block present");
+        assert!(
+            beta_pos < alpha_pos,
+            "output follows the active list order, not the skills vec order: {out}"
+        );
+    }
+
+// ---- compute_compaction active-skills re-injection ----
+
+/// A provider that returns a fixed summary from `complete` (compaction).
+struct MockProvider {
+    summary: String,
+}
+
+#[async_trait]
+impl ProviderTrait for MockProvider {
+    fn clone_box(&self) -> Box<dyn ProviderTrait> {
+        Box::new(MockProvider { summary: self.summary.clone() })
+    }
+
+    async fn stream_chat(
+        &self,
+        _req: &ChatRequest,
+        _tx: tokio::sync::mpsc::Sender<ChatChunk>,
+        _cancel_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), ProviderError> {
+        unimplemented!("MockProvider does not stream")
+    }
+
+    async fn complete(&self, _req: &ChatRequest) -> Result<CompletionResponse, ProviderError> {
+        Ok(CompletionResponse {
+            content: self.summary.clone(),
+            usage: None,
+        })
+    }
+
+    async fn ping(&self) -> Result<(), ProviderError> {
+        Ok(())
+    }
+}
+
+    #[tokio::test]
+    async fn compute_compaction_appends_active_skills_section() {
+        let tmp = TempDir::new().unwrap();
+        let (skill, _) = make_test_skill_file(&tmp, "my-skill", "# My Skill\nDo the thing.");
+
+        let mut entries = vec![SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            tmp.path().to_string_lossy().to_string(),
+            "model".to_string(),
+            32768,
+        )];
+        if let SessionEntry::Session { ref mut activated_skills, .. } = entries[0] {
+            activated_skills.push("my-skill".to_string());
+        }
+        // 10 messages → count-based cut keeps 5 (≥ MIN_KEEP_MESSAGES).
+        for i in 0..10 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            entries.push(make_message_entry(&format!("Message {i}"), role));
+        }
+
+        let config = crate::config::Config::default();
+        let engine = CompactionEngine::from_config(&config);
+        let provider = Provider::from_trait(Box::new(MockProvider {
+            summary: "## Goal\nTest goal".to_string(),
+        }));
+
+        let plan = engine
+            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), vec![skill])
+            .await
+            .expect("compute_compaction");
+
+        assert!(plan.summary.contains("## Goal"), "LLM summary present");
+        assert!(plan.summary.contains("<active-skills>"));
+        assert!(plan.summary.contains("<skill_instructions name=\"my-skill\">"));
+        assert!(plan.summary.contains("Do the thing."));
+        assert!(!plan.summary.contains("name: my-skill"), "frontmatter stripped");
     }

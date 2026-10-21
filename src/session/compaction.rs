@@ -183,11 +183,28 @@ impl CompactionEngine {
 
         // Format file operations and append to summary
         let file_ops = CompactionSettings::format_file_operations(&read_files, &modified_files);
-        let full_summary = if file_ops.is_empty() {
+        let mut full_summary = if file_ops.is_empty() {
             summary
         } else {
             format!("{summary}{file_ops}")
         };
+
+        // Re-inject active skill instructions (deterministic — the LLM
+        // summary may have dropped or paraphrased them when the activating
+        // messages fall before the cut point). The header is the source of
+        // truth for the active set (both activation paths persist to it).
+        let active_skills = entries
+            .first()
+            .and_then(|e| match e {
+                SessionEntry::Session { activated_skills, .. } => Some(activated_skills.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let skills_section = format_active_skills(&active_skills, &skills);
+        if !skills_section.is_empty() {
+            full_summary.push_str("\n\n");
+            full_summary.push_str(&skills_section);
+        }
 
         Ok(CompactionPlan {
             summary: full_summary,
@@ -207,11 +224,16 @@ impl CompactionEngine {
             }
         }
 
-        // Fallback: character estimates + system overhead
+        // Fallback: character estimates + system overhead + image tokens
         let mut total: u32 = 0;
         for entry in entries {
             if let SessionEntry::Message { message, .. } = entry {
                 total += CompactionSettings::estimate_tokens(message.content());
+                if let AgentMessage::Tool { images, .. } = message {
+                    for img in images {
+                        total = total.saturating_add(crate::image::estimate_image_tokens(img.width, img.height));
+                    }
+                }
             }
         }
         total.saturating_add(system_overhead)
@@ -262,7 +284,10 @@ impl CompactionEngine {
 
         let messages = vec![
             Message::System { content: system_prompt },
-            Message::User { content: user_prompt.to_string() },
+            Message::User {
+                content: user_prompt.to_string(),
+                images: Vec::new(),
+            },
         ];
 
         let max_tokens = std::cmp::min(
@@ -461,7 +486,11 @@ impl CompactionSettings {
                     }
                     AgentMessage::Tool { result, .. } => {
                         let truncated = if result.len() > 4096 {
-                            format!("{}... (truncated, {} chars total)", &result[..4096], result.len())
+                            // 4096 is a byte index; floor to a char boundary so a
+                            // multi-byte char straddling it is dropped whole
+                            // (a raw `&result[..4096]` panics mid-char).
+                            let safe = result.floor_char_boundary(4096);
+                            format!("{}... (truncated, {} bytes total)", &result[..safe], result.len())
                         } else {
                             result.clone()
                         };
@@ -581,6 +610,8 @@ impl CompactionSettings {
              ## Critical Context\n\
              - [Any data, examples, or references needed to continue]\n\n\
              Keep each section concise. Preserve exact file paths, function names, and error messages.\
+             Skip the contents of <skill_instructions> blocks — active skill instructions are\
+             preserved separately and must not be summarized.\
              Aim for under {max_summary_tokens} tokens.",
         )
     }
@@ -606,5 +637,44 @@ impl CompactionSettings {
         } else {
             format!("\n\n{}", sections.join("\n\n"))
         }
+    }
+}
+
+/// Format active skill instructions for re-injection into a compaction summary.
+///
+/// Skill instructions enter the context only through conversation history
+/// (the `activate_skill` tool result or a `/skillname` user message), so a
+/// compaction that cuts those messages would lose them. This section
+/// restores them deterministically in the summary, using the same tag shape
+/// the model already sees from `activate_skill` tool results.
+///
+/// Returns an empty string when no skills are active. Skills not found in
+/// `skills` (e.g. file deleted) or with unreadable files are skipped.
+#[must_use]
+pub(crate) fn format_active_skills(active: &[String], skills: &[Skill]) -> String {
+    if active.is_empty() {
+        return String::new();
+    }
+
+    let mut blocks = Vec::new();
+    for name in active {
+        let Some(skill) = skills.iter().find(|s| &s.name == name) else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(&skill.file_path) else {
+            continue;
+        };
+        // Strip YAML frontmatter (the body after the second `---`).
+        let body = content.splitn(3, "---").nth(2).unwrap_or(&content);
+        blocks.push(format!(
+            "<skill_instructions name=\"{name}\">\n{}\n</skill_instructions>",
+            body.trim()
+        ));
+    }
+
+    if blocks.is_empty() {
+        String::new()
+    } else {
+        format!("<active-skills>\n{}\n</active-skills>", blocks.join("\n"))
     }
 }

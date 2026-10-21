@@ -258,6 +258,7 @@ impl App {
         tool_call_id: &str,
         result: &str,
         has_error: bool,
+        cancelled: bool,
         rtk_original: Option<String>,
     ) {
         if let Some(idx) = self.agent.pending_tool_call_ids.remove(tool_call_id) {
@@ -278,7 +279,7 @@ impl App {
             let tool_args_ref = tool_args.as_ref();
             // Replace pending message with result
             self.chat.chat_messages[idx] = ChatMessage::ToolCall(ToolCallMessage {
-                variant: self.build_tool_call_variant(&tool_name, result, has_error, tool_args_ref, rtk_original),
+                variant: self.build_tool_call_variant(&tool_name, result, has_error, cancelled, tool_args_ref, rtk_original),
             });
         }
     }
@@ -290,6 +291,7 @@ impl App {
         tool_name: &str,
         result: &str,
         has_error: bool,
+        cancelled: bool,
         tool_args: Option<&serde_json::Value>,
         rtk_original: Option<String>,
     ) -> ToolCallVariant {
@@ -297,6 +299,7 @@ impl App {
             tool_name,
             result,
             has_error,
+            cancelled,
             tool_args.cloned(),
             rtk_original,
             self.config.tool_output_expanded,

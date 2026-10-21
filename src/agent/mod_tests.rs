@@ -3,8 +3,44 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+use crate::image::ImageContent;
 use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
 use crate::skills::{Skill, SkillSource};
+
+fn img() -> ImageContent {
+    ImageContent {
+        data: "aW1hZ2U=".to_string(),
+        mime_type: "image/png".to_string(),
+        width: 100,
+        height: 50,
+    }
+}
+
+#[test]
+fn vision_gate_enabled_keeps_images() {
+    let (content, images) = super::apply_vision_gate(true, "Image: x".to_string(), vec![img()]);
+    assert_eq!(content, "Image: x");
+    assert_eq!(images.len(), 1);
+}
+
+#[test]
+fn vision_gate_disabled_drops_images_with_note() {
+    let (content, images) = super::apply_vision_gate(false, "Image: x".to_string(), vec![img()]);
+    assert!(images.is_empty(), "images must be dropped when vision is off");
+    assert!(content.contains("Vision disabled"), "note must explain the drop: {content}");
+    assert!(content.contains("1 image"), "note must state the count: {content}");
+    assert!(
+        content.contains("provider.vision: true"),
+        "note must point at the provider-level config key: {content}"
+    );
+}
+
+#[test]
+fn vision_gate_disabled_no_images_is_noop() {
+    let (content, images) = super::apply_vision_gate(false, "plain text".to_string(), Vec::new());
+    assert_eq!(content, "plain text", "no images → content unchanged");
+    assert_eq!(images, Vec::new());
+}
 
 #[test]
 fn build_system_prompt_no_agents_md() {

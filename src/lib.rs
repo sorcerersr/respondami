@@ -13,6 +13,7 @@ pub mod context;
 pub mod event_loop;
 pub mod hooks;
 pub mod history_guard;
+pub mod image;
 pub mod key_handler;
 pub mod logging;
 pub mod mouse;
@@ -37,6 +38,8 @@ mod config_tests;
 mod event_loop_tests;
 #[cfg(test)]
 mod history_guard_tests;
+#[cfg(test)]
+mod image_tests;
 #[cfg(test)]
 mod logging_tests;
 #[cfg(test)]
@@ -80,6 +83,9 @@ use crate::tui::{App, AppState, Theme};
 pub async fn run() -> anyhow::Result<()> {
     // Initialize file-based logging (.respondami/logs/respondami.log)
     logging::init();
+    // Install the global panic hook now that the tracing subscriber is live,
+    // so any panic is logged with payload + location + backtrace.
+    logging::install_panic_hook();
     tracing::info!("respondami starting");
 
     // Ensure .respondami/ exists with a .gitignore (keeps artifacts out of git status)

@@ -7,6 +7,12 @@
 
 set -euo pipefail
 
+# Force clippy diagnostics to be re-emitted: cargo skips crates with a fresh
+# fingerprint and does not re-print their warnings, so a cached run would
+# pass the grep below even when the code has warnings. Touching the tracked
+# .rs files invalidates only the workspace crates; dependencies stay cached.
+git ls-files '*.rs' | xargs -r touch
+
 echo "🔍 Running cargo clippy..."
 
 if ! cargo clippy --all-targets --all-features 2>&1 | tee /tmp/clippy-output.txt; then

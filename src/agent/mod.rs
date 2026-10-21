@@ -454,6 +454,7 @@ pub async fn run_agent_with_snapshot(
                             tool_name: tc.name.clone(),
                             tool_args: tc.arguments.clone(),
                             result: error_result,
+                            images: Vec::new(),
                         })
                         .await;
                     continue;
@@ -507,6 +508,7 @@ pub async fn run_agent_with_snapshot(
                         tool_name: tc.name.clone(),
                         tool_args: tc.arguments.clone(),
                         result,
+                        images: Vec::new(),
                     })
                     .await;
                 continue;
@@ -571,6 +573,7 @@ pub async fn run_agent_with_snapshot(
                         tool_call_id: tc.id.clone(),
                         result: format!("Tool call blocked by hook: {blocked_error}"),
                         has_error: true,
+                        cancelled: false,
                         rtk_original: None,
                     })
                     .await;
@@ -591,6 +594,7 @@ pub async fn run_agent_with_snapshot(
                         tool_name: tc.name.clone(),
                         tool_args: tc.arguments.clone(),
                         result: blocked_result.clone(),
+                        images: Vec::new(),
                     })
                     .await;
                 // Add to context as a failed tool result
@@ -644,8 +648,18 @@ pub async fn run_agent_with_snapshot(
                 }
             });
 
-            // Create per-tool-call cancellation guard.
+            // Create per-tool-call cancellation guard and bridge the user's
+            // cancel signal into it. The watcher task sets the guard as soon
+            // as the watch channel flips (Esc/Ctrl+C) or its sender is
+            // dropped (TUI shutdown). Tools clean up from their own guard
+            // checks — the agent loop never drops the tool future to escape.
             let tool_cancel = CancelGuard::new();
+            let mut watcher_rx = cancel_rx.clone();
+            let watcher_guard = tool_cancel.clone();
+            let cancel_watcher = tokio::spawn(async move {
+                let _ = watcher_rx.wait_for(|v| *v).await;
+                watcher_guard.cancel();
+            });
 
             let result = tool_registry
                 .execute(
@@ -656,7 +670,11 @@ pub async fn run_agent_with_snapshot(
                     &tool_cancel,
                 )
                 .await;
+            cancel_watcher.abort(); // tool returned — no leak
             let has_error = result.is_err();
+            // A tool error that coincides with a set guard is a user-initiated
+            // cancellation, not a tool failure (distinguishes the TUI display).
+            let cancelled = has_error && tool_cancel.is_cancelled();
 
             // Drop the sender to signal the forwarder to stop
             drop(output_tx);
@@ -667,10 +685,14 @@ pub async fn run_agent_with_snapshot(
             // When tool has an error, send the error message as the result content.
             // This gives the LLM feedback on why the tool failed (e.g. edit rejection reason).
             // Matches pi-coding-agent behavior: Anthropic SDK sends error message as tool content.
-            let final_result = match result {
-                Ok(content) => content,
-                Err(e) => e.to_string(),
+            let (final_result, tool_images) = match result {
+                Ok(output) => (output.content, output.images),
+                Err(e) => (e.to_string(), Vec::new()),
             };
+
+            // Vision gate: drop image attachments when the model can't see them.
+            let (final_result, tool_images) =
+                apply_vision_gate(config.provider.vision, final_result, tool_images);
 
             // Run PostToolUse hooks (only for successful tool calls).
             // Collect hook output as instructions for the LLM (injected as synthetic tool call).
@@ -721,6 +743,7 @@ pub async fn run_agent_with_snapshot(
                     tool_call_id: tc.id.clone(),
                     result: final_result.clone(),
                     has_error,
+                    cancelled,
                     rtk_original: original_cmd.clone(),
                 })
                 .await;
@@ -752,6 +775,7 @@ pub async fn run_agent_with_snapshot(
                     tool_name: tc.name.clone(),
                     tool_args: tc.arguments.clone(),
                     result: final_result.clone(),
+                    images: tool_images.clone(),
                 })
                 .await;
 
@@ -759,7 +783,7 @@ pub async fn run_agent_with_snapshot(
             // saved above, so live and persisted history never diverge.
             let assistant_msg = AgentMessage::assistant_with_blocks(assistant_blocks, assistant_usage);
             let assistant_digest = message_digest(&assistant_msg);
-            let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), final_result);
+            let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), final_result, tool_images);
             let tool_digest = message_digest(&tool_msg);
             current_context.push(assistant_msg);
             context_digests.push(Some(assistant_digest));
@@ -790,6 +814,7 @@ pub async fn run_agent_with_snapshot(
                     crate::tools::HOOK_INSTRUCTION_TOOL.to_string(),
                     serde_json::json!({}),
                     hook_instructions.trim().to_string(),
+                    Vec::new(),
                 ));
                 context_digests.push(None);
             }
@@ -812,7 +837,7 @@ fn push_persisted_context_pair(
         }],
         None,
     );
-    let tool = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), result.to_string());
+    let tool = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), result.to_string(), Vec::new());
     push_context_message(context, digests, assistant, false);
     push_context_message(context, digests, tool, false);
 }
@@ -899,6 +924,31 @@ fn canonical_turn_blocks(
         tool_call: tool_call.clone(),
     });
     blocks
+}
+
+/// Vision gate: when the model doesn't support vision, replace image
+/// attachments with a text note so the model is never sent images it can't
+/// see. Gated here (not in the read tool) so the tool stays config-agnostic.
+/// The note replaces the content so the model knows the read succeeded but the
+/// image was dropped. When vision is enabled or there are no images, the pair
+/// is returned unchanged.
+pub(crate) fn apply_vision_gate(
+    vision: bool,
+    content: String,
+    images: Vec<crate::image::ImageContent>,
+) -> (String, Vec<crate::image::ImageContent>) {
+    if !vision && !images.is_empty() {
+        (
+            format!(
+                "[Vision disabled: read {} image(s) but the model cannot see them. \
+                 Set `provider.vision: true` in config to enable image support.]",
+                images.len()
+            ),
+            Vec::new(),
+        )
+    } else {
+        (content, images)
+    }
 }
 
 /// Log the last 3 context messages before a retry attempt.

@@ -14,6 +14,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::image::ImageContent;
+
 /// Lightweight cancellation guard for tool execution.
 ///
 /// Clone is cheap (Arc clone). `is_cancelled()` is lock-free.
@@ -71,18 +73,46 @@ mod bash_tests;
 #[cfg(test)]
 mod file_queue_tests;
 #[cfg(test)]
+mod mod_tests;
+#[cfg(test)]
 mod rtk_tests;
 
 /// Result of executing a tool.
 ///
-/// Tools return `anyhow::Result<String>` directly. This struct is kept
-/// for the `AgentEvent::SaveToolResult` session persistence, which needs
-/// to store both content and error as a single unit.
+/// Tools return `anyhow::Result<ToolOutput>` directly. `content` is the text
+/// the model and TUI see; `images` carries normalized image payloads (only the
+/// `read` tool populates this). This struct is kept for the
+/// `AgentEvent::SaveToolResult` session persistence, which needs to store both
+/// content and error as a single unit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// The output of a tool execution.
+///
+/// `content` is the text result (model + TUI). `images` carries normalized
+/// image payloads for vision support — only the `read` tool may populate this.
+/// The field is additive and backward-compatible: existing tools return an
+/// empty vec.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolOutput {
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageContent>,
+}
+
+impl ToolOutput {
+    /// Create a text-only output (no images).
+    #[must_use]
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            images: Vec::new(),
+        }
+    }
 }
 
 /// Definition of a tool.
@@ -109,7 +139,7 @@ pub trait ToolHandler: Send + Sync {
         cwd: &Path,
         output_tx: Option<&mpsc::Sender<String>>,
         cancel: &CancelGuard,
-    ) -> anyhow::Result<String>;
+    ) -> anyhow::Result<ToolOutput>;
 }
 
 /// Name of the internal `hook_instruction` tool — never callable by the LLM.
@@ -194,7 +224,7 @@ impl ToolRegistry {
         cwd: &Path,
         output_tx: Option<&mpsc::Sender<String>>,
         cancel: &CancelGuard,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ToolOutput> {
         match self.tools.get(name) {
             Some(handler) => handler.execute(args, cwd, output_tx, cancel).await,
             None => Err(anyhow::anyhow!("Unknown tool: {name}")),

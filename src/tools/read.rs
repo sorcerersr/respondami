@@ -4,10 +4,12 @@
 //! Detects binary files and returns an error instead of corrupting context.
 //! Supports cooperative cancellation via `CancelGuard`.
 
-use super::{CancelGuard, ToolDefinition, ToolHandler};
+use super::{CancelGuard, ToolDefinition, ToolHandler, ToolOutput};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
+
+use crate::image::{process_image, sniff_mime};
 
 /// Maximum lines to return in a single read.
 const MAX_LINES: usize = 2000;
@@ -53,7 +55,7 @@ impl ToolHandler for ReadTool {
         cwd: &Path,
         _output_tx: Option<&mpsc::Sender<String>>,
         cancel: &CancelGuard,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ToolOutput> {
         let path_str = args
             .get("path")
             .and_then(|v| v.as_str())
@@ -89,13 +91,35 @@ impl ToolHandler for ReadTool {
             return Err(anyhow::anyhow!("Operation cancelled"));
         }
 
+        // Image detection: sniff the magic bytes. If it's a supported image,
+        // normalize it and return it as an attachment. The text path below is
+        // never reached for images.
+        if sniff_mime(&bytes).is_ok() {
+            return match process_image(&path) {
+                Ok(img) => Ok(ToolOutput {
+                    content: format!(
+                        "Image: {path_str} ({}x{}, {})",
+                        img.width, img.height, img.mime_type
+                    ),
+                    images: vec![img],
+                }),
+                Err(crate::image::ImageError::Unsupported) => Ok(ToolOutput::text(format!(
+                    "Unsupported image format: {path_str}"
+                ))),
+                Err(crate::image::ImageError::TooLarge) => Ok(ToolOutput::text(format!(
+                    "Image too large after encoding: {path_str}"
+                ))),
+                Err(e) => Err(anyhow::anyhow!("Failed to process image: {e}")),
+            };
+        }
+
         // Check if binary (null bytes in first 512 bytes)
         let is_binary = bytes.iter().take(512).any(|&b| b == 0);
         if is_binary {
-            return Ok(format!(
+            return Ok(ToolOutput::text(format!(
                 "Binary file ({} bytes). Cannot display contents.",
                 bytes.len()
-            ));
+            )));
         }
 
         let content = String::from_utf8_lossy(&bytes).to_string();
@@ -146,7 +170,7 @@ impl ToolHandler for ReadTool {
             let first_line = all_lines[start];
             if first_line.len() > MAX_BYTES {
                 let first_line_size = format_bytes(first_line.len());
-                return Ok(format!(
+                return Ok(ToolOutput::text(format!(
                     "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
                     start + 1,
                     first_line_size,
@@ -154,7 +178,7 @@ impl ToolHandler for ReadTool {
                     start + 1,
                     path_str,
                     MAX_BYTES,
-                ));
+                )));
             }
         }
 
@@ -203,7 +227,7 @@ impl ToolHandler for ReadTool {
             }
         }
 
-        Ok(output)
+        Ok(ToolOutput::text(output))
     }
 }
 

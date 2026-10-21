@@ -6,8 +6,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-use crate::event_loop::{CompactionPollResult, CompactionResult, poll_compaction_task, transition_to_idle};
-use crate::session::CompactionPlan;
+use crate::event_loop::{CompactionPollResult, CompactionResult, handle_compaction_result, join_panic_message, poll_compaction_task, transition_to_idle};
+use crate::session::{CompactionPlan, RequestTokenUsage};
 use crate::turn::PendingTurn;
 use crate::tui::{App, AppState, ChatMessage};
 
@@ -45,6 +45,40 @@ fn compaction_result_debug() {
     let debug = format!("{result:?}");
     assert!(debug.contains("Success"));
     assert!(debug.contains("100"));
+}
+
+// ---- join_panic_message tests ----
+
+#[tokio::test]
+async fn join_panic_message_string_payload() {
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        panic!("a string panic");
+    });
+    let err = handle.await.unwrap_err();
+    assert!(err.is_panic());
+    assert_eq!(join_panic_message(err), "a string panic");
+}
+
+#[tokio::test]
+async fn join_panic_message_static_str_payload() {
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        panic!("a static str panic");
+    });
+    let err = handle.await.unwrap_err();
+    assert!(err.is_panic());
+    assert_eq!(join_panic_message(err), "a static str panic");
+}
+
+#[tokio::test]
+async fn join_panic_message_non_string_falls_back_to_generic() {
+    // Panic with a non-string payload (a u32). Both downcasts fail, so the
+    // message falls back to the generic "unknown panic payload" string.
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        std::panic::panic_any(42u32);
+    });
+    let err = handle.await.unwrap_err();
+    assert!(err.is_panic());
+    assert_eq!(join_panic_message(err), "unknown panic payload");
 }
 
 // ---- transition_to_idle tests ----
@@ -201,10 +235,111 @@ async fn poll_panicked_task_returns_idle() {
 
     assert!(matches!(result, CompactionPollResult::Idle));
     assert_eq!(app.modal.state, AppState::Idle);
+    // An aborted (non-panicking) task is reported as cancelled.
     assert!(matches!(
         app.chat.chat_messages.last(),
-        Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked."
+        Some(ChatMessage::System(msg)) if msg.content == "Compaction task cancelled."
     ));
+}
+
+#[tokio::test]
+async fn poll_panicking_task_surfaces_panic_message() {
+    let mut app = make_poll_app();
+    // A task that panics with a String payload — the JoinError carries the
+    // message, which handle_compaction_result must surface in the TUI.
+    app.compaction_task = Some(tokio::spawn(async move {
+        panic!("byte index 4096 is not a char boundary");
+    }));
+    yield_to_runtime().await;
+    let mut terminal = make_poll_terminal();
+
+    let result = poll_compaction_task(&mut app, &mut terminal).await;
+
+    assert!(matches!(result, CompactionPollResult::Idle));
+    assert_eq!(app.modal.state, AppState::Idle);
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked: byte index 4096 is not a char boundary"
+    ));
+}
+
+#[tokio::test]
+async fn poll_panicking_task_shows_first_line_only() {
+    let mut app = make_poll_app();
+    // A multi-line panic payload: the TUI shows only the first line while the
+    // full detail goes to the log.
+    app.compaction_task = Some(tokio::spawn(async move {
+        panic!("first line\nsecond line\nthird line");
+    }));
+    yield_to_runtime().await;
+    let mut terminal = make_poll_terminal();
+
+    let result = poll_compaction_task(&mut app, &mut terminal).await;
+
+    assert!(matches!(result, CompactionPollResult::Idle));
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::System(msg)) if msg.content == "Compaction task panicked: first line"
+    ));
+}
+
+// ---- handle_compaction_result usage-reset tests ----
+
+/// Seed a pre-compaction usage the status bar would otherwise keep showing
+/// (`accumulate_token_usage` never decreases, so a stale value sticks).
+fn seed_pre_compaction_usage(app: &mut App) {
+    app.session.current_request_usage = RequestTokenUsage {
+        input_tokens: 5000,
+        output_tokens: 300,
+        estimated: false,
+    };
+}
+
+#[tokio::test]
+async fn handle_compaction_result_success_resets_request_usage() {
+    let mut app = make_poll_app();
+    seed_pre_compaction_usage(&mut app);
+    let handle = tokio::spawn(async move {
+        Ok::<_, anyhow::Error>(noop_plan())
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Success { .. }));
+    // `noop_plan` is a no-op apply → tokens_after == tokens_before (1000).
+    assert_eq!(app.session.current_request_usage.input_tokens, 1000);
+    assert_eq!(app.session.current_request_usage.output_tokens, 0);
+    assert!(!app.session.current_request_usage.estimated);
+}
+
+#[tokio::test]
+async fn handle_compaction_result_failure_keeps_request_usage() {
+    let mut app = make_poll_app();
+    seed_pre_compaction_usage(&mut app);
+    let handle = tokio::spawn(async move {
+        Err::<CompactionPlan, anyhow::Error>(anyhow::anyhow!("provider down"))
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Failed(_)));
+    assert_eq!(app.session.current_request_usage.input_tokens, 5000);
+    assert_eq!(app.session.current_request_usage.output_tokens, 300);
+}
+
+#[tokio::test]
+async fn handle_compaction_result_panic_keeps_request_usage() {
+    let mut app = make_poll_app();
+    seed_pre_compaction_usage(&mut app);
+    let handle = tokio::spawn(async move {
+        panic!("compaction panic");
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Panicked));
+    assert_eq!(app.session.current_request_usage.input_tokens, 5000);
+    assert_eq!(app.session.current_request_usage.output_tokens, 300);
 }
 
 #[tokio::test]

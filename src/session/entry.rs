@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::image::ImageContent;
+
 /// A session entry stored in JSONL format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -90,6 +92,11 @@ pub enum AgentMessage {
         tool_name: String,
         tool_arguments: serde_json::Value,
         result: String,
+        /// Normalized image payloads returned by the tool (only the `read`
+        /// tool populates this). Re-injected as a synthetic user message at the
+        /// wire (`OpenAI` completions can't carry images in tool results).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageContent>,
     },
 }
 
@@ -285,12 +292,19 @@ impl AgentMessage {
 
     /// Create a tool result message.
     #[must_use]
-    pub fn tool(tool_call_id: String, tool_name: String, tool_arguments: serde_json::Value, result: String) -> Self {
+    pub fn tool(
+        tool_call_id: String,
+        tool_name: String,
+        tool_arguments: serde_json::Value,
+        result: String,
+        images: Vec<ImageContent>,
+    ) -> Self {
         AgentMessage::Tool {
             tool_call_id,
             tool_name,
             tool_arguments,
             result,
+            images,
         }
     }
 

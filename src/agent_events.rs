@@ -76,10 +76,7 @@ pub async fn process_agent_events(
             let handle = compaction.handle;
 
             match crate::event_loop::handle_compaction_result(app, handle, true).await {
-                crate::event_loop::CompactionResult::Success {
-                    tokens_after: ta,
-                    ..
-                } => {
+                crate::event_loop::CompactionResult::Success { .. } => {
                     // Restart agent after compaction (overflow recovery or threshold auto-continue).
                     if let Some(user_msg) = retry_user_message {
                         let system_msg = match reason {
@@ -89,14 +86,6 @@ pub async fn process_agent_events(
                         app.add_system_message(system_msg);
                         app.maybe_auto_scroll();
 
-                        // Reset tracking for the retry.
-                        // Use post-compaction token estimate instead of zero to avoid
-                        // 0% flicker in the status bar during the gap before first Usage event.
-                        app.session.current_request_usage = crate::session::RequestTokenUsage {
-                            input_tokens: ta,
-                            output_tokens: 0,
-                            estimated: false,
-                        };
                         app.start_streaming(&user_msg);
                         app.agent.tracker.start();
 
@@ -198,9 +187,9 @@ pub async fn process_agent_events(
                 app.add_pending_tool_call(&tool_call_id, &tool_name, &tool_args);
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::ToolCallDone { tool_call_id, result, has_error, rtk_original })) => {
+            Ok(Some(AgentEvent::ToolCallDone { tool_call_id, result, has_error, cancelled, rtk_original })) => {
                 app.agent.tracker.pause_timing(); // Exclude tool exec time from streaming time
-                app.update_tool_call_result(&tool_call_id, &result, has_error, rtk_original);
+                app.update_tool_call_result(&tool_call_id, &result, has_error, cancelled, rtk_original);
                 app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolOutput(text))) => {
@@ -256,12 +245,12 @@ pub async fn process_agent_events(
                     }
                 }
             }
-            Ok(Some(AgentEvent::SaveToolResult { tool_call_id, tool_name, tool_args, result })) => {
+            Ok(Some(AgentEvent::SaveToolResult { tool_call_id, tool_name, tool_args, result, images })) => {
                 if app.session.session_store.has_active_session() {
                     let parent_id = app.session.session_store.last_entry_id();
                     if let Err(e) = app.session.session_store.append_message(
                         parent_id,
-                        crate::session::AgentMessage::tool(tool_call_id, tool_name, tool_args, result),
+                        crate::session::AgentMessage::tool(tool_call_id, tool_name, tool_args, result, images),
                     ) {
                         tracing::error!("Failed to save tool result: {}", e);
                     }

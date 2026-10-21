@@ -14,13 +14,15 @@ pub struct ReadToolCall {
     pub total_lines: Option<u32>,
     pub content: String,
     pub has_error: bool,
+    /// User-initiated cancellation (Esc) — header shows `⚠ cancelled`.
+    pub cancelled: bool,
     pub expanded: bool,
 }
 
 impl ReadToolCall {
     /// Parse tool args and result to extract structured data.
     #[must_use]
-    pub fn from_args(result: &str, has_error: bool, tool_args: Option<&serde_json::Value>, expanded: bool) -> Self {
+    pub fn from_args(result: &str, has_error: bool, cancelled: bool, tool_args: Option<&serde_json::Value>, expanded: bool) -> Self {
         if has_error {
             return Self {
                 path: tool_args.and_then(|a| a.get("path").and_then(|v| v.as_str())).unwrap_or("unknown").to_string(),
@@ -29,6 +31,7 @@ impl ReadToolCall {
                 total_lines: None,
                 content: result.to_string(),
                 has_error: true,
+                cancelled: false,
                 expanded,
             };
         }
@@ -76,6 +79,7 @@ impl ReadToolCall {
             total_lines,
             content: result.to_string(),
             has_error: false,
+            cancelled,
             expanded,
         }
     }

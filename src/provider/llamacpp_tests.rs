@@ -3,12 +3,22 @@
 
 use super::llamacpp::to_openai_message;
 use super::{Message, ToolDef};
+use crate::image::ImageContent;
 use crate::session::ToolCall;
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
     CreateChatCompletionRequestArgs, FunctionObject,
 };
+
+fn test_image() -> ImageContent {
+    ImageContent {
+        data: "aW1hZ2U=".to_string(), // base64 of "image"
+        mime_type: "image/png".to_string(),
+        width: 100,
+        height: 50,
+    }
+}
 
     // -----------------------------------------------------------------------
     // to_openai_message — empty assistant guard
@@ -93,6 +103,55 @@ use async_openai::types::chat::{
         let json = serde_json::to_string(&openai_msg).unwrap();
         assert!(json.contains(r#""content":"hello""#),
             "assistant content should be present when no tool_calls. JSON: {json}");
+    }
+
+    // -----------------------------------------------------------------------
+    // to_openai_message — vision (user message with images → array form)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn to_openai_message_user_text_only_is_string_form() {
+        let msg = Message::User {
+            content: "hello".to_string(),
+            images: Vec::new(),
+        };
+        let openai_msg = to_openai_message(&msg).unwrap();
+        let json = serde_json::to_string(&openai_msg).unwrap();
+        // Text-only user messages keep the plain string content form.
+        assert!(json.contains(r#""content":"hello""#),
+            "text-only user message should use string content. JSON: {json}");
+    }
+
+    #[test]
+    fn to_openai_message_user_with_images_is_array_form() {
+        let msg = Message::User {
+            content: String::new(),
+            images: vec![test_image()],
+        };
+        let openai_msg = to_openai_message(&msg).unwrap();
+        let json = serde_json::to_string(&openai_msg).unwrap();
+        // Image messages use the array content form with a data URL.
+        assert!(json.contains(r#""type":"image_url""#),
+            "user message with images should use image_url part. JSON: {json}");
+        assert!(json.contains("data:image/png;base64,aW1hZ2U="),
+            "data URL should carry the base64 payload. JSON: {json}");
+        // The content must be an array, not a string.
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            val["content"].is_array(),
+            "content should be an array for image messages. JSON: {json}"
+        );
+    }
+
+    #[test]
+    fn to_openai_message_user_with_multiple_images() {
+        let msg = Message::User {
+            content: String::new(),
+            images: vec![test_image(), test_image()],
+        };
+        let openai_msg = to_openai_message(&msg).unwrap();
+        let val: serde_json::Value = serde_json::to_value(&openai_msg).unwrap();
+        assert_eq!(val["content"].as_array().unwrap().len(), 2);
     }
 
     // -----------------------------------------------------------------------
