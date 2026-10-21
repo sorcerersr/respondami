@@ -88,10 +88,15 @@ pub fn rebuild_hook_registry(
 /// Best-effort display name for a skill hook command.
 ///
 /// Takes the file name of the first path-like token (e.g. `inject-plan.sh`
-/// from `sh ${SKILL_DIR}/scripts/inject-plan.sh`); falls back to the full
+/// from `sh ${SKILL_DIR}/scripts/inject-plan.sh`); shell variable
+/// assignment tokens (e.g. `SKILL_DIR="${SKILL_DIR:-/...}";`) are skipped so
+/// a default path inside an assignment can't win; falls back to the full
 /// command when no token contains a path separator.
 pub(crate) fn derive_hook_name(command: &str) -> String {
     for token in command.split_whitespace() {
+        if is_env_assignment(token) {
+            continue;
+        }
         let trimmed = token.trim_matches(|c| c == '"' || c == '\'');
         if trimmed.contains('/')
             && let Some(file_name) = Path::new(trimmed).file_name()
@@ -103,6 +108,19 @@ pub(crate) fn derive_hook_name(command: &str) -> String {
         }
     }
     command.to_string()
+}
+
+/// Whether a whitespace token is a shell variable assignment (`IDENT=...`).
+///
+/// Used by [`derive_hook_name`] to skip assignments like
+/// `SKILL_DIR="${SKILL_DIR:-/...}";` whose value may contain a path.
+fn is_env_assignment(token: &str) -> bool {
+    token
+        .split_once('=')
+        .is_some_and(|(key, _)| {
+            !key.is_empty()
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// Format successful hook stdout into a context-injection suffix.

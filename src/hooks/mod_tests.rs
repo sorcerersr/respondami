@@ -240,6 +240,32 @@ fn derive_hook_name_ignores_env_var_tokens() {
     );
 }
 
+#[test]
+fn derive_hook_name_skips_env_assignment_tokens() {
+    // The planning-with-files Stop hook command, verbatim: the first token
+    // is a variable assignment whose default value contains a path; the
+    // script file in the `-f` test must win instead.
+    let cmd = r#"SKILL_DIR="${SKILL_DIR:-/home/dev/.config/respondami/skills/planning-with-files}"; [ -f "${SKILL_DIR}/scripts/gate-stop.sh" ] && sh "${SKILL_DIR}/scripts/gate-stop.sh"; exit 0"#;
+    assert_eq!(derive_hook_name(cmd), "gate-stop.sh");
+}
+
+#[test]
+fn derive_hook_name_skips_simple_assignment() {
+    assert_eq!(
+        derive_hook_name("FOO=bar sh /a/b/c.sh"),
+        "c.sh"
+    );
+}
+
+#[test]
+fn derive_hook_name_assignment_only_falls_back() {
+    // No non-assignment path-like token → full-command fallback.
+    assert_eq!(
+        derive_hook_name("SKILL_DIR=/a/b/c"),
+        "SKILL_DIR=/a/b/c"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // format_hook_context
 // ---------------------------------------------------------------------------
