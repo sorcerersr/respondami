@@ -758,8 +758,7 @@ pub async fn run_agent_with_snapshot(
             // hook-injected context. The TUI (ToolCallDone) shows the clean
             // `final_result`; the session store and live context receive
             // `model_result` (tail-append keeps the prefix stable).
-            let model_result =
-                final_result.clone() + &crate::hooks::format_hook_context(&pre_tool_outputs);
+            let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs);
 
             // Signal TUI: tool call finished (update pending message with result)
             // Note: the tool result sent to TUI does NOT include hook instructions —
@@ -883,6 +882,22 @@ fn push_context_message(
     let digest = if ephemeral { None } else { Some(message_digest(&message)) };
     digests.push(digest);
     context.push(message);
+}
+
+/// Model-bound tool result: the clean tool output plus any `PreToolUse`
+/// hook-injected context (see `format_hook_context`).
+///
+/// The TUI shows the clean result; the session store and live context both
+/// receive this form, so they stay byte-identical. The tail-append keeps the
+/// outgoing prefix stable for provider prefix caching. A blocked `PreToolUse`
+/// hook never reaches this path — the blocked branch saves its own result and
+/// skips the tool entirely, so it injects nothing.
+#[must_use]
+pub(crate) fn model_bound_tool_result(
+    final_result: &str,
+    pre_tool_outputs: &[(String, String)],
+) -> String {
+    final_result.to_string() + &crate::hooks::format_hook_context(pre_tool_outputs)
 }
 
 /// Verify the outgoing context prefix against the history guard before each

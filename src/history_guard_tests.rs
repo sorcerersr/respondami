@@ -377,3 +377,77 @@ fn guard_canonical_shape_is_silent() {
     ];
     assert!(guard.check_and_update(&second).is_none(), "byte-identical prefix must be silent");
 }
+
+// ---- Skill-hook context injection (G2) ----
+
+/// Skill-hook injections (`UserPromptSubmit` → user message, `PreToolUse` → tool
+/// result) are persisted consistently: the model-bound form is what is both
+/// sent and saved, so no ephemeral marking is needed and the guard must stay
+/// silent across consecutive requests.
+#[test]
+fn guard_hook_injected_prefix_is_stable() {
+    // The model-bound forms: hook stdout appended before send and save.
+    let injected_user = user("hello\n\n[hook: ups.sh]\ninjected-context");
+    let injected_tool = tool_result("t1", "file written\n\n[hook: planning:inject-plan.sh]\nkeep the plan");
+
+    // Simulate JSONL persistence + context rebuild: the rebuilt messages must
+    // be byte-identical on the wire, so digests match.
+    let rebuilt_user: AgentMessage =
+        serde_json::from_value(serde_json::to_value(&injected_user).unwrap()).unwrap();
+    let rebuilt_tool: AgentMessage =
+        serde_json::from_value(serde_json::to_value(&injected_tool).unwrap()).unwrap();
+    assert_eq!(
+        message_digest(&rebuilt_user),
+        message_digest(&injected_user),
+        "persisted user message must digest identically"
+    );
+    assert_eq!(
+        message_digest(&rebuilt_tool),
+        message_digest(&injected_tool),
+        "persisted tool result must digest identically"
+    );
+
+    let mut guard = HistoryGuard::new();
+    // Request 1: system + hook-injected user message.
+    let req1: Vec<Option<MessageDigest>> = vec![
+        Some(message_digest(&system("sys"))),
+        Some(message_digest(&injected_user)),
+    ];
+    assert!(guard.check_and_update(&req1).is_none());
+    // Request 2: rebuilt prefix + assistant + hook-injected tool result.
+    let req2: Vec<Option<MessageDigest>> = vec![
+        Some(message_digest(&system("sys"))),
+        Some(message_digest(&rebuilt_user)),
+        Some(message_digest(&assistant_with("a1", false))),
+        Some(message_digest(&rebuilt_tool)),
+    ];
+    assert!(
+        guard.check_and_update(&req2).is_none(),
+        "hook-injected, consistently persisted prefix must be silent"
+    );
+}
+
+/// The counter-case: if the live context carried the clean user message while
+/// the session stored the hook-injected one (or vice versa), the guard must
+/// flag the drift — proving the previous test exercises the invariant.
+#[test]
+fn guard_detects_hook_injection_divergence() {
+    let clean_user = user("hello");
+    let injected_user = user("hello\n\n[hook: ups.sh]\ninjected-context");
+
+    let mut guard = HistoryGuard::new();
+    let req1: Vec<Option<MessageDigest>> = vec![
+        Some(message_digest(&system("sys"))),
+        Some(message_digest(&injected_user)),
+    ];
+    assert!(guard.check_and_update(&req1).is_none());
+    let req2: Vec<Option<MessageDigest>> = vec![
+        Some(message_digest(&system("sys"))),
+        Some(message_digest(&clean_user)),
+        Some(message_digest(&assistant_with("a1", false))),
+    ];
+    assert!(
+        guard.check_and_update(&req2).is_some(),
+        "live/persisted divergence at the injected message must be detected"
+    );
+}

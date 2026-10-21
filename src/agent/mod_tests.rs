@@ -278,3 +278,55 @@ fn push_context_message_lockstep_digests() {
     assert_eq!(digests[0], Some(persisted_digest));
     assert_eq!(digests[1], None, "ephemeral messages must not join the prefix comparison");
 }
+
+// ---- PreToolUse model-bound tool result ----
+
+/// `PreToolUse` hook stdout is appended to the tool result the model sees, in
+/// the `[hook: <name>]` framing, after the clean output.
+#[test]
+fn model_bound_tool_result_appends_pretool_hook_stdout() {
+    let outputs = vec![(
+        "planning:inject-plan.sh".to_string(),
+        "keep the plan in mind".to_string(),
+    )];
+    let result = super::model_bound_tool_result("file written", &outputs);
+    assert!(result.starts_with("file written"), "clean output first: {result}");
+    assert!(result.contains("[hook: planning:inject-plan.sh]"), "framed block: {result}");
+    assert!(result.contains("keep the plan in mind"), "stdout: {result}");
+}
+
+/// Multiple successful hooks each get their own block, in order.
+#[test]
+fn model_bound_tool_result_multiple_hooks() {
+    let outputs = vec![
+        ("a.sh".to_string(), "first".to_string()),
+        ("b.sh".to_string(), "second".to_string()),
+    ];
+    let result = super::model_bound_tool_result("ok", &outputs);
+    let first = result.find("[hook: a.sh]").expect("first block");
+    let second = result.find("[hook: b.sh]").expect("second block");
+    assert!(first < second, "hook order preserved");
+}
+
+/// Empty stdout (or no hooks) → the model result is exactly the clean output.
+#[test]
+fn model_bound_tool_result_empty_stdout_unchanged() {
+    assert_eq!(super::model_bound_tool_result("file written", &[]), "file written");
+    let outputs = vec![("a.sh".to_string(), String::new())];
+    assert_eq!(
+        super::model_bound_tool_result("file written", &outputs),
+        "file written",
+        "empty stdout must not add a block"
+    );
+}
+
+/// A blocked `PreToolUse` hook (exit 2) injects nothing: the blocked branch
+/// never collects outputs and saves its own "blocked" result instead, so the
+/// model-bound form is built from an empty output list.
+#[test]
+fn model_bound_tool_result_blocked_hook_injects_nothing() {
+    let result = super::model_bound_tool_result(
+        "Tool call blocked by hook: no",&[],
+    );
+    assert_eq!(result, "Tool call blocked by hook: no");
+}

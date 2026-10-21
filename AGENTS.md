@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1183 total)
+cargo test --workspace                         # all tests (1189 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1183 tests** (965 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1189 tests** (971 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 

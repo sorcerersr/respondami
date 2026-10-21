@@ -472,7 +472,9 @@ pub fn rollback_pending_turn(app: &mut App) {
 
 /// Undo the setup a turn performed before it was launched: truncate chat to
 /// the pre-turn length, discard an auto-created session, restore active
-/// skills, and put the typed text back in the editor.
+/// skills, and put the typed text back in the editor. Also clears any
+/// `PreCompact` hook context captured for a compaction that never ran (the
+/// cancel path bypasses `handle_compaction_result`, the only other clear).
 ///
 /// Shared by `rollback_pending_turn` (compaction cancel) and the blocked
 /// `PreCompact` pre-prompt path (a hook vetoed compaction, so the turn must
@@ -485,6 +487,9 @@ fn undo_turn_setup(
     pre_turn_skills: HashSet<String>,
 ) {
     app.chat.chat_messages.truncate(pre_turn_chat_len);
+    // The compaction this context was captured for will not run; drop it so
+    // it can't leak into a later compaction's summary.
+    app.pending_precompact_context = None;
     if created_session {
         app.session.session_store = crate::session::SessionStore::new(&app.config.cwd);
         app.session.reset_history_guard();
