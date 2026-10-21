@@ -4,7 +4,7 @@ default-members = [".", "crates/*"]
 
 [package]
 name = "respondami"
-version = "0.1.0"
+version = "0.2.0"
 description = "A privacy-first coding agent. One binary, no telemetry, skills-driven."
 edition = "2024"
 license = "MIT"

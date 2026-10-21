@@ -1,6 +1,6 @@
 # Respondami
 
-> **v0.1.0** — privacy-first coding agent. One binary, no telemetry, skills-driven.
+> **v0.2.0** — privacy-first coding agent. One binary, no telemetry, skills-driven.
 
 Built with [Ratatui] and [Crossterm].
 
