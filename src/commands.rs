@@ -37,6 +37,13 @@ pub async fn execute_palette_command(
                 app.session.session_store = SessionStore::new(&app.config.cwd);
                 app.chat.chat_messages.clear();
                 app.active_skills.clear();
+                // No skills active — the registry is directory hooks only.
+                app.config.hook_registry = crate::hooks::rebuild_hook_registry(
+                    &app.config.skills,
+                    &app.active_skills,
+                    &Config::config_dir(),
+                    &app.config.cwd,
+                );
                 app.session.reset_for_new_session();
             }
         }
@@ -110,7 +117,14 @@ pub async fn execute_palette_command(
             app.save_config()?;
         }
         "reload_hooks" => {
-            app.config.hook_registry = crate::hooks::load_all_hooks(&Config::config_dir(), &app.config.cwd);
+            // Rebuild from directory hooks plus the currently active skills so
+            // skill hooks survive a reload (activation-scoped firing).
+            app.config.hook_registry = crate::hooks::rebuild_hook_registry(
+                &app.config.skills,
+                &app.active_skills,
+                &Config::config_dir(),
+                &app.config.cwd,
+            );
             app.add_system_message(&format!(
                 "Hooks reloaded: {} active",
                 app.config.hook_registry.total_count()

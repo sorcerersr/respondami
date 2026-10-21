@@ -42,6 +42,14 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // Restore activated skills from session metadata
     let activated = app.session.session_store.get_activated_skills();
     app.active_skills = activated.into_iter().collect();
+    // Rebuild the hook registry so skill hooks of the restored active skills
+    // fire again (activation-scoped; directory hooks are re-discovered too).
+    app.config.hook_registry = crate::hooks::rebuild_hook_registry(
+        &app.config.skills,
+        &app.active_skills,
+        &crate::config::Config::config_dir(),
+        &app.config.cwd,
+    );
     // Rebuild chat display from session using the adapter
     let adapter = crate::session::SessionDisplayAdapter::new(app.config.tool_output_expanded);
     app.chat.chat_messages = adapter.build_messages(app.session.session_store.entries());

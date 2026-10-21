@@ -13,6 +13,9 @@ async fn execute_hook_success() {
         name: "test.sh".to_string(),
         command: "echo 'hello world'".to_string(),
         source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
     };
     let context = HookContext {
         event: HookEvent::PreToolUse,
@@ -37,6 +40,9 @@ async fn execute_hook_blocking() {
         name: "block.sh".to_string(),
         command: "echo 'blocked' >&2; exit 2".to_string(),
         source: HookSource::Project,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
     };
     let context = HookContext {
         event: HookEvent::PreToolUse,
@@ -60,6 +66,9 @@ async fn execute_hook_non_blocking_error() {
         name: "warn.sh".to_string(),
         command: "echo 'warning' >&2; exit 1".to_string(),
         source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
     };
     let context = HookContext {
         event: HookEvent::PostToolUse,
@@ -84,6 +93,9 @@ async fn execute_hook_environment_variables() {
         name: "env-test.sh".to_string(),
         command: "echo HOOK_EVENT=$HOOK_EVENT HOOK_NAME=$HOOK_NAME PROMPT=$PROMPT".to_string(),
         source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
     };
     let context = HookContext {
         event: HookEvent::UserPromptSubmit,
@@ -108,6 +120,9 @@ async fn execute_hook_timeout() {
         name: "slow.sh".to_string(),
         command: "sleep 31".to_string(),
         source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
     };
     let context = HookContext {
         event: HookEvent::PreToolUse,
@@ -133,6 +148,9 @@ async fn execute_hook_output_truncation() {
         name: "big-output.sh".to_string(),
         command: format!("echo '{large_text}'"),
         source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
     };
     let context = HookContext {
         event: HookEvent::Stop,
@@ -147,6 +165,58 @@ async fn execute_hook_output_truncation() {
     let result = execute_hook(&hook, &context).await;
     assert!(result.stdout.len() <= MAX_OUTPUT_BYTES + 100); // +100 for truncation note
     assert!(result.stdout.contains("truncated"));
+}
+
+#[tokio::test]
+async fn execute_hook_skill_env_vars() {
+    let hook = Hook {
+        event: HookEvent::PreToolUse,
+        name: "planning:inject.sh".to_string(),
+        command: "echo SKILL_NAME=$SKILL_NAME SKILL_DIR=$SKILL_DIR".to_string(),
+        source: HookSource::Global,
+        skill_name: Some("planning".to_string()),
+        skill_dir: Some(PathBuf::from("/skills/planning")),
+        matcher: super::loader::ToolMatcher::All,
+    };
+    let context = HookContext {
+        event: HookEvent::PreToolUse,
+        hook_name: "planning:inject.sh".to_string(),
+        cwd: PathBuf::from("."),
+        tool_name: Some("Write".to_string()),
+        tool_input: None,
+        tool_result: None,
+        prompt: None,
+    };
+
+    let result = execute_hook(&hook, &context).await;
+    assert!(result.stdout.contains("SKILL_NAME=planning"));
+    assert!(result.stdout.contains("SKILL_DIR=/skills/planning"));
+}
+
+#[tokio::test]
+async fn execute_hook_no_skill_env_vars_for_directory_hook() {
+    let hook = Hook {
+        event: HookEvent::PreToolUse,
+        name: "dir.sh".to_string(),
+        command: "echo NAME=${SKILL_NAME:-unset} DIR=${SKILL_DIR:-unset}".to_string(),
+        source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
+    };
+    let context = HookContext {
+        event: HookEvent::PreToolUse,
+        hook_name: "dir.sh".to_string(),
+        cwd: PathBuf::from("."),
+        tool_name: None,
+        tool_input: None,
+        tool_result: None,
+        prompt: None,
+    };
+
+    let result = execute_hook(&hook, &context).await;
+    assert!(result.stdout.contains("NAME=unset"));
+    assert!(result.stdout.contains("DIR=unset"));
 }
 
 #[test]

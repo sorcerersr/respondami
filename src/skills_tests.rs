@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::fs;
 
+use crate::hooks::HookEvent;
 use crate::skills::*;
 
 // ---------------------------------------------------------------------------
@@ -279,6 +280,7 @@ fn format_skills_for_prompt_single() {
         description: "Handle PDF files".to_string(),
         license: None,
         metadata: HashMap::new(),
+        hooks: Vec::new(),
         file_path: PathBuf::from("/home/user/.config/respondami/skills/pdf/SKILL.md"),
         base_dir: PathBuf::from("/home/user/.config/respondami/skills/pdf"),
         source: SkillSource::Global,
@@ -298,6 +300,7 @@ fn format_skills_for_prompt_escapes_xml() {
         description: "A <b>bold</b> & \"special\" description".to_string(),
         license: None,
         metadata: HashMap::new(),
+        hooks: Vec::new(),
         file_path: PathBuf::from("/skills/test/SKILL.md"),
         base_dir: PathBuf::from("/skills/test"),
         source: SkillSource::Global,
@@ -404,4 +407,142 @@ fn parse_skill_metadata() {
     let (skill, _) = parse_skill(&skill_dir.join("SKILL.md"), SkillSource::Global).unwrap();
     assert_eq!(skill.metadata.get("author"), Some(&"me".to_string()));
     assert_eq!(skill.metadata.get("version"), Some(&"2.0".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter hooks parsing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_hooks_field_no_hooks() {
+    let (hooks, warnings) = parse_hooks_field("name: x\ndescription: y");
+    assert_eq!(hooks.len(), 0);
+    assert_eq!(warnings.len(), 0);
+}
+
+#[test]
+fn parse_hooks_field_with_matcher() {
+    let yaml = "name: x\n\nhooks:\n  PreToolUse:\n    - matcher: \"Write|Edit\"\n      hooks:\n        - type: command\n          command: \"echo guard\"";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(warnings.len(), 0);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].event, HookEvent::PreToolUse);
+    assert_eq!(hooks[0].matcher, Some("Write|Edit".to_string()));
+    assert_eq!(hooks[0].command, "echo guard");
+}
+
+#[test]
+fn parse_hooks_field_no_matcher() {
+    let yaml = "hooks:\n  UserPromptSubmit:\n    - hooks:\n        - type: command\n          command: \"echo hi\"";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(warnings.len(), 0);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].event, HookEvent::UserPromptSubmit);
+    assert_eq!(hooks[0].matcher, None);
+}
+
+#[test]
+fn parse_hooks_field_unknown_event_warns() {
+    let yaml = "hooks:\n  NotAnEvent:\n    - hooks:\n        - type: command\n          command: \"echo x\"";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(hooks.len(), 0);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("NotAnEvent"));
+}
+
+#[test]
+fn parse_hooks_field_non_command_type_warns() {
+    let yaml = "hooks:\n  Stop:\n    - hooks:\n        - type: prompt\n          command: \"echo x\"";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(hooks.len(), 0);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("type must be \"command\""));
+}
+
+#[test]
+fn parse_hooks_field_missing_command_warns() {
+    let yaml = "hooks:\n  Stop:\n    - hooks:\n        - type: command";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(hooks.len(), 0);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("missing command"));
+}
+
+#[test]
+fn parse_hooks_field_malformed_hooks_node_warns() {
+    // Valid YAML, but `hooks` is a scalar, not a mapping → the node can't
+    // deserialize into the expected shape → a single "malformed" warning.
+    let yaml = "name: x\nhooks: just-a-string";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(hooks.len(), 0);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("malformed"));
+}
+
+#[test]
+fn parse_hooks_field_multiple_events_and_groups() {
+    let yaml = "hooks:\n  PreToolUse:\n    - matcher: \"Write\"\n      hooks:\n        - type: command\n          command: \"a\"\n    - hooks:\n        - type: command\n          command: \"b\"\n  Stop:\n    - hooks:\n        - type: command\n          command: \"c\"";
+    let (hooks, warnings) = parse_hooks_field(yaml);
+    assert_eq!(warnings.len(), 0);
+    assert_eq!(hooks.len(), 3);
+    assert_eq!(hooks[0].command, "a");
+    assert_eq!(hooks[0].matcher, Some("Write".to_string()));
+    assert_eq!(hooks[1].command, "b");
+    assert_eq!(hooks[1].matcher, None);
+    assert_eq!(hooks[2].event, HookEvent::Stop);
+}
+
+#[test]
+fn parse_skill_with_hooks_end_to_end() {
+    let dir = TempDir::new().unwrap();
+    let skill_dir = dir.path().join("hooky");
+    fs::create_dir(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: hooky\ndescription: has hooks\n\nhooks:\n  PreToolUse:\n    - matcher: \"Write|Edit\"\n      hooks:\n        - type: command\n          command: \"sh guard.sh\"\n  Stop:\n    - hooks:\n        - type: command\n          command: \"echo done\"\n---\nBody.",
+    )
+    .unwrap();
+
+    let (skill, diagnostics) = parse_skill(&skill_dir.join("SKILL.md"), SkillSource::Global).unwrap();
+    assert_eq!(diagnostics.len(), 0, "no diagnostics expected: {diagnostics:?}");
+    assert_eq!(skill.hooks.len(), 2);
+    assert_eq!(skill.hooks[0].event, HookEvent::PreToolUse);
+    assert_eq!(skill.hooks[0].matcher, Some("Write|Edit".to_string()));
+    assert_eq!(skill.hooks[1].event, HookEvent::Stop);
+}
+
+#[test]
+fn parse_skill_malformed_hooks_keeps_other_fields() {
+    let dir = TempDir::new().unwrap();
+    let skill_dir = dir.path().join("broken-hooks");
+    fs::create_dir(&skill_dir).unwrap();
+    // `hooks:` is a scalar, not a mapping → malformed. The rest of the
+    // frontmatter must still parse.
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: broken-hooks\ndescription: still loads\nhooks: just-a-string\n---\nBody.",
+    )
+    .unwrap();
+
+    let (skill, diagnostics) = parse_skill(&skill_dir.join("SKILL.md"), SkillSource::Global).unwrap();
+    assert_eq!(skill.name, "broken-hooks");
+    assert_eq!(skill.description, "still loads");
+    assert_eq!(skill.hooks.len(), 0);
+    assert!(diagnostics.iter().any(|d| d.message.contains("malformed")));
+}
+
+#[test]
+fn parse_skill_no_hooks_backward_compatible() {
+    let dir = TempDir::new().unwrap();
+    let skill_dir = dir.path().join("plain");
+    fs::create_dir(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: plain\ndescription: no hooks\n---\nBody.",
+    )
+    .unwrap();
+
+    let (skill, diagnostics) = parse_skill(&skill_dir.join("SKILL.md"), SkillSource::Global).unwrap();
+    assert_eq!(skill.hooks.len(), 0);
+    assert_eq!(diagnostics.len(), 0);
 }

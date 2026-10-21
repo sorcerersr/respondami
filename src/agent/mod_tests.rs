@@ -78,6 +78,7 @@ fn build_system_prompt_agents_md_error_includes_skills() {
         description: "A test skill".to_string(),
         license: None,
         metadata: HashMap::new(),
+        hooks: Vec::new(),
         file_path: PathBuf::from("/test/SKILL.md"),
         base_dir: PathBuf::from("/test"),
         source: SkillSource::Global,

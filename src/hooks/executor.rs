@@ -91,6 +91,12 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
     if let Some(prompt) = &context.prompt {
         env_vars.insert("PROMPT".to_string(), prompt.clone());
     }
+    if let Some(skill_name) = &hook.skill_name {
+        env_vars.insert("SKILL_NAME".to_string(), skill_name.clone());
+    }
+    if let Some(skill_dir) = &hook.skill_dir {
+        env_vars.insert("SKILL_DIR".to_string(), skill_dir.to_string_lossy().to_string());
+    }
 
     // Spawn the shell command
     let mut cmd = Command::new("bash");

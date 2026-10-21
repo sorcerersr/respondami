@@ -260,6 +260,8 @@ pub async fn run_turn_with_input(
 
     let mut prompt_blocked = false;
     let mut blocked_error = String::new();
+    // stdout from successful hooks, appended to the model-bound input.
+    let mut ups_outputs: Vec<(String, String)> = Vec::new();
 
     for hook in user_prompt_hooks {
         let context = crate::hooks::HookContext {
@@ -289,6 +291,9 @@ pub async fn run_turn_with_input(
             blocked_error = result.stderr.clone();
             break;
         }
+        if result.success() {
+            ups_outputs.push((hook.name.clone(), result.stdout.clone()));
+        }
     }
 
     if prompt_blocked {
@@ -296,6 +301,11 @@ pub async fn run_turn_with_input(
         app.chat.auto_scroll = true;
         return Ok(false);
     }
+
+    // Model-bound input: the user's text plus any hook-injected context.
+    // The TUI displays the original `display` text; the model and session
+    // store receive `model_input` (tail-append keeps the prefix stable).
+    let model_input = input.clone() + &crate::hooks::format_hook_context(&ups_outputs);
 
     // Display text: what the user sees in chat and what the editor is
     // restored to on cancel. `None` → the input itself.
@@ -338,10 +348,73 @@ pub async fn run_turn_with_input(
 
         // Use estimate_context_tokens which prefers actual LLM usage data
         let estimated = app.session.session_store.estimate_context_tokens(system_overhead);
-        let user_msg_tokens = est.estimate_tokens(&input);
+        let user_msg_tokens = est.estimate_tokens(&model_input);
         let total_with_input = estimated.saturating_add(user_msg_tokens);
 
         if compaction_settings.should_compact(total_with_input, app.config.context_window) {
+            // Run PreCompact hooks before deferring. A blocked hook (exit 2)
+            // vetoes compaction: undo the turn setup and do not launch the
+            // agent (mirrors the mid-turn "don't proceed" semantics).
+            let pre_compact_hooks =
+                app.config.hook_registry.hooks(crate::hooks::HookEvent::PreCompact);
+            let mut precompact_blocked = false;
+            let mut precompact_blocked_error = String::new();
+            let mut precompact_outputs: Vec<(String, String)> = Vec::new();
+            for hook in pre_compact_hooks {
+                let context = crate::hooks::HookContext {
+                    event: crate::hooks::HookEvent::PreCompact,
+                    hook_name: hook.name.clone(),
+                    cwd: app.config.cwd.clone(),
+                    tool_name: None,
+                    tool_input: None,
+                    tool_result: None,
+                    prompt: None,
+                };
+                let result = crate::hooks::execute_hook(hook, &context).await;
+                app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(
+                    crate::tui::messages::HookMessage {
+                        event: crate::hooks::HookEvent::PreCompact,
+                        hook_name: hook.name.clone(),
+                        success: result.success(),
+                        stdout: result.stdout.clone(),
+                        stderr: result.stderr.clone(),
+                        tool_name: None,
+                    },
+                ));
+                app.chat.auto_scroll = true;
+                if result.blocked() {
+                    precompact_blocked = true;
+                    precompact_blocked_error = result.stderr.clone();
+                    break;
+                }
+                if result.success() {
+                    precompact_outputs.push((hook.name.clone(), result.stdout.clone()));
+                }
+            }
+
+            if precompact_blocked {
+                undo_turn_setup(
+                    app,
+                    pre_turn_chat_len,
+                    created_session,
+                    display,
+                    pre_turn_skills,
+                );
+                // Added after the truncation so the block note survives.
+                app.add_system_message(&format!(
+                    "Compaction blocked by hook: {precompact_blocked_error}"
+                ));
+                app.chat.auto_scroll = true;
+                return Ok(false);
+            }
+
+            // Capture PreCompact hook stdout for the summary (applied in
+            // `handle_compaction_result`).
+            let precompact_context = crate::hooks::format_hook_context(&precompact_outputs);
+            if !precompact_context.is_empty() {
+                app.pending_precompact_context = Some(precompact_context);
+            }
+
             app.add_system_message("Context approaching limit. Compacting before sending...");
             app.chat.auto_scroll = true;
 
@@ -366,7 +439,7 @@ pub async fn run_turn_with_input(
             }));
 
             app.pending_turn = Some(PendingTurn {
-                input,
+                input: model_input.clone(),
                 restore_input: display,
                 created_session,
                 pre_turn_chat_len,
@@ -376,7 +449,7 @@ pub async fn run_turn_with_input(
         }
     }
 
-    launch_agent_turn(app, input, terminal).await
+    launch_agent_turn(app, model_input, terminal).await
 }
 
 /// Roll back a deferred turn after compaction cancellation.
@@ -388,13 +461,36 @@ pub fn rollback_pending_turn(app: &mut App) {
     let Some(pending) = app.pending_turn.take() else {
         return;
     };
-    app.chat.chat_messages.truncate(pending.pre_turn_chat_len);
-    if pending.created_session {
+    undo_turn_setup(
+        app,
+        pending.pre_turn_chat_len,
+        pending.created_session,
+        pending.restore_input,
+        pending.pre_turn_skills,
+    );
+}
+
+/// Undo the setup a turn performed before it was launched: truncate chat to
+/// the pre-turn length, discard an auto-created session, restore active
+/// skills, and put the typed text back in the editor.
+///
+/// Shared by `rollback_pending_turn` (compaction cancel) and the blocked
+/// `PreCompact` pre-prompt path (a hook vetoed compaction, so the turn must
+/// not proceed).
+fn undo_turn_setup(
+    app: &mut App,
+    pre_turn_chat_len: usize,
+    created_session: bool,
+    restore_input: String,
+    pre_turn_skills: HashSet<String>,
+) {
+    app.chat.chat_messages.truncate(pre_turn_chat_len);
+    if created_session {
         app.session.session_store = crate::session::SessionStore::new(&app.config.cwd);
         app.session.reset_history_guard();
     }
-    app.active_skills = pending.pre_turn_skills;
-    app.editor.input_buffer = pending.restore_input;
+    app.active_skills = pre_turn_skills;
+    app.editor.input_buffer = restore_input;
     app.editor.cursor_pos = app.editor.input_buffer.len();
 }
 

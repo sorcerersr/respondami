@@ -32,6 +32,60 @@ use tempfile::TempDir;
         assert!(events.contains(&HookEvent::Stop));
     }
 
+    #[test]
+    fn hook_event_from_name_roundtrip() {
+        for event in HookEvent::all() {
+            assert_eq!(HookEvent::from_name(event.as_dir_name()), Some(*event));
+        }
+    }
+
+    #[test]
+    fn hook_event_from_name_unknown() {
+        assert_eq!(HookEvent::from_name("Bogus"), None);
+        assert_eq!(HookEvent::from_name(""), None);
+    }
+
+    // ---------------------------------------------------------------------------
+    // ToolMatcher tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn tool_matcher_all_matches_everything() {
+        let m = ToolMatcher::All;
+        assert!(m.matches("Write"));
+        assert!(m.matches("Bash"));
+        assert!(m.matches("anything"));
+    }
+
+    #[test]
+    fn tool_matcher_never_matches_nothing() {
+        let m = ToolMatcher::Never;
+        assert!(!m.matches("Write"));
+        assert!(!m.matches(""));
+    }
+
+    #[test]
+    fn tool_matcher_regex_case_insensitive() {
+        let m = ToolMatcher::Match(
+            regex::RegexBuilder::new("write|edit").case_insensitive(true).build().unwrap(),
+        );
+        assert!(m.matches("Write"));
+        assert!(m.matches("EDIT"));
+        assert!(m.matches("Edit"));
+        assert!(!m.matches("Read"));
+        assert!(!m.matches("Bash"));
+    }
+
+    #[test]
+    fn tool_matcher_regex_substring() {
+        let m = ToolMatcher::Match(
+            regex::RegexBuilder::new("bash").case_insensitive(true).build().unwrap(),
+        );
+        assert!(m.matches("Bash"));
+        assert!(m.matches("Bashish")); // is_match is a substring search
+        assert!(!m.matches("Read"));
+    }
+
     // ---------------------------------------------------------------------------
     // HookRegistry tests
     // ---------------------------------------------------------------------------
@@ -52,6 +106,9 @@ use tempfile::TempDir;
             name: "test.sh".to_string(),
             command: "echo test".to_string(),
             source: HookSource::Global,
+            skill_name: None,
+            skill_dir: None,
+            matcher: ToolMatcher::All,
         });
         assert!(registry.has_hooks(HookEvent::PreToolUse));
         assert_eq!(registry.hooks(HookEvent::PreToolUse).len(), 1);

@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1139 total)
+cargo test --workspace                         # all tests (1183 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1139 tests** (921 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1183 tests** (965 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -93,6 +93,15 @@ cargo test --workspace                       # all tests pass
 - The synthetic `hook_instruction` message pair is sent to the LLM but never persisted; it gets `None` digests so the guard skips it.
 - Reset the guard baseline after legitimate rewrites: new session, session resume, and compaction (`SessionState::reset_history_guard`).
 - Streaming `ContentBlock`s are filtered by `finalize_tool_calls` (provider/mod.rs) before use — empty id/name placeholders and unparseable `arguments` JSON are dropped so they can't leak into persisted or resent content.
+
+### Skill Hooks (frontmatter `hooks:`)
+
+- Skill frontmatter `hooks:` load into `Skill.hooks` (`src/skills.rs`). Malformed entries → `SkillDiagnostic` warning, entry skipped; a bad hook never fails skill loading.
+- Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
+- `ToolMatcher` (loader.rs) filters `PreToolUse`/`PostToolUse` skill hooks by tool name (case-insensitive regex). `None`/`*`/empty → `All`; a regex that fails to compile → `Never` (logged). A non-matching tool skips the hook entirely (no shell spawn, no TUI entry). Directory hooks are always `All`.
+- `execute_hook` sets `SKILL_NAME`/`SKILL_DIR` env vars for skill hooks only.
+- Model-context injection (G2): `UserPromptSubmit` and `PreToolUse` stdout are tail-appended to the user message / tool result the model sees (TUI stays clean; the augmented form is what's saved to the session and pushed to live context, so the byte-identical invariant holds). `PreCompact` stdout is captured into `App.pending_precompact_context` and appended to the compaction summary in `handle_compaction_result` (taken once, cleared on every outcome). `PostToolUse` keeps the existing synthetic `hook_instruction` pair (ephemeral, `None` digests). A blocked hook (exit 2) injects nothing. `format_hook_context` builds the `[hook: <name>]` blocks and skips empty stdout.
+- The pre-prompt `PreCompact` path (turn.rs) runs before deferring; a blocked hook calls `undo_turn_setup` (shared with `rollback_pending_turn`) and does not launch the agent.
 
 ### Image / Vision Support
 
@@ -288,10 +297,10 @@ cargo test --workspace                       # all tests pass
 | File                           | Purpose                                         |
 | ------------------------------ | ----------------------------------------------- |
 | `src/agents_md.rs`             | AGENTS.md loading from project root             |
-| `src/skills.rs`                | Skill discovery and loading (global + project)  |
-| `src/turn.rs`                  | Turn tracking and management                    |
-| `src/hooks/mod.rs`             | Hook module declarations                        |
-| `src/hooks/loader.rs`          | Hook discovery from config and project dirs     |
+| `src/skills.rs`                | Skill discovery, loading, frontmatter `hooks:` parsing (global + project)  |
+| `src/turn.rs`                  | Turn tracking, UserPromptSubmit/PreCompact injection, pending-turn rollback                    |
+| `src/hooks/mod.rs`             | Hook module declarations, `register_skill_hooks`, `rebuild_hook_registry`, `format_hook_context`                        |
+| `src/hooks/loader.rs`          | Hook discovery, `ToolMatcher`, `Hook`/`HookRegistry` types     |
 | `src/hooks/executor.rs`        | Hook execution with context                     |
 | `src/context/mod.rs`           | Context module declarations                     |
 | `src/context/token_tracker.rs` | TokenRateTracker with EMA + provider correction |

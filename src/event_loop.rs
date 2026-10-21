@@ -115,10 +115,19 @@ pub async fn handle_compaction_result(
     handle: tokio::task::JoinHandle<anyhow::Result<CompactionPlan>>,
     pinned_scroll_guard: bool,
 ) -> CompactionResult {
+    // Take any PreCompact hook context captured before the compaction ran
+    // (single application point for both trigger paths). Held locally so it
+    // is cleared on every outcome, not just success.
+    let precompact_context = app.pending_precompact_context.take();
     match handle.await {
         Ok(Ok(plan)) => {
+            // Append the PreCompact hook context to the summary, if any.
+            let summary = match precompact_context {
+                Some(ctx) if !ctx.is_empty() => plan.summary + &ctx,
+                _ => plan.summary,
+            };
             match app.session.session_store.apply_compaction(
-                plan.summary,
+                summary,
                 plan.cut_index,
                 plan.tokens_before,
             ) {

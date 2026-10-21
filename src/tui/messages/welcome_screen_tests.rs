@@ -1,5 +1,5 @@
 use super::welcome_screen::WelcomeScreen;
-use crate::hooks::{Hook, HookEvent, HookSource, HookRegistry};
+use crate::hooks::{Hook, HookEvent, HookSource, HookRegistry, ToolMatcher};
 use ratatui::style::Color;
 
 const DIM_COLOR: Color = Color::Rgb(0x65, 0x6c, 0x76);
@@ -10,6 +10,9 @@ fn make_hook(event: HookEvent, name: &str, source: HookSource) -> Hook {
         name: name.to_string(),
         command: "echo test".to_string(),
         source,
+        skill_name: None,
+        skill_dir: None,
+        matcher: ToolMatcher::All,
     }
 }
 

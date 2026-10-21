@@ -129,7 +129,7 @@ pub async fn run_agent_with_snapshot(
     config: Config,
     cwd: PathBuf,
     tool_registry: ToolRegistry,
-    hook_registry: HookRegistry,
+    mut hook_registry: HookRegistry,
     mut active_skills: Vec<String>,
     skills: Vec<crate::skills::Skill>,
     tx: mpsc::Sender<AgentEvent>,
@@ -467,6 +467,11 @@ pub async fn run_agent_with_snapshot(
                     .await;
                 // Update local active_skills snapshot so tool hooks fire in the same turn
                 active_skills.push(skill_name.clone());
+                // Register the skill's frontmatter hooks into the local registry so
+                // they fire for the rest of this turn (activation-scoped).
+                if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
+                    crate::hooks::register_skill_hooks(&mut hook_registry, skill);
+                }
                 // Build tool result: activation confirmation + full SKILL.md content
                 let mut result = format!("Skill '{skill_name}' activated.");
                 // Read and inject the SKILL.md content
@@ -518,7 +523,15 @@ pub async fn run_agent_with_snapshot(
             let pre_tool_hooks = hook_registry.hooks(crate::hooks::HookEvent::PreToolUse);
             let mut tool_blocked = false;
             let mut blocked_error = String::new();
+            // stdout from successful hooks, appended to the model-bound tool
+            // result (TUI stays clean; see the SaveToolResult below).
+            let mut pre_tool_outputs: Vec<(String, String)> = Vec::new();
             for hook in pre_tool_hooks {
+                // Tool-name matcher: a non-matching tool skips the hook
+                // entirely (no shell spawn, no TUI entry).
+                if !hook.matcher.matches(&tc.name) {
+                    continue;
+                }
                 let context = HookContext {
                     event: crate::hooks::HookEvent::PreToolUse,
                     hook_name: hook.name.clone(),
@@ -551,11 +564,12 @@ pub async fn run_agent_with_snapshot(
                             event: crate::hooks::HookEvent::PreToolUse,
                             hook_name: hook.name.clone(),
                             success: true,
-                            stdout: result.stdout,
+                            stdout: result.stdout.clone(),
                             stderr: String::new(),
                             tool_name: Some(tc.name.clone()),
                         })
                         .await;
+                    pre_tool_outputs.push((hook.name.clone(), result.stdout));
                 }
             }
 
@@ -700,6 +714,11 @@ pub async fn run_agent_with_snapshot(
             if !has_error {
                 let post_tool_hooks = hook_registry.hooks(crate::hooks::HookEvent::PostToolUse);
                 for hook in post_tool_hooks {
+                    // Tool-name matcher: a non-matching tool skips the hook
+                    // entirely (no shell spawn, no TUI entry).
+                    if !hook.matcher.matches(&tc.name) {
+                        continue;
+                    }
                     let context = HookContext {
                         event: crate::hooks::HookEvent::PostToolUse,
                         hook_name: hook.name.clone(),
@@ -734,6 +753,13 @@ pub async fn run_agent_with_snapshot(
                     }
                 }
             }
+
+            // Model-bound tool result: the tool output plus any PreToolUse
+            // hook-injected context. The TUI (ToolCallDone) shows the clean
+            // `final_result`; the session store and live context receive
+            // `model_result` (tail-append keeps the prefix stable).
+            let model_result =
+                final_result.clone() + &crate::hooks::format_hook_context(&pre_tool_outputs);
 
             // Signal TUI: tool call finished (update pending message with result)
             // Note: the tool result sent to TUI does NOT include hook instructions —
@@ -774,7 +800,7 @@ pub async fn run_agent_with_snapshot(
                     tool_call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
                     tool_args: tc.arguments.clone(),
-                    result: final_result.clone(),
+                    result: model_result.clone(),
                     images: tool_images.clone(),
                 })
                 .await;
@@ -783,7 +809,7 @@ pub async fn run_agent_with_snapshot(
             // saved above, so live and persisted history never diverge.
             let assistant_msg = AgentMessage::assistant_with_blocks(assistant_blocks, assistant_usage);
             let assistant_digest = message_digest(&assistant_msg);
-            let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), final_result, tool_images);
+            let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), model_result, tool_images);
             let tool_digest = message_digest(&tool_msg);
             current_context.push(assistant_msg);
             context_digests.push(Some(assistant_digest));

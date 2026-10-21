@@ -57,6 +57,10 @@ pub struct App {
     /// `Some` = the turn's input was captured; the main loop launches the
     /// agent when `compaction_task` finishes, or rolls back on cancel.
     pub pending_turn: Option<crate::turn::PendingTurn>,
+    /// `PreCompact` hook stdout captured for the next compaction. Appended to
+    /// the summary in `handle_compaction_result`, then cleared. `None` when
+    /// no `PreCompact` hook produced output.
+    pub pending_precompact_context: Option<String>,
 }
 
 impl std::fmt::Debug for App {
@@ -74,6 +78,10 @@ impl std::fmt::Debug for App {
             .field("compaction_task", &self.compaction_task.is_some())
             .field("token_stats_task", &self.token_stats_task.is_some())
             .field("pending_turn", &self.pending_turn.is_some())
+            .field(
+                "pending_precompact_context",
+                &self.pending_precompact_context.is_some(),
+            )
             .finish()
     }
 }
@@ -143,6 +151,7 @@ impl App {
             compaction_task: None,
             token_stats_task: None,
             pending_turn: None,
+            pending_precompact_context: None,
         }
     }
 

@@ -271,8 +271,17 @@ pub async fn process_agent_events(
                 }
             }
             Ok(Some(AgentEvent::SkillActivation { skill_name })) => {
-                // Update active skills set
-                app.active_skills.insert(skill_name.clone());
+                // Update active skills set; register the skill's frontmatter
+                // hooks only on first activation (activation-scoped firing).
+                if app.active_skills.insert(skill_name.clone())
+                    && let Some(skill) =
+                        app.config.skills.iter().find(|s| s.name == skill_name)
+                {
+                    crate::hooks::register_skill_hooks(
+                        &mut app.config.hook_registry,
+                        skill,
+                    );
+                }
                 // Persist to session
                 app.session.session_store.add_activated_skill(&skill_name);
                 // Display the skill activation message (only this, no system message)
@@ -294,6 +303,9 @@ pub async fn process_agent_events(
                 let pre_compact_hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::PreCompact);
                 let mut compaction_blocked = false;
                 let mut compaction_blocked_error = String::new();
+                // stdout from successful hooks, appended to the summary in
+                // `handle_compaction_result`.
+                let mut precompact_outputs: Vec<(String, String)> = Vec::new();
 
                 for hook in pre_compact_hooks {
                     let context = crate::hooks::HookContext {
@@ -325,6 +337,9 @@ pub async fn process_agent_events(
                         compaction_blocked_error = result.stderr.clone();
                         break;
                     }
+                    if result.success() {
+                        precompact_outputs.push((hook.name.clone(), result.stdout.clone()));
+                    }
                 }
 
                 if compaction_blocked {
@@ -333,6 +348,13 @@ pub async fn process_agent_events(
                     app.modal.state = AppState::Idle;
                     done = true;
                     continue;
+                }
+
+                // Capture PreCompact hook stdout for the summary (applied in
+                // `handle_compaction_result`).
+                let precompact_context = crate::hooks::format_hook_context(&precompact_outputs);
+                if !precompact_context.is_empty() {
+                    app.pending_precompact_context = Some(precompact_context);
                 }
 
                 // Spawn compaction LLM call as a background task (spawn-and-poll pattern).

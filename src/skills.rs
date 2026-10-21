@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::hooks::HookEvent;
+
 // ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
@@ -36,6 +38,22 @@ impl std::fmt::Display for SkillSource {
     }
 }
 
+/// A hook declared in a skill's `SKILL.md` frontmatter.
+///
+/// Fires only while the skill is active. `matcher` is an optional
+/// case-insensitive regex over the tool name (`PreToolUse`/`PostToolUse`
+/// only); it keeps unmodified copied skills correct — a hook declared for
+/// `Write|Edit` must not fire on `Read`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillHook {
+    /// The lifecycle event this hook fires on.
+    pub event: HookEvent,
+    /// The shell command to execute (run via `bash -c`).
+    pub command: String,
+    /// Optional tool-name regex filter (`PreToolUse`/`PostToolUse` only).
+    pub matcher: Option<String>,
+}
+
 /// A discovered and parsed skill.
 #[derive(Debug, Clone)]
 pub struct Skill {
@@ -47,9 +65,11 @@ pub struct Skill {
     pub license: Option<String>,
     /// Arbitrary metadata (from frontmatter, optional).
     pub metadata: HashMap<String, String>,
+    /// Hooks declared in the frontmatter `hooks:` block.
+    pub hooks: Vec<SkillHook>,
     /// Absolute path to the `SKILL.md` file.
     pub file_path: PathBuf,
-    /// Parent directory of `SKILL.md`.
+    /// Parent directory of `SKILL.md` (the `SKILL_DIR` value).
     pub base_dir: PathBuf,
     /// Where the skill was loaded from.
     pub source: SkillSource,
@@ -91,6 +111,28 @@ pub(crate) struct SkillFrontmatter {
     pub(crate) metadata: Option<HashMap<String, String>>,
 }
 
+/// One matcher group under a `hooks.<Event>` list entry.
+#[derive(Debug, Deserialize)]
+pub(crate) struct SkillHookGroup {
+    /// Optional tool-name regex (`PreToolUse`/`PostToolUse` only).
+    #[serde(default)]
+    pub(crate) matcher: Option<String>,
+    /// The hook commands in this group.
+    #[serde(default)]
+    pub(crate) hooks: Vec<SkillHookCommand>,
+}
+
+/// One hook command entry (`type` + `command`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct SkillHookCommand {
+    /// Must be `command`; anything else is a warning + skipped entry.
+    #[serde(default, rename = "type")]
+    pub(crate) hook_type: Option<String>,
+    /// The shell command to execute.
+    #[serde(default)]
+    pub(crate) command: Option<String>,
+}
+
 /// Parse YAML frontmatter from the beginning of a file.
 ///
 /// Returns `Some(frontmatter)` if a valid `--- ... ---` block is found at the
@@ -107,6 +149,74 @@ pub(crate) fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
         return Some(SkillFrontmatter::default());
     }
     serde_yaml::from_str(yaml_block).ok()
+}
+
+/// Parse the `hooks:` field from a raw frontmatter YAML block.
+///
+/// Parsed in a separate pass over the raw YAML so a malformed `hooks:` field
+/// never takes down the rest of the frontmatter: the skill loads without
+/// hooks and a warning is returned for the caller to surface as a
+/// `SkillDiagnostic`.
+///
+/// Unknown events and non-`command` types are warnings with the entry
+/// skipped — a malformed hook never fails skill loading.
+pub(crate) fn parse_hooks_field(yaml_block: &str) -> (Vec<SkillHook>, Vec<String>) {
+    let value: serde_yaml::Value = match serde_yaml::from_str(yaml_block) {
+        Ok(v) => v,
+        Err(_) => return (Vec::new(), vec![]),
+    };
+    let Some(hooks_node) = value.get("hooks") else {
+        return (Vec::new(), vec![]);
+    };
+
+    let groups: HashMap<String, Vec<SkillHookGroup>> = match serde_yaml::from_value(hooks_node.clone()) {
+        Ok(g) => g,
+        Err(e) => {
+            return (Vec::new(), vec![format!("malformed hooks field: {e}")]);
+        }
+    };
+
+    // Unknown event names become warnings (sorted for deterministic output).
+    let mut unknown: Vec<&String> = groups
+        .keys()
+        .filter(|name| HookEvent::from_name(name).is_none())
+        .collect();
+    unknown.sort();
+
+    let mut hooks = Vec::new();
+    let mut warnings: Vec<String> = unknown
+        .into_iter()
+        .map(|name| format!("unknown hook event \"{name}\""))
+        .collect();
+
+    // Iterate events in canonical order so the resulting hook order is
+    // deterministic (independent of `HashMap` iteration order).
+    for event in HookEvent::all() {
+        let event_name = event.as_dir_name();
+        let Some(group_list) = groups.get(event_name) else {
+            continue;
+        };
+        for group in group_list {
+            for entry in &group.hooks {
+                if entry.hook_type.as_deref() != Some("command") {
+                    warnings.push(format!(
+                        "hook for {event_name}: type must be \"command\""
+                    ));
+                    continue;
+                }
+                let Some(command) = entry.command.clone().filter(|c| !c.trim().is_empty()) else {
+                    warnings.push(format!("hook for {event_name}: missing command"));
+                    continue;
+                };
+                hooks.push(SkillHook {
+                    event: *event,
+                    command,
+                    matcher: group.matcher.clone(),
+                });
+            }
+        }
+    }
+    (hooks, warnings)
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +261,24 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
     let absolute_path = file_path.canonicalize().unwrap_or_else(|_| file_path.to_path_buf());
 
     let frontmatter = parse_frontmatter(&content);
+
+    // Parse the hooks field in a separate pass so a malformed `hooks:` block
+    // never discards the rest of the frontmatter.
+    let (hooks, hook_warnings) = if let Some(trimmed) = content.trim_start().strip_prefix("---")
+        && let Some(end) = trimmed[3..].find("---")
+    {
+        let yaml_block = trimmed[3..][..end].trim();
+        parse_hooks_field(yaml_block)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    for w in hook_warnings {
+        diagnostics.push(SkillDiagnostic {
+            level: DiagnosticLevel::Warning,
+            message: w,
+            path: absolute_path.clone(),
+        });
+    }
 
     // Determine name: frontmatter > directory name
     let dir_name = base_dir
@@ -200,6 +328,7 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
                     description: String::new(),
                     license: None,
                     metadata: HashMap::new(),
+                    hooks,
                     file_path: absolute_path,
                     base_dir,
                     source,
@@ -235,6 +364,7 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
             description,
             license,
             metadata,
+            hooks,
             file_path: absolute_path,
             base_dir,
             source,
@@ -291,6 +421,7 @@ pub(crate) fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<(Skil
                                 description: String::new(),
                                 license: None,
                                 metadata: HashMap::new(),
+                                hooks: Vec::new(),
                                 file_path: skill_md.clone(),
                                 base_dir: path.clone(),
                                 source,

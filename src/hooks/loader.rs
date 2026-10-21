@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -58,6 +60,22 @@ impl HookEvent {
             HookEvent::PreCompact,
         ]
     }
+
+    /// Parse an event name (e.g. from skill frontmatter) into a `HookEvent`.
+    ///
+    /// Returns `None` for unknown names — callers should warn and skip the
+    /// entry rather than fail the whole load.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "UserPromptSubmit" => Some(Self::UserPromptSubmit),
+            "PreToolUse" => Some(Self::PreToolUse),
+            "PostToolUse" => Some(Self::PostToolUse),
+            "Stop" => Some(Self::Stop),
+            "PreCompact" => Some(Self::PreCompact),
+            _ => None,
+        }
+    }
 }
 
 /// Where a hook was loaded from.
@@ -78,17 +96,50 @@ impl std::fmt::Display for HookSource {
     }
 }
 
+/// Tool-name matcher for skill hooks (`PreToolUse`/`PostToolUse` only).
+///
+/// A non-matching tool skips the hook entirely (no shell spawn, no TUI
+/// entry). Directory-based hooks always use [`ToolMatcher::All`].
+#[derive(Debug, Clone)]
+pub enum ToolMatcher {
+    /// No matcher (or `*`/empty) — fires for every tool.
+    All,
+    /// The matcher regex failed to compile at registration — never fires.
+    /// Safer than firing for the wrong tools.
+    Never,
+    /// Compiled case-insensitive regex over the tool name.
+    Match(Regex),
+}
+
+impl ToolMatcher {
+    /// Returns `true` if the hook should fire for the given tool name.
+    #[must_use]
+    pub fn matches(&self, tool_name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Never => false,
+            Self::Match(re) => re.is_match(tool_name),
+        }
+    }
+}
+
 /// A hook definition.
 #[derive(Debug, Clone)]
 pub struct Hook {
     /// The event this hook fires on.
     pub event: HookEvent,
-    /// The hook name (script filename).
+    /// The hook name (script filename; skill hooks are tagged `<skill>:<name>`).
     pub name: String,
     /// The shell command to execute.
     pub command: String,
     /// Where this hook was loaded from.
     pub source: HookSource,
+    /// Name of the skill defining this hook (skill hooks only).
+    pub skill_name: Option<String>,
+    /// Directory containing the skill's `SKILL.md` (skill hooks only).
+    pub skill_dir: Option<PathBuf>,
+    /// Tool-name filter (skill hooks only; `All` for directory hooks).
+    pub matcher: ToolMatcher,
 }
 
 /// Registry of all active hooks, indexed by event.
@@ -198,6 +249,9 @@ pub fn load_directory_hooks(base_dir: &Path, source: HookSource) -> Vec<Hook> {
                 name: name.clone(),
                 command: format!("bash {}", path.display()),
                 source: source.clone(),
+                skill_name: None,
+                skill_dir: None,
+                matcher: ToolMatcher::All,
             });
         }
     }
