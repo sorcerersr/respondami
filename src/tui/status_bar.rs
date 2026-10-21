@@ -178,6 +178,7 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
         // 1. System prompt (via build_system_prompt_with_agents_md)
         // 2. Conversation history from session_store
         // 3. Current user message
+        let est = app.session.session_store.token_estimator();
         let (system_prompt, _) =
             crate::agent::build_system_prompt_with_agents_md(&app.config.cwd, &app.config.skills);
         let mut messages: Vec<AgentMessage> = vec![AgentMessage::system(system_prompt)];
@@ -185,8 +186,8 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
         if let Some(user_msg) = &app.agent.current_user_message {
             messages.push(AgentMessage::user(user_msg.clone()));
         }
-        let est_input = estimate_tokens_from_messages(&messages);
-        let est_output = estimate_tokens_from_streamed_text(&app.agent.streaming_content);
+        let est_input = estimate_tokens_from_messages(&messages, &est);
+        let est_output = estimate_tokens_from_streamed_text(&app.agent.streaming_content, &est);
         (est_input + est_output, est_output)
     } else {
         (0, 0)

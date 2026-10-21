@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use super::compaction::CompactionSettings;
 use super::entry::{AgentMessage, SessionEntry, TokenRateEntry};
 
 /// Metadata about a session for listing purposes.
@@ -34,6 +33,63 @@ pub struct SessionStore {
     current_session_path: Option<PathBuf>,
     current_session_id: Option<String>,
     entries: Vec<SessionEntry>,
+}
+
+/// Build context messages by walking a flat list of session entries.
+///
+/// Shared by [`SessionStore::build_context`] and the calibrated
+/// [`crate::agent::token_estimation::TokenEstimator`]. Injects compaction
+/// summaries as user messages and skips entries before each cut point. System
+/// messages are skipped (the system prompt is injected separately by
+/// `build_context_with_system` to avoid duplicates that break templates).
+#[must_use]
+pub fn build_context_from_entries(entries: &[SessionEntry]) -> Vec<AgentMessage> {
+    let mut messages = Vec::new();
+    let mut skip_until: Option<String> = None;
+
+    for entry in entries {
+        match entry {
+            SessionEntry::Session { .. } => continue,
+            SessionEntry::Message { message, .. } => {
+                if let Some(ref skip_id) = skip_until {
+                    if entry.id() == *skip_id {
+                        skip_until = None;
+                    } else {
+                        continue;
+                    }
+                }
+                // Skip system messages from session history — the system
+                // prompt is injected by build_context_with_system() to
+                // avoid duplicate system messages that break templates
+                // requiring system at position 0.
+                if matches!(message, AgentMessage::System { .. }) {
+                    continue;
+                }
+                messages.push(message.clone());
+            }
+            SessionEntry::Compaction {
+                summary,
+                first_kept_entry_id,
+                ..
+            } => {
+                // Inject summary as user message (not system) to avoid
+                // breaking Jinja templates that require system messages
+                // at the beginning only.
+                messages.push(AgentMessage::user(format!(
+                    "[Previous conversation summary]\n{summary}"
+                )));
+                skip_until = Some(first_kept_entry_id.clone());
+            }
+            SessionEntry::ModelChange { .. } => {
+                // Model changes are tracked but don't add messages
+            }
+            SessionEntry::Custom { .. } => {
+                // Custom entries (token-rate, etc.) are metadata only
+            }
+        }
+    }
+
+    messages
 }
 
 impl SessionStore {
@@ -200,52 +256,19 @@ impl SessionStore {
     /// Injects compaction summaries and skips entries before the cut point.
     #[must_use]
     pub fn build_context(&self) -> Vec<AgentMessage> {
-        let mut messages = Vec::new();
-        let mut skip_until: Option<String> = None;
+        build_context_from_entries(&self.entries)
+    }
 
-        for entry in &self.entries {
-            match entry {
-                SessionEntry::Session { .. } => continue,
-                SessionEntry::Message { message, .. } => {
-                    if let Some(ref skip_id) = skip_until {
-                        if entry.id() == *skip_id {
-                            skip_until = None;
-                        } else {
-                            continue;
-                        }
-                    }
-                    // Skip system messages from session history — the system
-                    // prompt is injected by build_context_with_system() to
-                    // avoid duplicate system messages that break templates
-                    // requiring system at position 0.
-                    if matches!(message, AgentMessage::System { .. }) {
-                        continue;
-                    }
-                    messages.push(message.clone());
-                }
-                SessionEntry::Compaction {
-                    summary,
-                    first_kept_entry_id,
-                    ..
-                } => {
-                    // Inject summary as user message (not system) to avoid
-                    // breaking Jinja templates that require system messages
-                    // at the beginning only.
-                    messages.push(AgentMessage::user(format!(
-                        "[Previous conversation summary]\n{summary}"
-                    )));
-                    skip_until = Some(first_kept_entry_id.clone());
-                }
-                SessionEntry::ModelChange { .. } => {
-                    // Model changes are tracked but don't add messages
-                }
-                SessionEntry::Custom { .. } => {
-                    // Custom entries (token-rate, etc.) are metadata only
-                }
-            }
-        }
-
-        messages
+    /// Calibrated token estimator for the current session.
+    ///
+    /// Computes the chars-per-token ratio from the last real `prompt_tokens`
+    /// (most recent assistant `Usage`) divided into the char count of the
+    /// current `build_context()` output. Falls back to the cold-start
+    /// heuristic when no usage exists yet. This is the single source of truth
+    /// for all token estimation in the app.
+    #[must_use]
+    pub fn token_estimator(&self) -> crate::agent::token_estimation::TokenEstimator {
+        crate::agent::token_estimation::TokenEstimator::from_entries(&self.entries)
     }
 
     /// Get the last entry ID (for parent chaining).
@@ -274,9 +297,10 @@ impl SessionStore {
     /// system overhead and actual LLM usage data when available.
     #[must_use]
     pub fn estimate_token_count(&self) -> u32 {
+        let est = self.token_estimator();
         self.build_context()
             .iter()
-            .map(|m| CompactionSettings::estimate_tokens(m.content()))
+            .map(|m| est.estimate_tokens(m.content()))
             .sum()
     }
 
@@ -299,10 +323,11 @@ impl SessionStore {
         }
 
         // Fallback: character estimates + system overhead
+        let est = self.token_estimator();
         let entry_tokens: u32 = self
             .build_context()
             .iter()
-            .map(|m| CompactionSettings::estimate_tokens(m.content()))
+            .map(|m| est.estimate_tokens(m.content()))
             .sum();
         entry_tokens.saturating_add(system_overhead_tokens)
     }
@@ -521,11 +546,12 @@ impl SessionStore {
             .filter(|e| matches!(e, SessionEntry::Message { .. }))
             .count();
 
-        // Find the ID of the first entry to keep
-        let first_kept_id = self.entries.get(cut_index).map(super::entry::SessionEntry::id);
-        let first_kept_id = match first_kept_id {
-            Some(id) => id,
-            None => return Ok((tokens_before, tokens_before, 0)),
+        // Find the ID of the first entry to keep. A `cut_index` at or past the
+        // end means compact-all: use the empty-string sentinel so the live
+        // window restarts right after the compaction entry (orphan recovery).
+        let first_kept_id = match self.entries.get(cut_index) {
+            Some(e) => e.id(),
+            None => String::new(),
         };
 
         // Build compaction entry

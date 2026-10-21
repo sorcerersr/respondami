@@ -7,6 +7,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::session::CompactionSettings;
+use crate::agent::token_estimation::TokenEstimator;
 use crate::tui::editor::fuzzy_match_case_insensitive;
 use crate::tui::{AgentEvent, App, AppState};
 
@@ -17,21 +18,25 @@ use super::commands::execute_palette_command;
 /// Used by the pre-prompt compaction check to get an accurate context
 /// estimate that includes the full system context.
 #[must_use]
-pub fn estimate_system_overhead_tokens(cwd: &std::path::Path, skills: &[crate::skills::Skill]) -> u32 {
+pub fn estimate_system_overhead_tokens(
+    cwd: &std::path::Path,
+    skills: &[crate::skills::Skill],
+    est: &TokenEstimator,
+) -> u32 {
     let mut overhead: u32 = 0;
 
     // System prompt
     let system_prompt = crate::agent::get_system_prompt();
-    overhead += CompactionSettings::estimate_tokens(system_prompt);
+    overhead += est.estimate_tokens(system_prompt);
 
     // AGENTS.md
     if let Ok(Some((content, _))) = crate::agents_md::load_agents_md(cwd) {
-        overhead += CompactionSettings::estimate_tokens(&content);
+        overhead += est.estimate_tokens(&content);
     }
 
     // Skills XML block
     let skills_xml = crate::skills::format_skills_for_prompt(skills);
-    overhead += CompactionSettings::estimate_tokens(&skills_xml);
+    overhead += est.estimate_tokens(&skills_xml);
 
     overhead
 }
@@ -328,11 +333,12 @@ pub async fn run_turn_with_input(
         let compaction_settings = CompactionSettings::from_config(&app.config.config.compaction);
 
         // Estimate system overhead: system prompt + AGENTS.md + skills
-        let system_overhead = estimate_system_overhead_tokens(&app.config.cwd, &app.config.skills);
+        let est = app.session.session_store.token_estimator();
+        let system_overhead = estimate_system_overhead_tokens(&app.config.cwd, &app.config.skills, &est);
 
         // Use estimate_context_tokens which prefers actual LLM usage data
         let estimated = app.session.session_store.estimate_context_tokens(system_overhead);
-        let user_msg_tokens = CompactionSettings::estimate_tokens(&input);
+        let user_msg_tokens = est.estimate_tokens(&input);
         let total_with_input = estimated.saturating_add(user_msg_tokens);
 
         if compaction_settings.should_compact(total_with_input, app.config.context_window) {
@@ -356,7 +362,7 @@ pub async fn run_turn_with_input(
             let skills = app.config.skills.clone();
 
             app.compaction_task = Some(tokio::spawn(async move {
-                engine.compute_compaction(provider, config, entries, cwd, skills).await
+                engine.compute_compaction(provider, config, entries, cwd, skills, None).await
             }));
 
             app.pending_turn = Some(PendingTurn {
@@ -407,7 +413,7 @@ pub async fn launch_agent_turn(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     app.start_streaming(&user_msg);
-    app.agent.tracker.start();
+    app.agent.tracker.start_with_estimator(&app.session.session_store.token_estimator());
     app.reset_request_usage();
 
     // Set up SSE debug capture for this turn (if enabled via RESPONDAMI_SSE_DEBUG)

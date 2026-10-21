@@ -81,6 +81,12 @@ impl KeyHandler for CommandPaletteHandler {
             match action {
                 TransitionAction::Send => {
                     if let Some((_, cmd)) = app.modal.command_palette_matches.get(app.modal.command_palette_selected) {
+                        // `compact` opens the keep-N prompt instead of running immediately.
+                        if cmd.id == "compact" {
+                            app.modal.compact_keep_input = "1".to_string();
+                            app.modal.state = AppState::CompactKeepPrompt;
+                            return Ok(false);
+                        }
                         return crate::commands::execute_palette_command(app, cmd.id, terminal).await;
                     }
                     return Ok(false);

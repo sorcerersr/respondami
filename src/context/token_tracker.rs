@@ -35,6 +35,9 @@ pub struct TokenRateTracker {
     provider_completion_tokens: u32,
     /// Whether we have received provider usage data for the current turn.
     has_provider_usage: bool,
+    /// Calibrated chars-per-token ratio for the turn (set at `start`).
+    /// Defaults to the 4.0 heuristic when no estimator is provided.
+    chars_per_token: f64,
 }
 
 impl Default for TokenRateTracker {
@@ -58,6 +61,7 @@ impl TokenRateTracker {
             session_seconds: 0.0,
             provider_completion_tokens: 0,
             has_provider_usage: false,
+            chars_per_token: 4.0,
         }
     }
 
@@ -73,6 +77,17 @@ impl TokenRateTracker {
 
     /// Called when streaming starts. Resets turn counters.
     pub fn start(&mut self) {
+        self.start_with_ratio(4.0);
+    }
+
+    /// Called when streaming starts, seeding the calibrated chars-per-token
+    /// ratio from the session's [`crate::agent::token_estimation::TokenEstimator`].
+    pub fn start_with_estimator(&mut self, est: &crate::agent::token_estimation::TokenEstimator) {
+        self.start_with_ratio(est.chars_per_token());
+    }
+
+    /// Reset turn counters with an explicit chars-per-token ratio.
+    fn start_with_ratio(&mut self, chars_per_token: f64) {
         self.last_timestamp = None;
         self.cumulative_chars = 0;
         self.last_token_estimate = 0;
@@ -82,6 +97,7 @@ impl TokenRateTracker {
         self.is_streaming = true;
         self.provider_completion_tokens = 0;
         self.has_provider_usage = false;
+        self.chars_per_token = chars_per_token;
     }
 
     /// Called on tool result. Resets timestamp to break the measurement
@@ -100,8 +116,9 @@ impl TokenRateTracker {
         let now = Instant::now();
         self.cumulative_chars += char_len;
 
-        // Estimate cumulative tokens from total chars.
-        let token_estimate = ((self.cumulative_chars as f64 / 3.5).round() as u32).max(1);
+        // Estimate cumulative tokens from total chars using the calibrated
+        // ratio (falls back to the 4.0 heuristic when no estimator was set).
+        let token_estimate = ((self.cumulative_chars as f64 / self.chars_per_token).round() as u32).max(1);
 
         if let Some(last) = self.last_timestamp {
             if self.first_interval_done {

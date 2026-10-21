@@ -53,7 +53,7 @@ use tempfile::TempDir;
             make_message_entry("I'm fine", "assistant"),
         ];
 
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 10);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
         assert!(cut.is_some());
         assert!(cut.unwrap() >= 1);
     }
@@ -76,7 +76,7 @@ use tempfile::TempDir;
         ];
 
         // Should stop at compaction boundary (index 3)
-        let cut = CompactionSettings::find_cut_point(&entries, 4, 6, 100000);
+        let cut = LlmCompaction::find_cut_point(&entries, 4, 6, 100000);
         assert!(cut.is_none() || cut.unwrap() >= 4);
     }
 
@@ -96,7 +96,7 @@ use tempfile::TempDir;
             make_message_entry("Done", "assistant"),
         ];
 
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 10);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
         if let Some(cut_idx) = cut {
             assert_ne!(cut_idx, 3, "should not cut at tool result");
         }
@@ -136,7 +136,7 @@ use tempfile::TempDir;
             make_message_entry("result", "user"),
         ];
 
-        let (read_files, modified_files) = CompactionSettings::extract_file_operations(&entries, 3);
+        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 3);
         assert_eq!(read_files, vec!["src/main.rs"]);
         assert_eq!(modified_files, vec!["src/lib.rs"]);
     }
@@ -168,14 +168,14 @@ use tempfile::TempDir;
             ),
         ];
 
-        let (read_files, modified_files) = CompactionSettings::extract_file_operations(&entries, 2);
+        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 2);
         assert_eq!(read_files, [] as [String; 0]);
         assert_eq!(modified_files, vec!["src/edit.rs"]);
     }
 
     #[test]
     fn summarize_prompt_includes_previous_summary() {
-        let prompt = CompactionSettings::summarization_user_prompt(
+        let prompt = LlmCompaction::summarization_user_prompt(
             "[User] hello\n[Assistant] hi",
             Some("## Goal\nBuild a CLI app"),
             4096,
@@ -188,7 +188,7 @@ use tempfile::TempDir;
 
     #[test]
     fn summarize_prompt_without_previous_summary() {
-        let prompt = CompactionSettings::summarization_user_prompt(
+        let prompt = LlmCompaction::summarization_user_prompt(
             "[User] hello",
             None,
             4096,
@@ -217,7 +217,7 @@ use tempfile::TempDir;
         ];
 
         // 6 messages (indices 1-6), should split at midpoint (index 4)
-        let cut = CompactionSettings::find_cut_point_by_count(&entries, 1, 7);
+        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
         assert_eq!(cut, Some(4)); // Compact entries 1-3, keep entries 4-6
     }
 
@@ -235,7 +235,7 @@ use tempfile::TempDir;
         ];
 
         // Only 1 message, can't meaningfully compact
-        let cut = CompactionSettings::find_cut_point_by_count(&entries, 1, 2);
+        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 2);
         assert_eq!(cut, None);
     }
 
@@ -260,7 +260,7 @@ use tempfile::TempDir;
         // Valid cuts: 1(user), 2(assistant), 4(assistant), 5(user), 6(assistant)
         // Tool result at index 3 is excluded
         // Midpoint of 5 valid cuts = index 2, so cut at valid_cuts[2] = 4
-        let cut = CompactionSettings::find_cut_point_by_count(&entries, 1, 7);
+        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
         assert_eq!(cut, Some(4));
     }
 
@@ -289,13 +289,13 @@ use tempfile::TempDir;
         // But wait, 5 >= end_index (5), so this means keep nothing and compact everything.
         // Actually min(5, 5) = 5, which means "keep from index 5" = keep nothing.
         // The cut point is the FIRST entry to KEEP, so cut=5 means keep entries 5..5 = empty.
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 2);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
         assert_eq!(cut, Some(5)); // Compact everything (keep nothing from the range)
 
         // With a higher threshold, we should keep some entries
         // keep_recent_tokens = 3
         // Walk: index 4 (2 tokens, acc=2 < 3), index 3 (2 tokens, acc=4 >= 3) → return min(3+1, 5) = 4
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 3);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 3);
         assert_eq!(cut, Some(4)); // Keep entry 4, compact entries 1-3
     }
 
@@ -319,7 +319,7 @@ use tempfile::TempDir;
 
         // cut_index = 5 (keep nothing), boundary_end = 5
         // kept_message_count = 0 < MIN_KEEP_MESSAGES = 4
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 2);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
         assert_eq!(cut, Some(5));
 
         let kept_message_count = entries[5..5]
@@ -355,7 +355,7 @@ use tempfile::TempDir;
         ];
 
         // With a moderate threshold, cut should land somewhere in the middle.
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 9, 10);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 9, 10);
         assert!(cut.is_some());
         let cut = cut.unwrap();
 
@@ -434,7 +434,7 @@ use tempfile::TempDir;
             make_message_entry(&result, "tool"),
         ];
 
-        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        let text = LlmCompaction::serialize_for_summary(&entries, 2);
 
         // The truncated content is the first 4095 bytes (the `§` is dropped
         // whole because 4096 is not a char boundary).
@@ -462,7 +462,7 @@ use tempfile::TempDir;
             make_message_entry(&result, "tool"),
         ];
 
-        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        let text = LlmCompaction::serialize_for_summary(&entries, 2);
 
         let expected_prefix = format!("[Tool Result] {}", "b".repeat(4096));
         assert!(text.starts_with(&expected_prefix), "exact boundary keeps all 4096 bytes");
@@ -483,7 +483,7 @@ use tempfile::TempDir;
             make_message_entry("short output", "tool"),
         ];
 
-        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        let text = LlmCompaction::serialize_for_summary(&entries, 2);
         assert_eq!(text, "[Tool Result] short output");
     }
 
@@ -617,14 +617,15 @@ impl ProviderTrait for MockProvider {
             entries.push(make_message_entry(&format!("Message {i}"), role));
         }
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        config.compaction.mode = crate::config::CompactionMode::Llm;
         let engine = CompactionEngine::from_config(&config);
         let provider = Provider::from_trait(Box::new(MockProvider {
             summary: "## Goal\nTest goal".to_string(),
         }));
 
         let plan = engine
-            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), vec![skill])
+            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), vec![skill], None)
             .await
             .expect("compute_compaction");
 

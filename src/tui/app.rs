@@ -514,6 +514,7 @@ impl App {
             super::mode::AppState::CommandPalette => StateHandler::CommandPalette,
             super::mode::AppState::HelpPopup => StateHandler::HelpPopup,
             super::mode::AppState::TokenStatsDialog => StateHandler::TokenStats,
+            super::mode::AppState::CompactKeepPrompt => StateHandler::CompactKeepPrompt,
         }
     }
 

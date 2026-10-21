@@ -11,13 +11,13 @@ pub mod entry;
 pub mod manager;
 
 #[doc(inline)]
-pub use compaction::{CompactionEngine, CompactionPlan, CompactionSettings};
+pub use compaction::{CompactionEngine, CompactionPlan, CompactionSettings, CompactionStrategy, LlmCompaction, VccCompaction};
 #[doc(inline)]
 pub use display_adapter::SessionDisplayAdapter;
 #[doc(inline)]
 pub use entry::{AgentMessage, ContentBlock, RequestTokenUsage, SessionEntry, TokenRateEntry, ToolCall, Usage};
 #[doc(inline)]
-pub use manager::{SessionStore, SessionMeta};
+pub use manager::{build_context_from_entries, SessionStore, SessionMeta};
 
 #[cfg(test)]
 mod compaction_tests;

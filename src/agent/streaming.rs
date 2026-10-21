@@ -9,7 +9,8 @@ use crate::provider::{
     accumulate_tool_call, agent_messages_to_provider_messages, finalize_tool_calls, ChatChunk, ChatRequest,
     Message, PartialToolCall, Provider, ProviderError, ToolDef,
 };
-use crate::session::{AgentMessage, CompactionSettings, ContentBlock, ToolCall, Usage};
+use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
+use crate::agent::token_estimation::TokenEstimator;
 use crate::tools::ToolRegistry;
 use crate::tui::AgentEvent;
 use tokio::sync::mpsc;
@@ -265,8 +266,11 @@ pub async fn stream_response_from_messages(
         }
     });
 
-    // If the provider didn't send usage data, estimate from content.
+    // If the provider didn't send usage data, estimate from content using the
+    // session's calibrated estimator (the context messages carry the last real
+    // `prompt_tokens` used for calibration).
     let usage = if let Some(u) = last_usage { u } else {
+        let est = TokenEstimator::from_messages(context_messages);
         let text_content: String = blocks.iter()
             .filter_map(|b| {
                 if let ContentBlock::Text { text } = b {
@@ -277,10 +281,10 @@ pub async fn stream_response_from_messages(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let prompt_tokens = CompactionSettings::estimate_tokens(
+        let prompt_tokens = est.estimate_tokens(
             &request.messages.iter().map(super::super::provider::Message::content).collect::<Vec<_>>().join("\n"),
         );
-        let completion_tokens = CompactionSettings::estimate_tokens(&text_content);
+        let completion_tokens = est.estimate_tokens(&text_content);
         let total = prompt_tokens.saturating_add(completion_tokens);
         Usage {
             prompt_tokens,

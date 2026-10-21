@@ -1,4 +1,6 @@
-use crate::config::{Config, CompactionConfig, ProviderConfig, RtkConfig, UiConfig};
+use crate::config::{
+    CompactionConfig, CompactionMode, Config, ProviderConfig, RtkConfig, UiConfig, VccConfig,
+};
 use crate::provider::{LlamaCppSettings, ProviderSettings};
 use crate::tui::ThinkingDisplay;
 
@@ -182,6 +184,72 @@ fn compaction_config_custom() {
     assert_eq!(config.reserve_tokens, 4096);
     // keep_recent_tokens should use default
     assert_eq!(config.keep_recent_tokens, 16384);
+}
+
+#[test]
+fn compaction_config_mode_defaults_to_vcc() {
+    // Legacy config without a `mode` key must load with the new default.
+    let json = r#"{"enabled": true, "reserve_tokens": 16384, "keep_recent_tokens": 16384}"#;
+    let config: CompactionConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.mode, CompactionMode::Vcc, "mode defaults to vcc on upgrade");
+    assert!(config.vcc.smart_keep_tail, "smart_keep_tail defaults to true");
+    assert_eq!(config.vcc.brief_budget_tokens, 1100, "brief_budget_tokens defaults to 1100");
+}
+
+#[test]
+fn compaction_config_mode_llm_honored() {
+    let json = r#"{"mode": "llm"}"#;
+    let config: CompactionConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.mode, CompactionMode::Llm);
+}
+
+#[test]
+fn compaction_config_mode_vcc_honored() {
+    let json = r#"{"mode": "vcc"}"#;
+    let config: CompactionConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.mode, CompactionMode::Vcc);
+}
+
+#[test]
+fn compaction_config_unknown_mode_rejects() {
+    let json = r#"{"mode": "bogus"}"#;
+    let result: Result<CompactionConfig, _> = serde_json::from_str(json);
+    result.unwrap_err();
+}
+
+#[test]
+fn vcc_config_custom_values() {
+    let json = r#"{"smart_keep_tail": false, "brief_budget_tokens": 2000}"#;
+    let vcc: VccConfig = serde_json::from_str(json).unwrap();
+    assert!(!vcc.smart_keep_tail);
+    assert_eq!(vcc.brief_budget_tokens, 2000);
+}
+
+#[test]
+fn vcc_config_missing_uses_defaults() {
+    let json = r"{}";
+    let vcc: VccConfig = serde_json::from_str(json).unwrap();
+    assert!(vcc.smart_keep_tail);
+    assert_eq!(vcc.brief_budget_tokens, 1100);
+}
+
+#[test]
+fn compaction_config_vcc_roundtrip() {
+    let config = CompactionConfig {
+        enabled: true,
+        mode: CompactionMode::Vcc,
+        reserve_tokens: 20000,
+        keep_recent_tokens: 16384,
+        vcc: VccConfig {
+            smart_keep_tail: false,
+            brief_budget_tokens: 1500,
+        },
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    let decoded: CompactionConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.mode, CompactionMode::Vcc);
+    assert!(!decoded.vcc.smart_keep_tail);
+    assert_eq!(decoded.vcc.brief_budget_tokens, 1500);
 }
 
 // ---------------------------------------------------------------------------

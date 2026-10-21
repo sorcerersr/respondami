@@ -23,8 +23,13 @@ The file is created automatically with default values on first launch. Existing 
   },
   "compaction": {
     "enabled": true,
+    "mode": "vcc",
     "reserve_tokens": 16384,
-    "keep_recent_tokens": 16384
+    "keep_recent_tokens": 16384,
+    "vcc": {
+      "smart_keep_tail": true,
+      "brief_budget_tokens": 1100
+    }
   },
   "ui": {
     "thinking_display": "collapsed",
@@ -62,8 +67,15 @@ Controls automatic conversation history compaction to stay within the context wi
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | boolean | `true` | Whether automatic compaction is enabled. |
+| `mode` | string | `"vcc"` | Compaction strategy. One of: |
+| | | | - `"vcc"` — Algorithmic, LLM-free "vector context checkpoint". Deterministic and instant: extracts a structured summary (session goal, file activity, commits, outstanding context, user preferences) plus a ranked transcript brief. No tokens spent on the compaction itself. |
+| | | | - `"llm"` — LLM-based summarization. Sends the conversation to the model and uses its summary. Higher quality for nuanced context, but costs tokens and a model call. |
 | `reserve_tokens` | integer | `16384` | Number of tokens to reserve for the next response. Compaction triggers when remaining tokens drop below this value. |
 | `keep_recent_tokens` | integer | `16384` | Number of recent tokens to preserve during compaction. Older messages are summarized. |
+| `vcc.smart_keep_tail` | boolean | `true` | VCC only. When the default 1-turn kept tail is small (≤ 5000 tokens), grow it to the largest number of recent user turns whose tail stays ≤ 25000 tokens, so short turns don't trigger over-aggressive compaction. |
+| `vcc.brief_budget_tokens` | integer | `1100` | VCC only. Token floor for the ranked transcript brief. The actual budget scales with the number of conversation blocks between this floor and a fixed 2000-token ceiling. |
+
+Active skills survive compaction in both modes: their full instructions are re-read from disk and appended to the summary, so the model keeps following them after the `activate_skill` messages are cut.
 
 ## UI
 

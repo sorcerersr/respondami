@@ -136,15 +136,57 @@ impl Serialize for ProviderConfig {
     }
 }
 
+/// Compaction mode — selects how a compaction plan is produced.
+///
+/// `Llm` uses the existing model-based summarization. `Vcc` is the new
+/// algorithmic (LLM-free) extraction path and the default on upgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionMode {
+    /// LLM-based summarization (existing behavior).
+    Llm,
+    /// Algorithmic extraction, no model call (default).
+    Vcc,
+}
+
+/// VCC-specific settings. Only read when `CompactionConfig::mode` is `Vcc`.
+///
+/// Deliberately thin: `smart_keep_tail` and `brief_budget_tokens`. Everything
+/// else uses fixed constants ported from the pi-vcc reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VccConfig {
+    /// Grow the default `keep:1` tail while it stays small (default true).
+    #[serde(default = "default_smart_keep_tail")]
+    pub smart_keep_tail: bool,
+    /// Token floor for the ranked brief budget (default 1100).
+    #[serde(default = "default_brief_budget_tokens")]
+    pub brief_budget_tokens: u32,
+}
+
+impl Default for VccConfig {
+    fn default() -> Self {
+        Self {
+            smart_keep_tail: default_smart_keep_tail(),
+            brief_budget_tokens: default_brief_budget_tokens(),
+        }
+    }
+}
+
 /// Compaction settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     #[serde(default = "default_compaction_enabled")]
     pub enabled: bool,
+    /// Which strategy produces the plan. Defaults to `vcc` on upgrade.
+    #[serde(default = "default_compaction_mode")]
+    pub mode: CompactionMode,
     #[serde(default = "default_reserve_tokens")]
     pub reserve_tokens: u32,
     #[serde(default = "default_keep_recent_tokens")]
     pub keep_recent_tokens: u32,
+    /// VCC-specific settings (only used when `mode` is `Vcc`).
+    #[serde(default)]
+    pub vcc: VccConfig,
 }
 
 /// UI display configuration.
@@ -276,6 +318,18 @@ fn default_compaction_enabled() -> bool {
     true
 }
 
+fn default_compaction_mode() -> CompactionMode {
+    CompactionMode::Vcc
+}
+
+fn default_smart_keep_tail() -> bool {
+    true
+}
+
+fn default_brief_budget_tokens() -> u32 {
+    1100
+}
+
 fn default_reserve_tokens() -> u32 {
     16384
 }
@@ -298,8 +352,10 @@ impl Default for Config {
             },
             compaction: CompactionConfig {
                 enabled: default_compaction_enabled(),
+                mode: default_compaction_mode(),
                 reserve_tokens: default_reserve_tokens(),
                 keep_recent_tokens: default_keep_recent_tokens(),
+                vcc: VccConfig::default(),
             },
             ui: UiConfig::default(),
             rtk: RtkConfig::default(),
@@ -350,7 +406,8 @@ impl Config {
             .with_context(|| format!("Failed to parse config {}", path.display()))?;
         let needs_migration = raw.get("ui").is_none()
             || raw.get("rtk").is_none()
-            || raw.get("provider").and_then(|p| p.get("vision")).is_none();
+            || raw.get("provider").and_then(|p| p.get("vision")).is_none()
+            || raw.get("compaction").and_then(|c| c.get("mode")).is_none();
 
         let config: Self = serde_json::from_value(raw)
             .with_context(|| format!("Failed to parse config {}", path.display()))?;

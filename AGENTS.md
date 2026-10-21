@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **168 `.rs` files**, ~34.1K lines total (24.4K production, 9.7K tests)
+- **187 `.rs` files**, ~39.1K lines total
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -21,7 +21,7 @@ Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 wi
 - **Pinned scroll**: During streaming, user scroll-up sets `pinned_scroll = true`, blocking auto-scroll. Resumes when user scrolls within 3 rows of bottom.
 - **Providers**: `src/provider/mod.rs` defines `ChatChunk` enum; implementations in `provider/llamacpp.rs`, SSE parsing in `provider/sse.rs`
 - **Tools**: Registry pattern in `src/tools/mod.rs` with `ToolHandler` trait. Tools: bash, read, write, edit, rtk, activate_skill
-- **Session**: JSONL persistence in `src/session/manager.rs` with fsync. Compaction via LLM summarization.
+- **Session**: JSONL persistence in `src/session/manager.rs` with fsync. Compaction via `CompactionStrategy` trait — VCC (algorithmic, LLM-free) is the default, LLM summarization is optional.
 - **Project dir**: `.respondami/` is auto-created at startup (`src/project_dir.rs`) with a `.gitignore` (`*` + negations for `skills/`, `hooks/`, `AGENTS.md`, `config.json`) so runtime artifacts stay out of `git status`. The app never overwrites an existing `.gitignore` there.
 - **Hooks**: Shell scripts at lifecycle points (`src/hooks/`). Discovered from `~/.config/respondami/hooks/` and `.respondami/hooks/`. Execute synchronously in agent loop — can inject context (exit 0), block actions (exit 2), or log errors (other codes).
 - **State modules**: UI state split into focused modules under `src/tui/` — `chat_state.rs` (messages + scroll), `editor_state.rs` (input buffer, history navigation), `agent_state.rs` (streaming + tool calls), `session_state.rs` (persistence), `modal_state.rs` (popups), `config_state.rs` (thinking/hook display), `ui_state.rs` (animation/effects).
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1018 total)
+cargo test --workspace                         # all tests (1139 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1066 tests** (848 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1139 tests** (921 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -130,6 +130,10 @@ cargo test --workspace                       # all tests pass
 
 ### Compaction Pattern
 
+- `CompactionEngine` holds a `Box<dyn CompactionStrategy>` selected by `config.compaction.mode` (`vcc` default, `llm`). `CompactionPlan` is mode-agnostic.
+- VCC (`src/session/compaction/vcc/`) is deterministic and LLM-free: `normalize` → `cut` → `sections` (5 extractors) → `rank`/`brief` → `merge` (folds into previous summary). No provider call.
+- LLM (`src/session/compaction/llm.rs`) sends the conversation to the model for a summary. Uses the `len/4` heuristic, not the calibrated estimator (byte-stable behavior).
+- Active skills are re-injected into the summary in both modes (`format_active_skills` re-reads SKILL.md). VCC strips any stale `<active-skills>` block from the previous summary before merging (`strip_active_skills`).
 - Uses spawn-and-poll: `tokio::spawn` the compaction task, poll `is_finished()` in event loop.
 - Keeps UI responsive during compaction (draws, animates, processes terminal events).
 - Auto-compaction restarts the agent with a retry message after success.
@@ -139,6 +143,7 @@ cargo test --workspace                       # all tests pass
 - Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests.
 - `reset_request_usage()` is turn-level (preserves `input_tokens` for within-turn delta accounting); session boundaries (new session, resume) must use `SessionState::reset_for_new_session()` which zeroes everything — reusing the turn-level reset leaks stale context percentages into a fresh session (the `max()` never corrects it).
 - `estimate_context_tokens()` prefers actual LLM `prompt_tokens` from last Assistant message, falls back to char estimates + system overhead.
+- The calibrated `TokenEstimator` (`src/agent/token_estimation.rs`) is the single source of truth for all token estimation (status bar, streaming fallback, tok/s tracker, VCC compaction). It calibrates `chars_per_token` from the last assistant `prompt_tokens` (clamped [2.0, 8.0]). The LLM compaction path is the one exception — it keeps the `len/4` heuristic for byte-stable behavior.
 
 ### Provider Abstraction
 
@@ -167,7 +172,7 @@ cargo test --workspace                       # all tests pass
 | `src/agent/streaming.rs` | SSE streaming from provider, `AgentResponse` builder                   |
 | `src/agent_events.rs`    | Agent event processing, bridges async agent loop with TUI              |
 | `src/event_loop.rs`      | Shared helpers: draw frame, animation tick, compaction result handling |
-| `src/config.rs`          | Config loading from `~/.config/respondami/config.yaml`                 |
+| `src/config.rs`          | Config loading from `~/.config/respondami/config.json`                 |
 | `src/commands.rs`        | Command palette commands and descriptions                              |
 | `src/history_guard.rs`   | Per-message digests + append-only prefix guard (vLLM cache stability)  |
 | `src/image.rs`           | Image normalization: `ImageContent`, `process_image`, MIME sniff, token estimate |
@@ -201,7 +206,10 @@ cargo test --workspace                       # all tests pass
 | `src/session/mod.rs`             | Module declarations and re-exports                                |
 | `src/session/manager.rs`         | SessionStore, JSONL I/O, context building, compaction application |
 | `src/session/entry.rs`           | SessionEntry types (Session, Message, Compaction, Custom)         |
-| `src/session/compaction.rs`      | CompactionEngine, LLM-based summarization                         |
+| `src/session/compaction.rs`      | CompactionEngine, CompactionStrategy trait, CompactionPlan, format_active_skills |
+| `src/session/compaction/llm.rs`  | LlmCompaction strategy (LLM-based summarization)                  |
+| `src/session/compaction/vcc.rs`  | VccCompaction strategy entry point (deterministic, LLM-free)      |
+| `src/session/compaction/vcc/`    | VCC modules: normalize, cut, sections, rank, brief, bash, merge   |
 | `src/session/display_adapter.rs` | Adapts session data for display                                   |
 
 ### TUI
@@ -307,7 +315,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (848 tests)
+### Root Crate Tests (921 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -332,7 +340,15 @@ cargo test --workspace                       # all tests pass
 | `src/provider/llamacpp_tests.rs`              | LlamaCpp provider, request building                     |
 | `src/provider/mod_tests.rs`                   | Provider trait, error classification, tool call parsing |
 | `src/provider/sse_tests.rs`                   | SSE parsing, cancellation                               |
-| `src/session/compaction_tests.rs`             | Compaction engine, summarization, active-skill re-injection (`format_active_skills` + end-to-end) |
+| `src/session/compaction_tests.rs`             | Compaction engine, LlmCompaction helpers, active-skill re-injection (`format_active_skills`) |
+| `src/session/compaction/vcc_tests.rs`         | VccCompaction end-to-end compute (NoopProvider)        |
+| `src/session/compaction/vcc/normalize_tests.rs` | VCC sanitize/clip/collapse, normalize_entries, exit-code parse |
+| `src/session/compaction/vcc/cut_tests.rs`       | VCC find_live_start, build_own_cut, apply_tail_budget, resolve_smart_keep |
+| `src/session/compaction/vcc/sections_tests.rs`  | VCC 5 section extractors + path extraction             |
+| `src/session/compaction/vcc/bash_tests.rs`      | VCC compress_bash (heredoc, cd, pipe, trivial, cap)    |
+| `src/session/compaction/vcc/brief_tests.rs`     | VCC compile_brief, cap_brief                           |
+| `src/session/compaction/vcc/rank_tests.rs`      | VCC block scoring + ranked selection                   |
+| `src/session/compaction/vcc/merge_tests.rs`     | VCC merge_previous, strip_active_skills                |
 | `src/session/entry_tests.rs`                  | Session entry serialization                             |
 | `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage      |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |

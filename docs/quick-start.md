@@ -88,7 +88,7 @@ On first run, Respondami creates `~/.config/respondami/config.json` with default
 |---------|--------|
 | `/new` | Start a new session |
 | `/resume` | Load an existing session |
-| `/compact` | Manually compact context |
+| `/compact` | Manually compact context (the command palette's `compact` entry prompts how many recent turns to keep) |
 | `/help` | Show available commands |
 | `/model` | Show model info and token usage |
 

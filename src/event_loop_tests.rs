@@ -132,8 +132,9 @@ fn make_poll_terminal() -> Terminal<CrosstermBackend<std::io::Stdout>> {
     .expect("test terminal")
 }
 
-/// A finished plan with an out-of-range cut index — `apply_compaction`
-/// treats it as a no-op, so no session rewrite happens.
+/// A finished plan whose cut index is past the end — `apply_compaction`
+/// treats it as a compact-all (empty kept tail), so the rewrite keeps only the
+/// summary. Used to exercise the success path without a live LLM.
 fn noop_plan() -> CompactionPlan {
     CompactionPlan {
         summary: "summary".to_string(),
@@ -305,9 +306,11 @@ async fn handle_compaction_result_success_resets_request_usage() {
 
     let result = handle_compaction_result(&mut app, handle, false).await;
 
-    assert!(matches!(result, CompactionResult::Success { .. }));
-    // `noop_plan` is a no-op apply → tokens_after == tokens_before (1000).
-    assert_eq!(app.session.current_request_usage.input_tokens, 1000);
+    let CompactionResult::Success { tokens_after, .. } = result else {
+        panic!("expected success");
+    };
+    // On success the status-bar usage is reset to the post-compaction estimate.
+    assert_eq!(app.session.current_request_usage.input_tokens, tokens_after);
     assert_eq!(app.session.current_request_usage.output_tokens, 0);
     assert!(!app.session.current_request_usage.estimated);
 }

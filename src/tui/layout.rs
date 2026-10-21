@@ -138,6 +138,11 @@ impl LayoutRenderer {
             Self::render_token_stats_dialog(frame, chat_row, app, theme);
         }
 
+        // Keep-N compaction prompt overlay (drawn on top of chat area)
+        if app.modal.state == super::mode::AppState::CompactKeepPrompt {
+            Self::render_compact_keep_prompt(frame, chat_row, app, theme);
+        }
+
         // File autocomplete popup overlay (drawn on top of chat/input boundary)
         if let Some((file_matches, file_selected, file_scroll, file_show_hidden)) = {
             match &app.editor.autocomplete_mode {
@@ -209,6 +214,7 @@ impl LayoutRenderer {
             || app.modal.state == super::mode::AppState::CommandPalette
             || app.modal.state == super::mode::AppState::HelpPopup
             || app.modal.state == super::mode::AppState::TokenStatsDialog
+            || app.modal.state == super::mode::AppState::CompactKeepPrompt
             || any_autocomplete_popup;
         if app.modal.popup_animation.is_some() && !any_popup_active {
             Self::clear_popup_animation(app);
@@ -587,6 +593,66 @@ impl LayoutRenderer {
         Self::maybe_add_popup_fade_effect(app, PopupType::Help, popup_area, theme);
 
         let overlay = PanelOverlay::new(" Help ")
+            .border_style(theme.panel_border_style())
+            .title_style(theme.panel_title_style())
+            .content(lines)
+            .content_bg(theme.bg_light)
+            .content_style(theme.panel_content_style())
+            .selected_style(theme.panel_selected_style());
+
+        frame.render_widget(Clear, popup_area);
+        frame.render_widget(overlay, popup_area);
+    }
+
+    /// Render the keep-N compaction prompt as a small centered overlay.
+    ///
+    /// Shows `Keep last N user turns: [1]  (Enter to compact, Esc to cancel)`
+    /// where the bracketed value is the current digit input.
+    fn render_compact_keep_prompt(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
+        let prompt = app.modal.compact_keep_input.clone();
+
+        let label = Span::styled(
+            "Keep last N user turns: ",
+            Style::default().fg(theme.text),
+        );
+        let value = Span::styled(
+            format!("[{prompt}]"),
+            Style::default().fg(theme.accent).bold(),
+        );
+        let hint = Span::styled(
+            "  (Enter to compact, Esc to cancel)",
+            Style::default().fg(theme.text_dim),
+        );
+
+        let lines = vec![Line::from(vec![label, value, hint])];
+
+        let popup_height = 5u16.min(area.height);
+        let popup_width = 56u16.min(area.width);
+
+        let popup_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(popup_width),
+                Constraint::Min(0),
+            ])
+            .split(area)[1];
+        let popup_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(popup_height),
+                Constraint::Min(0),
+            ])
+            .split(popup_area)[1];
+
+        if popup_area.width < 20 || popup_area.height < 3 {
+            return;
+        }
+
+        Self::maybe_add_popup_fade_effect(app, PopupType::CompactKeepPrompt, popup_area, theme);
+
+        let overlay = PanelOverlay::new(" Compact ")
             .border_style(theme.panel_border_style())
             .title_style(theme.panel_title_style())
             .content(lines)

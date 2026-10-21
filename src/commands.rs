@@ -60,30 +60,7 @@ pub async fn execute_palette_command(
             return Ok(true);
         }
         "compact" => {
-            if app.compaction_task.is_some() {
-                app.notify_compaction_in_progress();
-            } else if app.session.session_store.has_active_session() {
-                // Close command palette, show "Compacting..." message.
-                // Spawn LLM summarization as background task — UI redraws with sweep animation.
-                app.modal.state = AppState::Compacting;
-                app.add_system_message("Compacting session context...");
-                app.chat.auto_scroll = true;
-
-                let entries = app.session.session_store.entries().to_vec();
-                let engine = crate::session::CompactionEngine::from_config(&app.config.config);
-                let provider = crate::agent::build_provider(&app.config.config)?;
-                let config = app.config.config.clone();
-                let cwd = app.config.cwd.clone();
-                let skills = app.config.skills.clone();
-
-                app.compaction_task = Some(tokio::spawn(async move {
-                    engine.compute_compaction(provider, config, entries, cwd, skills).await
-                }));
-                return Ok(false); // Return immediately — main loop redraws with animation
-            } else {
-                app.add_system_message("No active session to compact.");
-                app.chat.auto_scroll = true;
-            }
+            return execute_compact(app, None, terminal).await;
         }
         "help" | "h" => {
             app.modal.state = AppState::HelpPopup;
@@ -152,6 +129,48 @@ pub async fn execute_palette_command(
             app.chat.auto_scroll = true;
         }
     }
+    Ok(false)
+}
+
+/// Execute a manual compaction with an optional `keep` (number of user turns
+/// to keep). `None` uses the strategy's default (smart-keep for VCC, ignored
+/// by LLM). `Some(0)` compacts everything. Spawns the task in the background
+/// and returns immediately so the main loop can redraw with the sweep animation.
+///
+/// # Errors
+///
+/// - Provider build errors.
+pub async fn execute_compact(
+    app: &mut App,
+    keep: Option<usize>,
+    _terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> anyhow::Result<bool> {
+    if app.compaction_task.is_some() {
+        app.notify_compaction_in_progress();
+        return Ok(false);
+    }
+    if !app.session.session_store.has_active_session() {
+        app.add_system_message("No active session to compact.");
+        app.chat.auto_scroll = true;
+        return Ok(false);
+    }
+
+    // Close the prompt/palette, show "Compacting..." message, and spawn the
+    // strategy's compute task in the background.
+    app.modal.state = AppState::Compacting;
+    app.add_system_message("Compacting session context...");
+    app.chat.auto_scroll = true;
+
+    let entries = app.session.session_store.entries().to_vec();
+    let engine = crate::session::CompactionEngine::from_config(&app.config.config);
+    let provider = crate::agent::build_provider(&app.config.config)?;
+    let config = app.config.config.clone();
+    let cwd = app.config.cwd.clone();
+    let skills = app.config.skills.clone();
+
+    app.compaction_task = Some(tokio::spawn(async move {
+        engine.compute_compaction(provider, config, entries, cwd, skills, keep).await
+    }));
     Ok(false)
 }
 

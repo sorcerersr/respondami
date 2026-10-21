@@ -19,6 +19,7 @@ pub struct ModalState {
     pub command_palette_scroll_offset: usize,
     pub command_palette_preserved_input: String,
     pub command_palette_preserved_cursor: usize,
+    pub compact_keep_input: String,
     pub token_stats: Option<ProjectTokenStats>,
 }
 
@@ -37,6 +38,7 @@ impl ModalState {
             command_palette_scroll_offset: 0,
             command_palette_preserved_input: String::new(),
             command_palette_preserved_cursor: 0,
+            compact_keep_input: String::new(),
             token_stats: None,
         }
     }
