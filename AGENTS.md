@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1192 total)
+cargo test --workspace                         # all tests (1197 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1192 tests** (974 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1197 tests** (979 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -90,7 +90,7 @@ cargo test --workspace                       # all tests pass
 
 - The conversation prefix sent in each request must be byte-identical and append-only; any mid-history change invalidates the provider's prefix cache from that point on.
 - Tool-call assistant messages use one canonical block shape for both session save and live context push: first call = response's non-tool blocks + its own tool call; later calls = its own tool call only (`canonical_turn_blocks`). Never diverge the save form from the live form — `HistoryGuard` (`src/history_guard.rs`) checks per-message digests at each request and logs a `warn!` on drift (log-only, never blocks).
-- The synthetic `hook_instruction` message pair is sent to the LLM but never persisted; it gets `None` digests so the guard skips it.
+- PostToolUse hook instructions are injected as a separate, persisted `user` message after the tool result (a normal digest, not an ephemeral `None`-digest synthetic pair) — the same string is pushed to the live context and saved to the session, so the prefix stays stable and the instruction survives resume.
 - Reset the guard baseline after legitimate rewrites: new session, session resume, and compaction (`SessionState::reset_history_guard`).
 - Streaming `ContentBlock`s are filtered by `finalize_tool_calls` (provider/mod.rs) before use — empty id/name placeholders and unparseable `arguments` JSON are dropped so they can't leak into persisted or resent content.
 
@@ -100,7 +100,7 @@ cargo test --workspace                       # all tests pass
 - Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
 - `ToolMatcher` (loader.rs) filters `PreToolUse`/`PostToolUse` skill hooks by tool name (case-insensitive regex). `None`/`*`/empty → `All`; a regex that fails to compile → `Never` (logged). A non-matching tool skips the hook entirely (no shell spawn, no TUI entry). Directory hooks are always `All`.
 - `execute_hook` sets `SKILL_NAME`/`SKILL_DIR` env vars for skill hooks only.
-- Model-context injection (G2): `UserPromptSubmit` and `PreToolUse` stdout are tail-appended to the user message / tool result the model sees (TUI stays clean; the augmented form is what's saved to the session and pushed to live context, so the byte-identical invariant holds). `PreCompact` stdout is captured into `App.pending_precompact_context` and appended to the compaction summary in `handle_compaction_result` (taken once, cleared on every outcome). `PostToolUse` keeps the existing synthetic `hook_instruction` pair (ephemeral, `None` digests). A blocked hook (exit 2) injects nothing. `format_hook_context` builds the `[hook: <name>]` blocks and skips empty stdout.
+- Model-context injection (G2): `UserPromptSubmit` and `PreToolUse` stdout are tail-appended to the user message / tool result the model sees (TUI stays clean; the augmented form is what's saved to the session and pushed to live context, so the byte-identical invariant holds). `PreCompact` stdout is captured into `App.pending_precompact_context` and appended to the compaction summary in `handle_compaction_result` (taken once, cleared on every outcome). `PostToolUse` stdout is injected as a separate, salient `user` message after the tool result (framed `[Hook instruction — <name>]`, persisted via `SaveHookInstruction`) — a blocked hook (exit 2) uses its stderr as the body, and a failed hook (other exit) injects nothing and logs a `warn!`. `format_hook_context` builds the `[hook: <name>]` blocks and skips empty stdout.
 - The pre-prompt `PreCompact` path (turn.rs) runs before deferring; a blocked hook calls `undo_turn_setup` (shared with `rollback_pending_turn`) and does not launch the agent.
 
 ### Image / Vision Support
@@ -324,11 +324,11 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (921 tests)
+### Root Crate Tests (979 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
-| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks        |
+| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing        |
 | `src/agent/token_estimation_tests.rs`         | Token estimation from messages                          |
 | `src/agent_events_tests.rs`                   | Agent event processing edge cases                       |
 | `src/agents_md_tests.rs`                      | AGENTS.md loading and parsing                           |

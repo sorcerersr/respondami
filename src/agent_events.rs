@@ -256,6 +256,17 @@ pub async fn process_agent_events(
                     }
                 }
             }
+            Ok(Some(AgentEvent::SaveHookInstruction { message })) => {
+                if app.session.session_store.has_active_session() {
+                    let parent_id = app.session.session_store.last_entry_id();
+                    if let Err(e) = app.session.session_store.append_message(
+                        parent_id,
+                        crate::session::AgentMessage::user(message),
+                    ) {
+                        tracing::error!("Failed to save hook instruction: {}", e);
+                    }
+                }
+            }
             Ok(Some(AgentEvent::HookMessage { event, hook_name, success, stdout, stderr, tool_name })) => {
                 // Drop hook messages when display mode is Hidden
                 if app.config.hook_display != crate::tui::HookDisplay::Hidden {

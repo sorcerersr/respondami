@@ -60,6 +60,12 @@ pub enum AgentEvent {
         result: String,
         images: Vec<ImageContent>,
     },
+    /// Save a `PostToolUse` hook instruction to the session as a `user` message.
+    ///
+    /// The same string is pushed to the live context by the agent loop, so the
+    /// persisted form and the live form stay byte-identical (vLLM prefix-cache
+    /// stability). The message is model-only — it is not added to the TUI chat.
+    SaveHookInstruction { message: String },
     /// Agent signals that compaction is needed.
     /// Main thread performs compaction and restarts the agent.
     NeedsCompaction {

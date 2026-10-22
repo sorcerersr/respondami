@@ -290,7 +290,7 @@ fn model_bound_tool_result_appends_pretool_hook_stdout() {
         "planning:inject-plan.sh".to_string(),
         "keep the plan in mind".to_string(),
     )];
-    let result = super::model_bound_tool_result("file written", &outputs, "");
+    let result = super::model_bound_tool_result("file written", &outputs);
     assert!(result.starts_with("file written"), "clean output first: {result}");
     assert!(result.contains("[hook: planning:inject-plan.sh]"), "framed block: {result}");
     assert!(result.contains("keep the plan in mind"), "stdout: {result}");
@@ -303,7 +303,7 @@ fn model_bound_tool_result_multiple_hooks() {
         ("a.sh".to_string(), "first".to_string()),
         ("b.sh".to_string(), "second".to_string()),
     ];
-    let result = super::model_bound_tool_result("ok", &outputs, "");
+    let result = super::model_bound_tool_result("ok", &outputs);
     let first = result.find("[hook: a.sh]").expect("first block");
     let second = result.find("[hook: b.sh]").expect("second block");
     assert!(first < second, "hook order preserved");
@@ -312,10 +312,10 @@ fn model_bound_tool_result_multiple_hooks() {
 /// Empty stdout (or no hooks) → the model result is exactly the clean output.
 #[test]
 fn model_bound_tool_result_empty_stdout_unchanged() {
-    assert_eq!(super::model_bound_tool_result("file written", &[], ""), "file written");
+    assert_eq!(super::model_bound_tool_result("file written", &[]), "file written");
     let outputs = vec![("a.sh".to_string(), String::new())];
     assert_eq!(
-        super::model_bound_tool_result("file written", &outputs, ""),
+        super::model_bound_tool_result("file written", &outputs),
         "file written",
         "empty stdout must not add a block"
     );
@@ -327,32 +327,96 @@ fn model_bound_tool_result_empty_stdout_unchanged() {
 #[test]
 fn model_bound_tool_result_blocked_hook_injects_nothing() {
     let result = super::model_bound_tool_result(
-        "Tool call blocked by hook: no",&[],
-        "",
+        "Tool call blocked by hook: no",
+        &[],
     );
     assert_eq!(result, "Tool call blocked by hook: no");
 }
 
-/// `PostToolUse` hook instructions (already framed by the caller) are
-/// appended after the clean output and any `PreToolUse` context.
+/// The model-bound tool result does NOT carry the `PostToolUse` instruction —
+/// that is injected as a separate `user` message. Only the clean output and
+/// any `PreToolUse` context are present.
 #[test]
-fn model_bound_tool_result_appends_posttool_instructions() {
+fn model_bound_tool_result_excludes_posttool_instruction() {
     let outputs = vec![("a.sh".to_string(), "pre context".to_string())];
-    let post = "\n\n[PostToolUse hook 'b.sh': do the thing]";
-    let result = super::model_bound_tool_result("file written", &outputs, post);
+    let result = super::model_bound_tool_result("file written", &outputs);
     assert!(result.starts_with("file written"), "clean output first: {result}");
     assert!(result.contains("[hook: a.sh]"), "pre-tool block: {result}");
-    assert!(result.contains("[PostToolUse hook 'b.sh': do the thing]"), "post-tool note: {result}");
-    let pre = result.find("[hook: a.sh]").expect("pre block");
-    let post_pos = result.find("[PostToolUse hook 'b.sh'").expect("post note");
-    assert!(pre < post_pos, "pre-tool context before post-tool instructions");
+    assert!(
+        !result.contains("Hook instruction"),
+        "post-tool instruction must not be in the tool result: {result}"
+    );
 }
 
-/// Empty `PostToolUse` instructions is a no-op.
+// ---- PostToolUse hook instruction framing ----
+
+/// Build a `HookResult` for framing tests.
+fn hook_result(exit_code: i32, stdout: &str, stderr: &str) -> crate::hooks::HookResult {
+    crate::hooks::HookResult {
+        exit_code,
+        stdout: stdout.to_string(),
+        stderr: stderr.to_string(),
+        stdout_file: None,
+        stderr_file: None,
+    }
+}
+
+/// A successful hook with non-empty stdout produces a framed block of the
+/// exact form `[Hook instruction — <name>]\n<stdout>`.
 #[test]
-fn model_bound_tool_result_empty_posttool_is_noop() {
-    assert_eq!(
-        super::model_bound_tool_result("file written", &[], ""),
-        "file written"
-    );
+fn posttool_block_success_framing() {
+    let r = hook_result(0, "add your entry to progress.md", "");
+    let block = super::format_posttool_block("planning:post-tool-use.sh", &r);
+    assert_eq!(block, "\n\n[Hook instruction — planning:post-tool-use.sh]\nadd your entry to progress.md");
+}
+
+/// A blocked hook (exit 2) uses the stderr as the body.
+#[test]
+fn posttool_block_blocked_uses_stderr() {
+    let r = hook_result(2, "", "this change is not allowed");
+    let block = super::format_posttool_block("guard.sh", &r);
+    assert_eq!(block, "\n\n[Hook instruction — guard.sh]\nthis change is not allowed");
+}
+
+/// A successful hook with empty stdout produces no block.
+#[test]
+fn posttool_block_empty_stdout_is_noop() {
+    let r = hook_result(0, "", "");
+    assert_eq!(super::format_posttool_block("a.sh", &r), "");
+}
+
+/// A failed hook (non-zero, non-2) produces no block.
+#[test]
+fn posttool_block_failed_is_noop() {
+    let r = hook_result(1, "", "boom");
+    assert_eq!(super::format_posttool_block("a.sh", &r), "");
+}
+
+/// Multiple hooks concatenate into a single instruction string, in registry
+/// order, each with its own framed block.
+#[test]
+fn posttool_block_multiple_hooks_in_order() {
+    let a = hook_result(0, "first instruction", "");
+    let b = hook_result(0, "second instruction", "");
+    let mut combined = String::new();
+    combined.push_str(&super::format_posttool_block("a.sh", &a));
+    combined.push_str(&super::format_posttool_block("b.sh", &b));
+    let first = combined.find("[Hook instruction — a.sh]").expect("first block");
+    let second = combined.find("[Hook instruction — b.sh]").expect("second block");
+    assert!(first < second, "hook order preserved");
+    assert!(combined.contains("first instruction"));
+    assert!(combined.contains("second instruction"));
+}
+
+/// A failed hook interleaved with a successful one: only the successful
+/// block appears (the failed one contributes nothing).
+#[test]
+fn posttool_block_failed_interleaved_dropped() {
+    let ok = hook_result(0, "do the thing", "");
+    let failed = hook_result(3, "", "error");
+    let mut combined = String::new();
+    combined.push_str(&super::format_posttool_block("ok.sh", &ok));
+    combined.push_str(&super::format_posttool_block("bad.sh", &failed));
+    assert!(combined.contains("[Hook instruction — ok.sh]"));
+    assert!(!combined.contains("bad.sh"), "failed hook must not appear");
 }

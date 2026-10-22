@@ -707,9 +707,10 @@ pub async fn run_agent_with_snapshot(
                 apply_vision_gate(config.provider.vision, final_result, tool_images);
 
             // Run PostToolUse hooks (only for successful tool calls).
-            // Collect hook output as instructions for the LLM (appended to the
-            // model-bound tool result).
-            let mut hook_instructions = String::new();
+            // Collect hook output as a salient instruction: injected as a
+            // separate `user` message after the tool result (not buried in the
+            // tool output, which the model treats as data and ignores).
+            let mut hook_instruction = String::new();
             if !has_error {
                 let post_tool_hooks = hook_registry.hooks(crate::hooks::HookEvent::PostToolUse);
                 for hook in post_tool_hooks {
@@ -740,25 +741,29 @@ pub async fn run_agent_with_snapshot(
                         })
                         .await;
                     if hook_result.blocked() {
-                        hook_instructions.push_str(&format!(
-                            "\n\n[PostToolUse hook '{}' blocked: {}]",
-                            hook.name, hook_result.stderr
-                        ));
+                        // The tool already ran; a blocked PostToolUse is an
+                        // objection the model should still hear.
+                        hook_instruction.push_str(&format_posttool_block(&hook.name, &hook_result));
                     } else if hook_result.success() && !hook_result.stdout.is_empty() {
-                        hook_instructions.push_str(&format!(
-                            "\n\n[PostToolUse hook '{}': {}]",
-                            hook.name, hook_result.stdout
-                        ));
+                        hook_instruction.push_str(&format_posttool_block(&hook.name, &hook_result));
+                    } else if !hook_result.success() && !hook_result.blocked() {
+                        tracing::warn!(
+                            hook = %hook.name,
+                            exit_code = hook_result.exit_code,
+                            stderr = %hook_result.stderr,
+                            "PostToolUse hook failed"
+                        );
                     }
                 }
             }
 
             // Model-bound tool result: the tool output plus any PreToolUse
-            // hook-injected context and PostToolUse hook instructions. The TUI
+            // hook-injected context. The PostToolUse instruction is NOT here —
+            // it is injected as a separate `user` message below. The TUI
             // (ToolCallDone) shows the clean `final_result`; the session store
             // and live context receive `model_result` (tail-append keeps the
             // prefix stable).
-            let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs, &hook_instructions);
+            let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs);
 
             // Signal TUI: tool call finished (update pending message with result)
             // Note: the tool result sent to TUI does NOT include hook instructions —
@@ -814,6 +819,22 @@ pub async fn run_agent_with_snapshot(
             context_digests.push(assistant_digest);
             current_context.push(tool_msg);
             context_digests.push(tool_digest);
+
+            // PostToolUse hook instruction: inject as a separate, salient
+            // `user` message after the tool result. The same string is pushed
+            // to the live context and saved to the session (byte-identical),
+            // so the prefix stays stable and the instruction survives resume.
+            if !hook_instruction.is_empty() {
+                let instruction_msg = AgentMessage::user(hook_instruction.trim().to_string());
+                let instruction_digest = message_digest(&instruction_msg);
+                let _ = tx
+                    .send(AgentEvent::SaveHookInstruction {
+                        message: instruction_msg.content().to_string(),
+                    })
+                    .await;
+                current_context.push(instruction_msg);
+                context_digests.push(instruction_digest);
+            }
         }
     }
 }
@@ -851,8 +872,11 @@ fn push_context_message(
 }
 
 /// Model-bound tool result: the clean tool output plus any `PreToolUse`
-/// hook-injected context (see `format_hook_context`) and any `PostToolUse`
-/// hook instructions (blocked notes and stdout, already framed by the caller).
+/// hook-injected context (see `format_hook_context`).
+///
+/// The `PostToolUse` hook instruction is NOT part of this — it is injected as a
+/// separate `user` message after the tool result, because the model treats a
+/// tool result as data and ignores instructions buried in it.
 ///
 /// The TUI shows the clean result; the session store and live context both
 /// receive this form, so they stay byte-identical. The tail-append keeps the
@@ -863,14 +887,32 @@ fn push_context_message(
 pub(crate) fn model_bound_tool_result(
     final_result: &str,
     pre_tool_outputs: &[(String, String)],
-    post_tool_instructions: &str,
 ) -> String {
     let mut result = final_result.to_string();
     result.push_str(&crate::hooks::format_hook_context(pre_tool_outputs));
-    if !post_tool_instructions.is_empty() {
-        result.push_str(post_tool_instructions);
-    }
     result
+}
+
+/// Format a single `PostToolUse` hook outcome into a framed instruction block.
+///
+/// The block is a salient, imperative directive (not data buried in a tool
+/// result, which the model ignores):
+/// - blocked (exit 2): the stderr as the body (an objection the model should hear)
+/// - success (exit 0) with non-empty stdout: the stdout as the body
+/// - failed (other exit code): empty (the caller logs a warning)
+///
+/// Multiple blocks are concatenated by the caller in registry order and
+/// injected as a single `user` message after the tool result.
+#[must_use]
+pub(crate) fn format_posttool_block(hook_name: &str, hook_result: &crate::hooks::HookResult) -> String {
+    let body = if hook_result.blocked() {
+        &hook_result.stderr
+    } else if hook_result.success() && !hook_result.stdout.is_empty() {
+        &hook_result.stdout
+    } else {
+        return String::new();
+    };
+    format!("\n\n[Hook instruction — {hook_name}]\n{body}")
 }
 
 /// Verify the outgoing context prefix against the history guard before each
