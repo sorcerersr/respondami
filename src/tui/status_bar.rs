@@ -14,8 +14,7 @@ use tachyonfx::{EffectTimer, Interpolation, Motion, fx};
 use super::app::App;
 use super::mode::AppState;
 use super::theme::Theme;
-use crate::agent::token_estimation::{estimate_tokens_from_messages, estimate_tokens_from_streamed_text};
-use crate::session::AgentMessage;
+use crate::agent::token_estimation::estimate_tokens_from_streamed_text;
 
 /// Git branch detection result.
 enum GitBranch {
@@ -174,19 +173,25 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
     // When streaming and no real usage yet, use fallback estimation.
     // Set the `estimated` flag so the status bar can show "~" prefix.
     let (estimated_input, _estimated_output) = if !has_usage && is_streaming {
-        // Build full message list for input estimation:
-        // 1. System prompt (via build_system_prompt_with_agents_md)
-        // 2. Conversation history from session_store
-        // 3. Current user message
-        let est = app.session.session_store.token_estimator();
-        let (system_prompt, _) =
-            crate::agent::build_system_prompt_with_agents_md(&app.config.cwd, &app.config.skills);
-        let mut messages: Vec<AgentMessage> = vec![AgentMessage::system(system_prompt)];
-        messages.extend(app.session.session_store.build_context());
+        // Additive estimate from the session cache (H2): cached context +
+        // system prompt tokens (recomputed at every context mutation) plus
+        // the in-flight user message and streaming text. No context clone,
+        // no disk read.
+        let system_tokens = app
+            .session
+            .session_store
+            .system_prompt_tokens(&app.config.cwd, &app.config.skills);
+        let est = app.session.session_store.cached_estimator();
+        let mut est_input = app
+            .session
+            .session_store
+            .cached_context_tokens()
+            .saturating_add(system_tokens);
         if let Some(user_msg) = &app.agent.current_user_message {
-            messages.push(AgentMessage::user(user_msg.clone()));
+            est_input = est_input
+                .saturating_add(est.estimate_tokens("user"))
+                .saturating_add(est.estimate_tokens(user_msg));
         }
-        let est_input = estimate_tokens_from_messages(&messages, &est);
         let est_output = estimate_tokens_from_streamed_text(&app.agent.streaming_content, &est);
         (est_input + est_output, est_output)
     } else {

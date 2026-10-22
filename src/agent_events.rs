@@ -87,10 +87,10 @@ pub async fn process_agent_events(
                         app.maybe_auto_scroll();
 
                         app.start_streaming(&user_msg);
-                        app.agent.tracker.start_with_estimator(&app.session.session_store.token_estimator());
+                        app.agent.tracker.start_with_estimator(&app.session.session_store.cached_estimator());
 
                         let (context_messages, agents_md_error) =
-                            crate::agent::build_context_with_system(&app.session.session_store, &app.config.cwd, &app.config.skills);
+                            crate::agent::build_context_with_system(&mut app.session.session_store, &app.config.cwd, &app.config.skills);
 
                         if let Some(err) = agents_md_error {
                             app.add_system_message(&format!("⚠ Could not load AGENTS.md: {err}"));
@@ -453,10 +453,10 @@ pub async fn process_agent_events(
                         "Agent was blocked from stopping. Reason: {stop_blocked_error}\n\nContinue your current work.",
                     );
                     app.start_streaming(&wrapped_error);
-                    app.agent.tracker.start_with_estimator(&app.session.session_store.token_estimator());
+                    app.agent.tracker.start_with_estimator(&app.session.session_store.cached_estimator());
 
                     let (context_messages, agents_md_error) =
-                        crate::agent::build_context_with_system(&app.session.session_store, &app.config.cwd, &app.config.skills);
+                        crate::agent::build_context_with_system(&mut app.session.session_store, &app.config.cwd, &app.config.skills);
                     if let Some(err) = agents_md_error {
                         app.add_system_message(&format!("⚠ Could not load AGENTS.md: {err}"));
                         app.maybe_auto_scroll();

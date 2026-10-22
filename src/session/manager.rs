@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use super::entry::{AgentMessage, SessionEntry, TokenRateEntry};
+use crate::agent::token_estimation::{estimate_tokens_from_messages, TokenEstimator};
 
 /// Metadata about a session for listing purposes.
 #[derive(Debug, Clone)]
@@ -27,12 +28,29 @@ pub struct SessionMeta {
 }
 
 /// Stores session data and handles JSONL I/O.
+///
+/// Caches the calibrated estimator and context token count (H2): the cache is
+/// recomputed eagerly at the three context-mutation points —
+/// [`Self::append_message`], [`Self::apply_compaction`], and session
+/// load/new/resume — so per-frame readers (status bar, tracker) never walk
+/// the entries or clone the context.
 #[derive(Debug)]
 pub struct SessionStore {
     sessions_dir: PathBuf,
     current_session_path: Option<PathBuf>,
     current_session_id: Option<String>,
     entries: Vec<SessionEntry>,
+    /// Calibrated estimator for the current entries (see
+    /// [`Self::recompute_context_cache`]).
+    cached_estimator: TokenEstimator,
+    /// `estimate_tokens_from_messages` of the built context.
+    cached_context_tokens: u32,
+    /// Last system prompt built by `build_context_with_system` (empty until
+    /// the first turn). Display/estimation only — never part of the context.
+    cached_system_prompt: String,
+    /// Token estimate of [`Self::cached_system_prompt`] (incl. the `system`
+    /// role label, mirroring `estimate_tokens_from_messages`).
+    cached_system_tokens: u32,
 }
 
 /// Build context messages by walking a flat list of session entries.
@@ -103,6 +121,10 @@ impl SessionStore {
             current_session_path: None,
             current_session_id: None,
             entries: Vec::new(),
+            cached_estimator: TokenEstimator::heuristic(),
+            cached_context_tokens: 0,
+            cached_system_prompt: String::new(),
+            cached_system_tokens: 0,
         }
     }
 
@@ -144,6 +166,7 @@ impl SessionStore {
 
         self.entries.clear();
         self.entries.push(header.clone());
+        self.recompute_context_cache();
         self.append_entry_to_disk(&header, &path)
             .with_context(|| format!("Failed to write session header to {}", path.display()))?;
 
@@ -213,6 +236,7 @@ impl SessionStore {
         if let Some(SessionEntry::Session { id, .. }) = self.entries.first() {
             self.current_session_id = Some(id.clone());
         }
+        self.recompute_context_cache();
 
         Ok(self.entries.clone())
     }
@@ -226,9 +250,19 @@ impl SessionStore {
         let entry = SessionEntry::new_message(parent_id, message);
         let id = entry.id();
         self.entries.push(entry.clone());
+        self.recompute_context_cache();
         if let Some(ref path) = self.current_session_path {
             self.append_entry_to_disk(&entry, path)?;
         }
+        #[cfg(debug_assertions)]
+        {
+            let fresh = build_context_from_entries(&self.entries);
+            debug_assert_eq!(
+                estimate_tokens_from_messages(&fresh, &self.cached_estimator),
+                self.cached_context_tokens,
+                "context cache must be recomputed on append_message"
+            );
+        };
         Ok(id)
     }
 
@@ -240,6 +274,7 @@ impl SessionStore {
     pub fn append_entry(&mut self, entry: SessionEntry) -> anyhow::Result<String> {
         let id = entry.id();
         self.entries.push(entry.clone());
+        self.recompute_context_cache();
         if let Some(ref path) = self.current_session_path {
             self.append_entry_to_disk(&entry, path)?;
         }
@@ -259,16 +294,78 @@ impl SessionStore {
         build_context_from_entries(&self.entries)
     }
 
-    /// Calibrated token estimator for the current session.
+    /// Cached calibrated estimator for the current session.
     ///
-    /// Computes the chars-per-token ratio from the last real `prompt_tokens`
-    /// (most recent assistant `Usage`) divided into the char count of the
-    /// current `build_context()` output. Falls back to the cold-start
-    /// heuristic when no usage exists yet. This is the single source of truth
-    /// for all token estimation in the app.
+    /// Recomputed eagerly at every context mutation (see the struct docs),
+    /// so this is a copy, not a walk. The calibration base includes the
+    /// cached system prompt's char count (H3).
     #[must_use]
-    pub fn token_estimator(&self) -> crate::agent::token_estimation::TokenEstimator {
-        crate::agent::token_estimation::TokenEstimator::from_entries(&self.entries)
+    pub fn cached_estimator(&self) -> TokenEstimator {
+        self.cached_estimator
+    }
+
+    /// Cached token estimate of the built context (no system overhead).
+    #[must_use]
+    pub fn cached_context_tokens(&self) -> u32 {
+        self.cached_context_tokens
+    }
+
+    /// The last system prompt built by `build_context_with_system`.
+    ///
+    /// Empty until the first turn builds one; refreshed at every turn start.
+    #[must_use]
+    pub fn cached_system_prompt(&self) -> &str {
+        &self.cached_system_prompt
+    }
+
+    /// Cached token estimate of the system prompt (incl. role label).
+    #[must_use]
+    pub fn cached_system_tokens(&self) -> u32 {
+        self.cached_system_tokens
+    }
+
+    /// Store a freshly built system prompt in the cache.
+    ///
+    /// Called by `build_context_with_system` at every turn start so the
+    /// per-frame status-bar path never re-reads AGENTS.md from disk.
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.cached_system_prompt = prompt;
+        self.cached_system_tokens = self
+            .cached_estimator
+            .estimate_tokens("system")
+            .saturating_add(self.cached_estimator.estimate_tokens(&self.cached_system_prompt));
+    }
+
+    /// System prompt tokens, building and caching the prompt on first use.
+    ///
+    /// The disk read happens only when the cache is empty (before the first
+    /// turn); every later call — including the per-frame status-bar path —
+    /// returns the cached value.
+    #[must_use]
+    pub fn system_prompt_tokens(&mut self, cwd: &Path, skills: &[crate::skills::Skill]) -> u32 {
+        if self.cached_system_prompt.is_empty() {
+            let (prompt, _) = crate::agent::build_system_prompt_with_agents_md(cwd, skills);
+            self.set_system_prompt(prompt);
+        }
+        self.cached_system_tokens
+    }
+
+    /// Recompute the cached estimator and context tokens from the entries.
+    ///
+    /// The only writer of the context cache. Called from exactly the
+    /// context-mutation points: `append_message`, `append_entry`,
+    /// `apply_compaction`, and session load/new/resume.
+    fn recompute_context_cache(&mut self) {
+        let context = build_context_from_entries(&self.entries);
+        let est =
+            TokenEstimator::from_messages_with_system(&context, self.cached_system_prompt.len());
+        self.cached_estimator = est;
+        self.cached_context_tokens = estimate_tokens_from_messages(&context, &est);
+        if !self.cached_system_prompt.is_empty() {
+            self.cached_system_tokens = est
+                .estimate_tokens("system")
+                .saturating_add(est.estimate_tokens(&self.cached_system_prompt));
+        }
     }
 
     /// Get the last entry ID (for parent chaining).
@@ -289,19 +386,17 @@ impl SessionStore {
         })
     }
 
-    /// Estimate current context token count from session entries.
-    /// Uses character-based estimation (chars / 4) on `build_context()` output.
+    /// Estimate current context token count from the session entries.
+    ///
+    /// Returns the cached estimate of `build_context()` output (recomputed
+    /// at every context mutation) — no walk, no clone.
     ///
     /// This does NOT include system prompt, AGENTS.md, or skills overhead.
     /// Use `estimate_context_tokens()` for a more accurate estimate that includes
     /// system overhead and actual LLM usage data when available.
     #[must_use]
     pub fn estimate_token_count(&self) -> u32 {
-        let est = self.token_estimator();
-        self.build_context()
-            .iter()
-            .map(|m| est.estimate_tokens(m.content()))
-            .sum()
+        self.cached_context_tokens
     }
 
     /// Estimate total context tokens including system overhead.
@@ -322,14 +417,9 @@ impl SessionStore {
             }
         }
 
-        // Fallback: character estimates + system overhead
-        let est = self.token_estimator();
-        let entry_tokens: u32 = self
-            .build_context()
-            .iter()
-            .map(|m| est.estimate_tokens(m.content()))
-            .sum();
-        entry_tokens.saturating_add(system_overhead_tokens)
+        // Fallback: cached character estimates + system overhead
+        self.cached_context_tokens
+            .saturating_add(system_overhead_tokens)
     }
 
     /// Last real usage from the most recent Assistant message, if any.
@@ -588,6 +678,7 @@ impl SessionStore {
 
         // Rewrite session file
         self.entries = new_entries;
+        self.recompute_context_cache();
         if let Some(ref path) = self.current_session_path {
             self.rewrite_session_file(path)?;
         }

@@ -342,9 +342,13 @@ pub async fn run_turn_with_input(
     {
         let compaction_settings = CompactionSettings::from_config(&app.config.config.compaction);
 
-        // Estimate system overhead: system prompt + AGENTS.md + skills
-        let est = app.session.session_store.token_estimator();
-        let system_overhead = estimate_system_overhead_tokens(&app.config.cwd, &app.config.skills, &est);
+        // Estimate system overhead from the cached prompt (built at the last
+        // turn start; first turn builds it here) — no per-check disk read (H2).
+        let est = app.session.session_store.cached_estimator();
+        let system_overhead = app
+            .session
+            .session_store
+            .system_prompt_tokens(&app.config.cwd, &app.config.skills);
 
         // Use estimate_context_tokens which prefers actual LLM usage data
         let estimated = app.session.session_store.estimate_context_tokens(system_overhead);
@@ -514,7 +518,7 @@ pub async fn launch_agent_turn(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     app.start_streaming(&user_msg);
-    app.agent.tracker.start_with_estimator(&app.session.session_store.token_estimator());
+    app.agent.tracker.start_with_estimator(&app.session.session_store.cached_estimator());
     app.reset_request_usage();
 
     // Set up SSE debug capture for this turn (if enabled via RESPONDAMI_SSE_DEBUG)
@@ -524,7 +528,7 @@ pub async fn launch_agent_turn(
 
     // Build context messages from session_store (which stays in app)
     let (context_messages, agents_md_error) =
-        crate::agent::build_context_with_system(&app.session.session_store, &app.config.cwd, &app.config.skills);
+        crate::agent::build_context_with_system(&mut app.session.session_store, &app.config.cwd, &app.config.skills);
 
     // Show warning if AGENTS.md couldn't be loaded
     if let Some(err) = agents_md_error {

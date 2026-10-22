@@ -99,13 +99,18 @@ fn build_date_and_cwd(cwd: &Path) -> String {
 ///
 /// Returns `(messages, load_error)`. On AGENTS.md load error, messages use
 /// the standard system prompt and the error is returned separately.
+///
+/// Also stores the built prompt in the session's cache
+/// (`set_system_prompt`) so the per-frame status-bar path never re-reads
+/// AGENTS.md from disk (H2).
 #[must_use]
 pub fn build_context_with_system(
-    session_store: &SessionStore,
+    session_store: &mut SessionStore,
     cwd: &Path,
     skills: &[Skill],
 ) -> (Vec<AgentMessage>, Option<io::Error>) {
     let (system_prompt, load_error) = build_system_prompt_with_agents_md(cwd, skills);
+    session_store.set_system_prompt(system_prompt.clone());
     let mut messages = vec![AgentMessage::system(system_prompt)];
     messages.extend(session_store.build_context());
     (messages, load_error)

@@ -55,6 +55,17 @@ impl TokenEstimator {
         }
     }
 
+    /// Calibrate the ratio including system prompt characters.
+    ///
+    /// `context_chars` is the conversation content char count (excluding the
+    /// system prompt); `system_chars` is the system prompt length. The sum
+    /// matches what the provider tokenized, so the ratio is not deflated by
+    /// excluding system chars (H3).
+    #[must_use]
+    pub fn calibrate_with_system(context_chars: usize, system_chars: usize, actual_tokens: u32) -> Self {
+        Self::calibrate(context_chars.saturating_add(system_chars), actual_tokens)
+    }
+
     /// The current chars-per-token ratio.
     #[must_use]
     pub fn chars_per_token(&self) -> f64 {
@@ -75,9 +86,30 @@ impl TokenEstimator {
     /// Uses the char count of all message content divided by the last real
     /// `prompt_tokens` (most recent assistant `Usage`). Falls back to
     /// [`TokenEstimator::heuristic`] when no usage exists.
+    ///
+    /// No system prompt on the wire — the compaction path's shape. Use
+    /// [`Self::from_messages_with_system`] when the system prompt's char
+    /// count is known, so the calibration base matches what the provider
+    /// tokenized.
     #[must_use]
     pub fn from_messages(messages: &[AgentMessage]) -> Self {
-        let total_chars = messages.iter().map(estimate_message_content_chars).sum();
+        Self::from_messages_with_system(messages, 0)
+    }
+
+    /// Build an estimator from a message list, including the system prompt's
+    /// char count in the calibration base.
+    ///
+    /// `system_chars` is the length of the system prompt (base prompt +
+    /// AGENTS.md + skills). The provider tokenizes system + conversation
+    /// together, so excluding system chars deflates the calibrated ratio and
+    /// underestimates the context (H3).
+    #[must_use]
+    pub fn from_messages_with_system(messages: &[AgentMessage], system_chars: usize) -> Self {
+        let total_chars = messages
+            .iter()
+            .map(estimate_message_content_chars)
+            .sum::<usize>()
+            .saturating_add(system_chars);
         let last_prompt = messages
             .iter()
             .rev()
@@ -97,8 +129,8 @@ impl TokenEstimator {
     /// Build an estimator calibrated from a flat list of session entries.
     ///
     /// Equivalent to [`TokenEstimator::from_messages`] over
-    /// [`build_context_from_entries`]. This is the entry point used by
-    /// [`crate::session::SessionStore::token_estimator`].
+    /// [`build_context_from_entries`]. Kept for the compaction paths, which
+    /// operate on entry slices without a system prompt.
     #[must_use]
     pub fn from_entries(entries: &[SessionEntry]) -> Self {
         let messages = build_context_from_entries(entries);
