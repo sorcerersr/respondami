@@ -156,11 +156,9 @@ pub async fn run_agent_with_snapshot(
     current_context.push(AgentMessage::user(user_message.clone()));
 
     // Per-message digests, kept in lockstep with `current_context` for the
-    // history guard (vLLM prefix-cache stability). `None` marks ephemeral
-    // messages (the synthetic hook_instruction pair) that are sent to the LLM
-    // but never persisted — the guard skips them in the prefix comparison.
-    let mut context_digests: Vec<Option<MessageDigest>> =
-        current_context.iter().map(|msg| Some(message_digest(msg))).collect();
+    // history guard (vLLM prefix-cache stability).
+    let mut context_digests: Vec<MessageDigest> =
+        current_context.iter().map(message_digest).collect();
 
     let mut current_request_usage: RequestTokenUsage = RequestTokenUsage::default();
     // Retry tracking for transient provider errors
@@ -709,7 +707,8 @@ pub async fn run_agent_with_snapshot(
                 apply_vision_gate(config.provider.vision, final_result, tool_images);
 
             // Run PostToolUse hooks (only for successful tool calls).
-            // Collect hook output as instructions for the LLM (injected as synthetic tool call).
+            // Collect hook output as instructions for the LLM (appended to the
+            // model-bound tool result).
             let mut hook_instructions = String::new();
             if !has_error {
                 let post_tool_hooks = hook_registry.hooks(crate::hooks::HookEvent::PostToolUse);
@@ -755,14 +754,15 @@ pub async fn run_agent_with_snapshot(
             }
 
             // Model-bound tool result: the tool output plus any PreToolUse
-            // hook-injected context. The TUI (ToolCallDone) shows the clean
-            // `final_result`; the session store and live context receive
-            // `model_result` (tail-append keeps the prefix stable).
-            let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs);
+            // hook-injected context and PostToolUse hook instructions. The TUI
+            // (ToolCallDone) shows the clean `final_result`; the session store
+            // and live context receive `model_result` (tail-append keeps the
+            // prefix stable).
+            let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs, &hook_instructions);
 
             // Signal TUI: tool call finished (update pending message with result)
             // Note: the tool result sent to TUI does NOT include hook instructions —
-            // those are injected as a separate synthetic tool call for the LLM only.
+            // those are appended to the model-bound result only.
             let _ = tx
                 .send(AgentEvent::ToolCallDone {
                     tool_call_id: tc.id.clone(),
@@ -811,38 +811,9 @@ pub async fn run_agent_with_snapshot(
             let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), model_result, tool_images);
             let tool_digest = message_digest(&tool_msg);
             current_context.push(assistant_msg);
-            context_digests.push(Some(assistant_digest));
+            context_digests.push(assistant_digest);
             current_context.push(tool_msg);
-            context_digests.push(Some(tool_digest));
-
-            // If there are hook instructions, inject them as a synthetic hook_instruction tool call/result.
-            // This is visible only to the LLM — no TUI events, not saved to session.
-            if !hook_instructions.is_empty() {
-                let hook_tool_call = ToolCall {
-                    id: "hook_instruction".to_string(),
-                    name: crate::tools::HOOK_INSTRUCTION_TOOL.to_string(),
-                    arguments: serde_json::json!({}),
-                };
-                // Inject into agent context ONLY — no TUI events, no session save.
-                // Marked ephemeral (None) in the digest list: these messages are
-                // never persisted, so they must not participate in the guard's
-                // prefix comparison.
-                current_context.push(AgentMessage::assistant_with_blocks(
-                    vec![ContentBlock::ToolCall {
-                        tool_call: hook_tool_call.clone(),
-                    }],
-                    None,
-                ));
-                context_digests.push(None);
-                current_context.push(AgentMessage::tool(
-                    "hook_instruction".to_string(),
-                    crate::tools::HOOK_INSTRUCTION_TOOL.to_string(),
-                    serde_json::json!({}),
-                    hook_instructions.trim().to_string(),
-                    Vec::new(),
-                ));
-                context_digests.push(None);
-            }
+            context_digests.push(tool_digest);
         }
     }
 }
@@ -852,7 +823,7 @@ pub async fn run_agent_with_snapshot(
 /// parallel digest list in lockstep.
 fn push_persisted_context_pair(
     context: &mut Vec<AgentMessage>,
-    digests: &mut Vec<Option<MessageDigest>>,
+    digests: &mut Vec<MessageDigest>,
     tc: &ToolCall,
     result: &str,
 ) {
@@ -863,29 +834,25 @@ fn push_persisted_context_pair(
         None,
     );
     let tool = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), result.to_string(), Vec::new());
-    push_context_message(context, digests, assistant, false);
-    push_context_message(context, digests, tool, false);
+    push_context_message(context, digests, assistant);
+    push_context_message(context, digests, tool);
 }
 
 /// Push a message to the live context and its digest to the parallel digest
 /// list, keeping the two in lockstep.
-///
-/// `ephemeral` marks messages that are sent to the LLM but never persisted
-/// (the synthetic `hook_instruction` pair) — they get a `None` digest so the
-/// history guard skips them in the prefix comparison.
 fn push_context_message(
     context: &mut Vec<AgentMessage>,
-    digests: &mut Vec<Option<MessageDigest>>,
+    digests: &mut Vec<MessageDigest>,
     message: AgentMessage,
-    ephemeral: bool,
 ) {
-    let digest = if ephemeral { None } else { Some(message_digest(&message)) };
+    let digest = message_digest(&message);
     digests.push(digest);
     context.push(message);
 }
 
 /// Model-bound tool result: the clean tool output plus any `PreToolUse`
-/// hook-injected context (see `format_hook_context`).
+/// hook-injected context (see `format_hook_context`) and any `PostToolUse`
+/// hook instructions (blocked notes and stdout, already framed by the caller).
 ///
 /// The TUI shows the clean result; the session store and live context both
 /// receive this form, so they stay byte-identical. The tail-append keeps the
@@ -896,8 +863,14 @@ fn push_context_message(
 pub(crate) fn model_bound_tool_result(
     final_result: &str,
     pre_tool_outputs: &[(String, String)],
+    post_tool_instructions: &str,
 ) -> String {
-    final_result.to_string() + &crate::hooks::format_hook_context(pre_tool_outputs)
+    let mut result = final_result.to_string();
+    result.push_str(&crate::hooks::format_hook_context(pre_tool_outputs));
+    if !post_tool_instructions.is_empty() {
+        result.push_str(post_tool_instructions);
+    }
+    result
 }
 
 /// Verify the outgoing context prefix against the history guard before each
@@ -909,7 +882,7 @@ pub(crate) fn model_bound_tool_result(
 /// provider prefix caching (e.g. vLLM) silently stops hitting.
 fn check_outgoing_history(
     history_guard: &Mutex<HistoryGuard>,
-    digests: &[Option<MessageDigest>],
+    digests: &[MessageDigest],
     context: &[AgentMessage],
 ) {
     let mut guard = history_guard

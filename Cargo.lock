@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "ratatui-md"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pulldown-cmark",
  "ratatui",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "ratatui-widgets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ratatui",
  "unicode-width",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "respondami"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2497,7 +2497,7 @@ dependencies = [
  "partial-json-fixer",
  "ratatui",
  "ratatui-md",
- "ratatui-widgets 0.1.0",
+ "ratatui-widgets 0.2.0",
  "regex",
  "reqwest",
  "serde",

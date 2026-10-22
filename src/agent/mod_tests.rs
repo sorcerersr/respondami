@@ -259,27 +259,28 @@ fn live_and_session_assistant_forms_identical() {
     );
 }
 
-/// Ephemeral messages (synthetic hook pair) get `None` digests; persisted
-/// messages get digests matching `message_digest` — kept in lockstep.
+/// Every pushed message gets a digest matching `message_digest`, kept in
+/// lockstep with the context list.
 #[test]
 fn push_context_message_lockstep_digests() {
     let mut context: Vec<AgentMessage> = Vec::new();
-    let mut digests: Vec<Option<crate::history_guard::MessageDigest>> = Vec::new();
+    let mut digests: Vec<crate::history_guard::MessageDigest> = Vec::new();
 
-    let persisted = AgentMessage::user("persisted".to_string());
-    let persisted_digest = crate::history_guard::message_digest(&persisted);
-    super::push_context_message(&mut context, &mut digests, persisted.clone(), false);
+    let first = AgentMessage::user("first".to_string());
+    let first_digest = crate::history_guard::message_digest(&first);
+    super::push_context_message(&mut context, &mut digests, first);
 
-    let ephemeral = AgentMessage::user("ephemeral".to_string());
-    super::push_context_message(&mut context, &mut digests, ephemeral, true);
+    let second = AgentMessage::user("second".to_string());
+    let second_digest = crate::history_guard::message_digest(&second);
+    super::push_context_message(&mut context, &mut digests, second);
 
     assert_eq!(context.len(), 2);
     assert_eq!(digests.len(), 2);
-    assert_eq!(digests[0], Some(persisted_digest));
-    assert_eq!(digests[1], None, "ephemeral messages must not join the prefix comparison");
+    assert_eq!(digests[0], first_digest);
+    assert_eq!(digests[1], second_digest);
 }
 
-// ---- PreToolUse model-bound tool result ----
+// ---- Model-bound tool result (PreToolUse + PostToolUse) ----
 
 /// `PreToolUse` hook stdout is appended to the tool result the model sees, in
 /// the `[hook: <name>]` framing, after the clean output.
@@ -289,7 +290,7 @@ fn model_bound_tool_result_appends_pretool_hook_stdout() {
         "planning:inject-plan.sh".to_string(),
         "keep the plan in mind".to_string(),
     )];
-    let result = super::model_bound_tool_result("file written", &outputs);
+    let result = super::model_bound_tool_result("file written", &outputs, "");
     assert!(result.starts_with("file written"), "clean output first: {result}");
     assert!(result.contains("[hook: planning:inject-plan.sh]"), "framed block: {result}");
     assert!(result.contains("keep the plan in mind"), "stdout: {result}");
@@ -302,7 +303,7 @@ fn model_bound_tool_result_multiple_hooks() {
         ("a.sh".to_string(), "first".to_string()),
         ("b.sh".to_string(), "second".to_string()),
     ];
-    let result = super::model_bound_tool_result("ok", &outputs);
+    let result = super::model_bound_tool_result("ok", &outputs, "");
     let first = result.find("[hook: a.sh]").expect("first block");
     let second = result.find("[hook: b.sh]").expect("second block");
     assert!(first < second, "hook order preserved");
@@ -311,10 +312,10 @@ fn model_bound_tool_result_multiple_hooks() {
 /// Empty stdout (or no hooks) → the model result is exactly the clean output.
 #[test]
 fn model_bound_tool_result_empty_stdout_unchanged() {
-    assert_eq!(super::model_bound_tool_result("file written", &[]), "file written");
+    assert_eq!(super::model_bound_tool_result("file written", &[], ""), "file written");
     let outputs = vec![("a.sh".to_string(), String::new())];
     assert_eq!(
-        super::model_bound_tool_result("file written", &outputs),
+        super::model_bound_tool_result("file written", &outputs, ""),
         "file written",
         "empty stdout must not add a block"
     );
@@ -327,6 +328,31 @@ fn model_bound_tool_result_empty_stdout_unchanged() {
 fn model_bound_tool_result_blocked_hook_injects_nothing() {
     let result = super::model_bound_tool_result(
         "Tool call blocked by hook: no",&[],
+        "",
     );
     assert_eq!(result, "Tool call blocked by hook: no");
+}
+
+/// `PostToolUse` hook instructions (already framed by the caller) are
+/// appended after the clean output and any `PreToolUse` context.
+#[test]
+fn model_bound_tool_result_appends_posttool_instructions() {
+    let outputs = vec![("a.sh".to_string(), "pre context".to_string())];
+    let post = "\n\n[PostToolUse hook 'b.sh': do the thing]";
+    let result = super::model_bound_tool_result("file written", &outputs, post);
+    assert!(result.starts_with("file written"), "clean output first: {result}");
+    assert!(result.contains("[hook: a.sh]"), "pre-tool block: {result}");
+    assert!(result.contains("[PostToolUse hook 'b.sh': do the thing]"), "post-tool note: {result}");
+    let pre = result.find("[hook: a.sh]").expect("pre block");
+    let post_pos = result.find("[PostToolUse hook 'b.sh'").expect("post note");
+    assert!(pre < post_pos, "pre-tool context before post-tool instructions");
+}
+
+/// Empty `PostToolUse` instructions is a no-op.
+#[test]
+fn model_bound_tool_result_empty_posttool_is_noop() {
+    assert_eq!(
+        super::model_bound_tool_result("file written", &[], ""),
+        "file written"
+    );
 }

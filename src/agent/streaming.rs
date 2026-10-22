@@ -125,7 +125,6 @@ pub async fn stream_response_from_messages(
     let tools: Vec<ToolDef> = tool_registry
         .get_definitions()
         .iter()
-        .filter(|def| def.name != crate::tools::HOOK_INSTRUCTION_TOOL)
         .map(|def| ToolDef {
             name: def.name.clone(),
             description: def.description.clone(),
