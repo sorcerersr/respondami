@@ -79,7 +79,8 @@ fn section(title: &str, items: &[String]) -> String {
 }
 
 /// Wrap lines longer than `max_chars` at a word boundary.
-fn wrap_long_lines(text: &str, max_chars: usize) -> String {
+#[must_use]
+pub(crate) fn wrap_long_lines(text: &str, max_chars: usize) -> String {
     let mut out = Vec::new();
     for line in text.lines() {
         if line.len() <= max_chars {
@@ -90,7 +91,8 @@ fn wrap_long_lines(text: &str, max_chars: usize) -> String {
         let mut prefix = String::new();
         let mut wrapped = Vec::new();
         while prefix.len() + remaining.len() > max_chars {
-            let available = max_chars.saturating_sub(prefix.len()).max(20);
+            let available =
+                remaining.floor_char_boundary(max_chars.saturating_sub(prefix.len()).max(20));
             let split_at = remaining[..available]
                 .rfind(' ')
                 .filter(|&i| i > available / 2)
@@ -216,17 +218,16 @@ impl CompactionStrategy for VccCompaction {
 
         // Ranked brief under a size-relative token budget: scales with block
         // count between the configured floor and a fixed ceiling.
-        let budget_tokens = vcc_config.brief_budget_tokens;
-        let block_count = blocks.len() as u32;
-        let floor = budget_tokens as usize;
+        let floor = vcc_config.brief_budget_tokens as usize;
         let ceiling = RANKED_BRIEF_CEILING_TOKENS as usize;
         let slope = RANKED_BRIEF_TOKENS_PER_BLOCK as usize;
-        let char_budget = std::cmp::min(
+        let block_count = blocks.len();
+        let budget_tokens = std::cmp::min(
             ceiling,
-            std::cmp::max(floor, slope * block_count as usize),
-        ) as u32
-            * est.chars_per_token() as u32;
-        let brief_blocks = rank::select_ranked_brief_blocks(&blocks, Some(char_budget as usize));
+            std::cmp::max(floor, slope * block_count),
+        );
+        let char_budget = (budget_tokens as f64 * est.chars_per_token()).round() as usize;
+        let brief_blocks = rank::select_ranked_brief_blocks(&blocks, Some(char_budget));
         let brief_transcript = brief::compile_brief(&brief_blocks);
 
         let data = SectionData {

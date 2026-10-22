@@ -202,27 +202,26 @@ pub fn parse_exit_code(result: &str) -> Option<i32> {
         })
 }
 
-/// Normalize a single `AgentMessage` into blocks.
+/// Normalize a single `AgentMessage`, pushing blocks into `out`.
 ///
-/// `pending_bash` carries bash tool-call commands (keyed by tool-call id) so a
-/// `Tool` result can be paired with its command. Assistant `bash` tool calls are
+/// `pending_bash` maps bash tool-call ids to the index of the placeholder
+/// `Bash` block already emitted at the call position, so a `Tool` result can
+/// fill in its output and exit code in place. Assistant `bash` tool calls are
 /// recorded here and not emitted as `ToolCall` blocks (they surface as `Bash`).
 fn normalize_message(
     msg: &AgentMessage,
-    pending_bash: &mut HashMap<String, String>,
-) -> Vec<VccBlock> {
+    out: &mut Vec<VccBlock>,
+    pending_bash: &mut HashMap<String, usize>,
+) {
     match msg {
-        AgentMessage::System { .. } => Vec::new(),
+        AgentMessage::System { .. } => {}
         AgentMessage::User { content } => {
             let text = sanitize(content);
-            if text.trim().is_empty() {
-                Vec::new()
-            } else {
-                vec![VccBlock::User { text }]
+            if !text.trim().is_empty() {
+                out.push(VccBlock::User { text });
             }
         }
         AgentMessage::Assistant { content: blocks, .. } => {
-            let mut out = Vec::new();
             for block in blocks {
                 match block {
                     ContentBlock::Text { text } => {
@@ -246,7 +245,13 @@ fn normalize_message(
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string();
-                            pending_bash.insert(tool_call.id.clone(), command);
+                            let index = out.len();
+                            out.push(VccBlock::Bash {
+                                command,
+                                output: String::new(),
+                                exit_code: None,
+                            });
+                            pending_bash.insert(tool_call.id.clone(), index);
                         } else {
                             out.push(VccBlock::ToolCall {
                                 name: tool_call.name.clone(),
@@ -256,7 +261,6 @@ fn normalize_message(
                     }
                 }
             }
-            out
         }
         AgentMessage::Tool {
             tool_name,
@@ -265,21 +269,30 @@ fn normalize_message(
             ..
         } => {
             if tool_name.eq_ignore_ascii_case("bash") {
-                let command = pending_bash
-                    .remove(tool_call_id)
-                    .unwrap_or_default();
                 let text = sanitize(result);
-                vec![VccBlock::Bash {
-                    command,
-                    output: text,
-                    exit_code: parse_exit_code(result),
-                }]
+                let exit_code = parse_exit_code(result);
+                if let Some(index) = pending_bash.remove(tool_call_id) {
+                    let VccBlock::Bash { command, .. } = &out[index] else {
+                        unreachable!("pending_bash indexes always point at Bash blocks");
+                    };
+                    out[index] = VccBlock::Bash {
+                        command: command.clone(),
+                        output: text,
+                        exit_code,
+                    };
+                } else {
+                    out.push(VccBlock::Bash {
+                        command: String::new(),
+                        output: text,
+                        exit_code,
+                    });
+                }
             } else {
                 let text = sanitize(result);
-                vec![VccBlock::ToolResult {
+                out.push(VccBlock::ToolResult {
                     name: tool_name.clone(),
                     text,
-                }]
+                });
             }
         }
     }
@@ -288,25 +301,18 @@ fn normalize_message(
 /// Normalize a slice of session entries into blocks.
 ///
 /// Only `Message` entries produce blocks; `Compaction`, `ModelChange`, `Custom`,
-/// and `Session` entries are skipped. Bash tool calls are paired with their
-/// results; a bash call with no result (e.g. cancelled) is still emitted with an
-/// empty output and no exit code.
+/// and `Session` entries are skipped. Bash tool calls get a placeholder `Bash`
+/// block at the call position (empty output, no exit code) that is filled in
+/// when the result arrives, so transcript order is preserved; a bash call with
+/// no result (e.g. cancelled) keeps the empty placeholder.
 #[must_use]
 pub fn normalize_entries(entries: &[SessionEntry]) -> Vec<VccBlock> {
     let mut out = Vec::new();
-    let mut pending_bash: HashMap<String, String> = HashMap::new();
+    let mut pending_bash: HashMap<String, usize> = HashMap::new();
     for entry in entries {
         if let SessionEntry::Message { message, .. } = entry {
-            out.extend(normalize_message(message, &mut pending_bash));
+            normalize_message(message, &mut out, &mut pending_bash);
         }
-    }
-    // Emit any bash tool calls that never got a result (cancelled mid-flight).
-    for command in pending_bash.into_values() {
-        out.push(VccBlock::Bash {
-            command,
-            output: String::new(),
-            exit_code: None,
-        });
     }
     out
 }

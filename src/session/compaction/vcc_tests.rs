@@ -1,6 +1,6 @@
 //! End-to-end tests for the VCC compaction strategy.
 
-use super::vcc::VccCompaction;
+use super::vcc::{VccCompaction, wrap_long_lines};
 use super::CompactionStrategy;
 use crate::provider::{ChatChunk, ChatRequest, CompletionResponse, Provider, ProviderError, ProviderTrait};
 use crate::session::{AgentMessage, SessionEntry};
@@ -101,4 +101,16 @@ fn vcc_config_defaults() {
     assert_eq!(config.compaction.mode, crate::config::CompactionMode::Vcc);
     assert!(config.compaction.vcc.smart_keep_tail);
     assert_eq!(config.compaction.vcc.brief_budget_tokens, 1100);
+}
+
+#[test]
+fn wrap_long_lines_boundary_mid_cjk_char() {
+    // 118 ASCII bytes + one 3-byte CJK char: the 120-byte cut lands
+    // mid-character. Panics before the floor_char_boundary fix.
+    let line = format!("{} 你好", "a".repeat(118));
+    let out = wrap_long_lines(&line, 120);
+    for wrapped in out.lines() {
+        assert!(wrapped.len() <= 120);
+    }
+    assert!(out.contains('好'));
 }

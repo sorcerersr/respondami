@@ -125,6 +125,47 @@ fn normalize_unpaired_bash_emitted_empty() {
 }
 
 #[test]
+fn normalize_unpaired_bash_keeps_call_position() {
+    // A cancelled bash call (no result) must stay at the call position,
+    // not be appended at the end of the block list.
+    let entries = vec![
+        user_entry("run it"),
+        bash_call_entry("t1", "echo hi"),
+        assistant_entry("done"),
+    ];
+    let blocks = normalize_entries(&entries);
+    assert_eq!(blocks.len(), 3);
+    match &blocks[1] {
+        VccBlock::Bash { command, output, exit_code } => {
+            assert_eq!(command, "echo hi");
+            assert_eq!(output, "");
+            assert_eq!(*exit_code, None);
+        }
+        _ => panic!("expected Bash block at call position"),
+    }
+}
+
+#[test]
+fn normalize_bash_result_fills_placeholder_in_place() {
+    let entries = vec![
+        user_entry("run it"),
+        bash_call_entry("t1", "ls"),
+        bash_result_entry("t1", "file1\nExit code: 0"),
+        assistant_entry("done"),
+    ];
+    let blocks = normalize_entries(&entries);
+    assert_eq!(blocks.len(), 3);
+    match &blocks[1] {
+        VccBlock::Bash { command, output, exit_code } => {
+            assert_eq!(command, "ls");
+            assert!(output.contains("file1"));
+            assert_eq!(*exit_code, Some(0));
+        }
+        _ => panic!("expected Bash block at call position"),
+    }
+}
+
+#[test]
 fn normalize_skips_non_message_entries() {
     let session = SessionEntry::new_session("s".into(), "t".into(), "/".into(), "m".into(), 4096);
     let entries = vec![session, user_entry("hi")];

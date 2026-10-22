@@ -147,7 +147,8 @@ pub fn compress_bash(raw: &str) -> String {
                 without_bodies.push(line.trim().to_string());
             } else {
                 let clipped = if preview.len() > HEREDOC_BODY_CAP {
-                    format!("{}…", &preview[..HEREDOC_BODY_CAP.saturating_sub(1)])
+                    let end = preview.floor_char_boundary(HEREDOC_BODY_CAP.saturating_sub(1));
+                    format!("{}…", &preview[..end])
                 } else {
                     preview
                 };
@@ -186,7 +187,8 @@ pub fn compress_bash(raw: &str) -> String {
 
     let cmd = chosen.join("; ");
     if cmd.len() > BASH_CAP {
-        format!("{}...", &cmd[..BASH_CAP.saturating_sub(3)])
+        let end = cmd.floor_char_boundary(BASH_CAP.saturating_sub(3));
+        format!("{}...", &cmd[..end])
     } else {
         cmd
     }

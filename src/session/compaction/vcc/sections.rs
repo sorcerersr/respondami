@@ -305,7 +305,8 @@ fn first_line(text: &str) -> String {
 #[must_use]
 pub fn extract_commits(blocks: &[VccBlock]) -> Vec<(Option<String>, String)> {
     let mut commits: Vec<(Option<String>, String)> = Vec::new();
-    for (i, b) in blocks.iter().enumerate() {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for b in blocks {
         let VccBlock::Bash { command, output, .. } = b else {
             continue;
         };
@@ -329,10 +330,9 @@ pub fn extract_commits(blocks: &[VccBlock]) -> Vec<(Option<String>, String)> {
             }
         }
         let key = format!("{}::{message}", hash.as_deref().unwrap_or_default());
-        if !commits.iter().any(|(h, m)| format!("{}::{m}", h.as_deref().unwrap_or_default()) == key) {
+        if seen.insert(key) {
             commits.push((hash, message));
         }
-        let _ = i;
     }
     commits
 }

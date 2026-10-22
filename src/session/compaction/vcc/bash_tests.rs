@@ -53,3 +53,26 @@ fn compress_joins_multiple_lines() {
     let out = compress_bash("echo a\necho b");
     assert_eq!(out, "echo a; echo b");
 }
+
+#[test]
+fn compress_cap_boundary_mid_cjk_char() {
+    // 235 ASCII bytes + one 3-byte CJK char: the BASH_CAP-3 cut (byte 237)
+    // lands mid-character. Panics before the floor_char_boundary fix.
+    let long = format!("{} 你好", "x".repeat(235));
+    let out = compress_bash(&long);
+    assert!(out.len() <= 240);
+    assert!(out.ends_with("..."));
+    assert!(!out.contains('你'));
+}
+
+#[test]
+fn compress_heredoc_preview_boundary_mid_cjk_char() {
+    // 77 ASCII bytes + one 3-byte CJK char in the preview: the
+    // HEREDOC_BODY_CAP-1 cut (byte 79) lands mid-character.
+    let body = format!("{} 你好", "a".repeat(77));
+    let cmd = format!("python3 <<EOF\n{body}\nEOF");
+    let out = compress_bash(&cmd);
+    assert!(out.contains("python3 <<EOF"));
+    assert!(out.ends_with('…'));
+    assert!(!out.contains('你'));
+}

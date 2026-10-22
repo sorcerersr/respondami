@@ -80,6 +80,19 @@ fn extract_commits_from_git_commit() {
 }
 
 #[test]
+fn extract_commits_dedups_repeated_commits() {
+    let blocks = vec![
+        bash("git commit -m \"fix bug\"", "[main abc1234] fix bug", Some(0)),
+        bash("git commit -m \"fix bug\"", "[main abc1234] fix bug", Some(0)),
+        bash("git commit -m \"other change\"", "[main def5678] other change", Some(0)),
+    ];
+    let commits = extract_commits(&blocks);
+    assert_eq!(commits.len(), 2);
+    assert_eq!(commits[0].1, "fix bug");
+    assert_eq!(commits[1].1, "other change");
+}
+
+#[test]
 fn format_commits_with_hash() {
     let commits = vec![(Some("abc1234".to_string()), "fix bug".to_string())];
     let lines = format_commits(&commits, 8);
