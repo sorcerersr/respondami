@@ -144,6 +144,27 @@ fn test_image() -> ImageContent {
     }
 
     #[test]
+    fn to_openai_message_user_with_images_has_text_part() {
+        // A text part must accompany the image parts: an image-only content
+        // array leaves the user turn without any text, which local models
+        // interpret as a user turn that said nothing → empty responses.
+        let msg = Message::User {
+            content: String::new(),
+            images: vec![test_image()],
+        };
+        let openai_msg = to_openai_message(&msg).unwrap();
+        let val: serde_json::Value = serde_json::to_value(&openai_msg).unwrap();
+        let parts = val["content"].as_array().expect("array content");
+        assert_eq!(parts.len(), 2, "one text part + one image part. JSON: {val}");
+        assert_eq!(parts[0]["type"], "text", "text part first. JSON: {val}");
+        assert!(
+            !parts[0]["text"].as_str().unwrap_or("").is_empty(),
+            "text part must be non-empty. JSON: {val}"
+        );
+        assert_eq!(parts[1]["type"], "image_url", "image part second. JSON: {val}");
+    }
+
+    #[test]
     fn to_openai_message_user_with_multiple_images() {
         let msg = Message::User {
             content: String::new(),
@@ -151,7 +172,8 @@ fn test_image() -> ImageContent {
         };
         let openai_msg = to_openai_message(&msg).unwrap();
         let val: serde_json::Value = serde_json::to_value(&openai_msg).unwrap();
-        assert_eq!(val["content"].as_array().unwrap().len(), 2);
+        // One text part + two image parts.
+        assert_eq!(val["content"].as_array().unwrap().len(), 3);
     }
 
     // -----------------------------------------------------------------------

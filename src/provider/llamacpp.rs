@@ -7,6 +7,7 @@ use async_openai::types::chat::{
     ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage,
     ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestToolMessageArgs,
     ChatCompletionRequestUserMessageArgs,
@@ -381,9 +382,22 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
             let content_value = if images.is_empty() {
                 ChatCompletionRequestUserMessageContent::Text(content.clone())
             } else {
-                let parts: Vec<ChatCompletionRequestUserMessageContentPart> = images
-                    .iter()
-                    .map(|img| {
+                // A text part must accompany the image parts: an image-only
+                // content array leaves the user turn without any text, which
+                // local models (llama.cpp + qwen3) interpret as a user turn
+                // that said nothing, increasing the probability of empty
+                // responses. The tool result's own text note already describes
+                // the image; this part just makes the turn non-empty.
+                let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
+                    ChatCompletionRequestUserMessageContentPart::Text(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: "Image attached.".to_string(),
+                            prompt_cache_breakpoint: None,
+                        },
+                    ),
+                ];
+                parts.extend(
+                    images.iter().map(|img| {
                         ChatCompletionRequestUserMessageContentPart::ImageUrl(
                             ChatCompletionRequestMessageContentPartImage {
                                 image_url: ImageUrl {
@@ -393,8 +407,8 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
                                 prompt_cache_breakpoint: None,
                             },
                         )
-                    })
-                    .collect();
+                    }),
+                );
                 ChatCompletionRequestUserMessageContent::Array(parts)
             };
             Some(ChatCompletionRequestMessage::User(
