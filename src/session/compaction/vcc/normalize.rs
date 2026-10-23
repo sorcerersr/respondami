@@ -33,20 +33,6 @@ pub enum VccBlock {
     },
 }
 
-impl VccBlock {
-    /// The block kind as a short string (for rendering headers).
-    #[must_use]
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::User { .. } => "user",
-            Self::Assistant { .. } => "assistant",
-            Self::ToolCall { .. } => "tool_call",
-            Self::ToolResult { .. } => "tool_result",
-            Self::Bash { .. } => "bash",
-        }
-    }
-}
-
 /// Sanitize text: normalize line endings and strip ANSI escapes + control chars.
 #[must_use]
 pub fn sanitize(text: &str) -> String {
@@ -89,28 +75,6 @@ pub fn clip(text: &str, max: usize) -> String {
         .filter(|&i| i > max * 3 / 5)
         .unwrap_or(max);
     text[..cut].to_string()
-}
-
-/// Clip text to the last sentence boundary at or before `max` chars.
-#[must_use]
-pub fn clip_sentence(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
-    }
-    let window = &text[..max];
-    // Find the last sentence terminator followed by space/end within the window.
-    let mut best: Option<usize> = None;
-    for (i, c) in window.char_indices() {
-        if matches!(c, '.' | '!' | '?') {
-            best = Some(i + c.len_utf8());
-        }
-    }
-    if let Some(end) = best
-        && end >= max / 2
-    {
-        return text[..end].trim_end().to_string();
-    }
-    clip(text, max)
 }
 
 /// Split text into non-empty, trimmed lines.

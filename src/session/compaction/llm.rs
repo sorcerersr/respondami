@@ -33,11 +33,10 @@ impl CompactionStrategy for LlmCompaction {
         let settings = CompactionSettings::from_config(&config.compaction);
         let context_window = config.provider.context_window;
 
-        // Find compaction boundary (start after last compaction or after session header)
-        let boundary_start = entries
-            .iter()
-            .rposition(|e| matches!(e, SessionEntry::Compaction { .. }))
-            .map_or(1, |i| i + 1); // Skip session header
+        // Find compaction boundary (start after last compaction or after
+        // session header). Shared with VCC (M4): `find_live_start` also
+        // recovers from an orphaned `first_kept_entry_id`.
+        let boundary_start = super::vcc::find_live_start(&entries);
         let boundary_end = entries.len();
 
         if boundary_start >= boundary_end {

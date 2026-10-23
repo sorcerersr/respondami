@@ -1,8 +1,8 @@
 //! Tests for VCC normalization.
 
 use super::normalize::{
-    clip, clip_sentence, collapse_skill_text, non_empty_lines, normalize_entries, parse_exit_code,
-    sanitize, VccBlock,
+    clip, collapse_skill_text, non_empty_lines, normalize_entries, parse_exit_code, sanitize,
+    VccBlock,
 };
 use crate::session::{AgentMessage, SessionEntry, ToolCall};
 
@@ -51,13 +51,6 @@ fn clip_prefers_word_boundary() {
 #[test]
 fn clip_short_text_unchanged() {
     assert_eq!(clip("hi", 10), "hi");
-}
-
-#[test]
-fn clip_sentence_prefers_sentence_end() {
-    let text = "First sentence. Second sentence here.";
-    let out = clip_sentence(text, 20);
-    assert!(out.ends_with('.'));
 }
 
 #[test]
@@ -171,10 +164,4 @@ fn normalize_skips_non_message_entries() {
     let entries = vec![session, user_entry("hi")];
     let blocks = normalize_entries(&entries);
     assert_eq!(blocks.len(), 1);
-}
-
-#[test]
-fn block_kind_strings() {
-    assert_eq!(VccBlock::User { text: "x".into() }.kind(), "user");
-    assert_eq!(VccBlock::Bash { command: "c".into(), output: "o".into(), exit_code: None }.kind(), "bash");
 }

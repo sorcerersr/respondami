@@ -22,6 +22,8 @@ pub use manager::{build_context_from_entries, SessionStore, SessionMeta};
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]
+mod display_adapter_tests;
+#[cfg(test)]
 mod entry_tests;
 #[cfg(test)]
 mod manager_tests;

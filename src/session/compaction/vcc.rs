@@ -15,13 +15,17 @@
 //! - [`merge`] — merge with a previous summary.
 //! - [`cut`] — cut selection.
 
-pub mod bash;
-pub mod brief;
-pub mod cut;
-pub mod merge;
-pub mod normalize;
-pub mod rank;
-pub mod sections;
+mod bash;
+mod brief;
+mod cut;
+mod merge;
+mod normalize;
+mod rank;
+mod sections;
+
+/// Re-exported for the LLM strategy's shared compaction boundary (M4);
+/// the submodules themselves stay private to this module tree.
+pub use cut::find_live_start;
 
 #[cfg(test)]
 mod bash_tests;

@@ -637,3 +637,52 @@ impl ProviderTrait for MockProvider {
         assert!(plan.summary.contains("Do the thing."));
         assert!(!plan.summary.contains("name: my-skill"), "frontmatter stripped");
     }
+
+    #[tokio::test]
+    async fn compute_compaction_orphaned_first_kept_id_recovers() {
+        // M4: the LLM strategy shares `vcc::find_live_start` for its
+        // boundary. An orphaned `first_kept_entry_id` (no matching entry)
+        // must fall back to the entry after the compaction record instead
+        // of panicking or compacting pre-compaction history.
+        let tmp = TempDir::new().unwrap();
+        let mut entries = vec![SessionEntry::new_session(
+            "session_orphan".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            tmp.path().to_string_lossy().to_string(),
+            "model".to_string(),
+            32768,
+        )];
+        entries.push(make_message_entry("Pre 1", "user"));
+        entries.push(make_message_entry("Pre 2", "assistant"));
+        let compaction_idx = entries.len();
+        entries.push(SessionEntry::new_compaction(
+            None,
+            "Previous summary".to_string(),
+            "orphan_id_that_matches_nothing".to_string(),
+            10000,
+        ));
+        for i in 0..10 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            entries.push(make_message_entry(&format!("Post {i}"), role));
+        }
+
+        let mut config = crate::config::Config::default();
+        config.compaction.mode = crate::config::CompactionMode::Llm;
+        let engine = CompactionEngine::from_config(&config);
+        let provider = Provider::from_trait(Box::new(MockProvider {
+            summary: "## Goal\nOrphan test".to_string(),
+        }));
+
+        let plan = engine
+            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), Vec::new(), None)
+            .await
+            .expect("orphaned first_kept_entry_id must not fail compaction");
+
+        assert!(
+            plan.cut_index > compaction_idx,
+            "cut point ({}) must stay after the compaction record ({}); \
+             pre-compaction history is out of scope",
+            plan.cut_index,
+            compaction_idx
+        );
+    }

@@ -67,7 +67,7 @@ pub async fn execute_palette_command(
             return Ok(true);
         }
         "compact" => {
-            return execute_compact(app, None, terminal).await;
+            return execute_compact(app, None).await;
         }
         "help" | "h" => {
             app.modal.state = AppState::HelpPopup;
@@ -157,7 +157,6 @@ pub async fn execute_palette_command(
 pub async fn execute_compact(
     app: &mut App,
     keep: Option<usize>,
-    _terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     if app.compaction_task.is_some() {
         app.notify_compaction_in_progress();

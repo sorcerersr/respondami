@@ -71,7 +71,7 @@ impl HookResult {
 pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
     // Build environment variables
     let mut env_vars = HashMap::new();
-    env_vars.insert("HOOK_EVENT".to_string(), format!("{:?}", hook.event));
+    env_vars.insert("HOOK_EVENT".to_string(), hook.event.to_string());
     env_vars.insert("HOOK_NAME".to_string(), hook.name.clone());
     env_vars.insert("CWD".to_string(), context.cwd.to_string_lossy().to_string());
 

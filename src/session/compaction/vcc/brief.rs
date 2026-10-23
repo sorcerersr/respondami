@@ -36,7 +36,9 @@ const STOP_WORDS: &[&str] = &[
 ];
 
 fn is_stop_word(word: &str) -> bool {
-    STOP_WORDS.contains(&word.to_lowercase().as_str())
+    // No-alloc fast path: the list is lowercase, so an already-lowercase
+    // word needs no allocation. (List is frequency-ordered, not sorted.)
+    STOP_WORDS.contains(&word) || STOP_WORDS.contains(&word.to_lowercase().as_str())
 }
 
 /// Normalize whitespace for a word budget.

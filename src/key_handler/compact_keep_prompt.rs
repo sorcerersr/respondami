@@ -25,7 +25,7 @@ impl KeyHandler for CompactKeepPromptHandler {
         &self,
         app: &mut App,
         key: &KeyEvent,
-        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        _terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> anyhow::Result<bool> {
         match key.code {
             KeyCode::Esc => {
@@ -35,7 +35,7 @@ impl KeyHandler for CompactKeepPromptHandler {
             KeyCode::Enter => {
                 let keep: Option<usize> = app.modal.compact_keep_input.trim().parse().ok();
                 app.modal.compact_keep_input.clear();
-                execute_compact(app, keep, terminal).await?;
+                execute_compact(app, keep).await?;
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 app.modal.compact_keep_input.push(c);

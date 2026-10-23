@@ -4,11 +4,16 @@
 //! Used by `session_select.rs` and any other code that needs to rebuild
 //! the chat display from session data.
 
+use crate::hooks::HookEvent;
 use crate::session::{AgentMessage, SessionEntry};
 use crate::tui::messages::{
-    AssistantMessage, ChatMessage, ToolCallMessage, UserMessage,
+    AssistantMessage, ChatMessage, HookMessage, ToolCallMessage, UserMessage,
 };
 use crate::tui::messages::tool_call::build_tool_call_variant;
+
+/// Frame prefix of a persisted `PostToolUse` hook instruction block
+/// (see `agent::format_posttool_block`).
+const HOOK_INSTRUCTION_PREFIX: &str = "[Hook instruction — ";
 
 /// Adapter that converts session entries into display-ready chat messages.
 #[derive(Debug)]
@@ -38,9 +43,30 @@ impl SessionDisplayAdapter {
             if let SessionEntry::Message { message, .. } = entry {
                 match message {
                     AgentMessage::User { content } => {
-                        messages.push(ChatMessage::User(UserMessage {
-                            content: content.clone(),
-                        }));
+                        // Reconstruct hook instruction boxes (M3): a user
+                        // message composed of `[Hook instruction — <name>]`
+                        // framed blocks renders as hook boxes, not a user
+                        // bubble. Malformed framing falls through to the
+                        // user bubble (no error path).
+                        match parse_hook_instruction_blocks(content) {
+                            Some(blocks) => {
+                                for (hook_name, body) in blocks {
+                                    messages.push(ChatMessage::Hook(HookMessage {
+                                        event: HookEvent::PostToolUse,
+                                        hook_name,
+                                        success: true,
+                                        stdout: body,
+                                        stderr: String::new(),
+                                        tool_name: None,
+                                    }));
+                                }
+                            }
+                            None => {
+                                messages.push(ChatMessage::User(UserMessage {
+                                    content: content.clone(),
+                                }));
+                            }
+                        }
                     }
                     AgentMessage::Assistant { content: blocks, .. } => {
                         use crate::session::ContentBlock;
@@ -98,4 +124,55 @@ impl SessionDisplayAdapter {
 
         messages
     }
+}
+
+/// Parse `[Hook instruction — <name>]` framed blocks out of a user message.
+///
+/// The framer (`agent::format_posttool_block`) emits `\n\n[frame]\n<body>`
+/// per block; multiple blocks are concatenated in registry order, so a
+/// message may carry several. Returns `Some(blocks)` only when the message
+/// is entirely framed blocks; `None` otherwise (leading text, a frame
+/// without a closing `]` on its header line, or an empty name), in which
+/// case the caller renders a normal user bubble.
+fn parse_hook_instruction_blocks(content: &str) -> Option<Vec<(String, String)>> {
+    let first = content.trim_start_matches('\n');
+    let first = first.strip_prefix(HOOK_INSTRUCTION_PREFIX)?;
+
+    // Find every frame that starts a new block: a frame only counts when
+    // preceded by the `\n\n` separator; an earlier occurrence inside a body
+    // is body text.
+    let mut starts: Vec<usize> = vec![0];
+    let mut from = 0usize;
+    while let Some(rel) = first[from..].find(HOOK_INSTRUCTION_PREFIX) {
+        let pos = from + rel;
+        if pos >= 2 && first[..pos].ends_with("\n\n") {
+            starts.push(pos);
+        }
+        from = pos + HOOK_INSTRUCTION_PREFIX.len();
+    }
+
+    let mut blocks = Vec::new();
+    for (i, &frame_pos) in starts.iter().enumerate() {
+        // Content starts after the frame prefix (the first one was already
+        // stripped); it runs to the next frame's `\n\n` separator (or the
+        // end for the last block).
+        let content_start = if i == 0 {
+            0
+        } else {
+            frame_pos + HOOK_INSTRUCTION_PREFIX.len()
+        };
+        let content_end = match starts.get(i + 1) {
+            Some(&next) => next - 2,
+            None => first.len(),
+        };
+        let chunk = &first[content_start..content_end];
+        let close = chunk.find(']')?;
+        let name = &chunk[..close];
+        if name.is_empty() || name.contains('\n') {
+            return None;
+        }
+        let body = chunk[close + 1..].strip_prefix('\n').unwrap_or(&chunk[close + 1..]);
+        blocks.push((name.to_string(), body.to_string()));
+    }
+    Some(blocks)
 }
