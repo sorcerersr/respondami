@@ -182,28 +182,6 @@ fn merge_file_lines(prev: &str, fresh: &str) -> String {
     }
 }
 
-/// Cap a brief to a line budget, keeping the tail.
-fn cap_brief_to_budget(text: &str, max_lines: usize) -> String {
-    if text.is_empty() || max_lines == 0 {
-        return String::new();
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= max_lines {
-        return text.to_string();
-    }
-    let kept = &lines[lines.len() - max_lines..];
-    let first_header = kept.iter().position(|l| {
-        let t = l.trim_start();
-        t.starts_with('[') && t.contains(']')
-    });
-    let clean = match first_header {
-        Some(p) if p > 0 => &kept[p..],
-        _ => kept,
-    };
-    let omitted = lines.len() - clean.len();
-    format!("...({omitted} earlier lines omitted)\n\n{}", clean.join("\n"))
-}
-
 /// Merge a previous summary with a fresh one.
 ///
 /// `brief_max_lines` caps the merged brief transcript.
@@ -237,7 +215,7 @@ pub fn merge_previous(prev: &str, fresh: &str, brief_max_lines: usize) -> String
     } else {
         let fresh_lines = fresh_brief.lines().count();
         let remaining = brief_max_lines.saturating_sub(fresh_lines);
-        let prev_tail = cap_brief_to_budget(&prev_brief, remaining);
+        let prev_tail = super::brief::cap_brief(&prev_brief, remaining);
         if prev_tail.is_empty() {
             fresh_brief
         } else {

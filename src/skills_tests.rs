@@ -13,16 +13,18 @@ use crate::skills::*;
 #[test]
 fn parse_frontmatter_valid() {
     let content = "---\nname: pdf\ndescription: Handle PDF files\nlicense: MIT\n---\n# Body\nContent here";
-    let fm = parse_frontmatter(content).expect("should parse");
+    let (fm, raw_yaml) = parse_frontmatter(content).expect("should parse");
     assert_eq!(fm.name, Some("pdf".to_string()));
     assert_eq!(fm.description, Some("Handle PDF files".to_string()));
     assert_eq!(fm.license, Some("MIT".to_string()));
+    // The raw YAML block is returned for re-parsing (L3: no second scan).
+    assert_eq!(raw_yaml, "name: pdf\ndescription: Handle PDF files\nlicense: MIT");
 }
 
 #[test]
 fn parse_frontmatter_missing_fields() {
     let content = "---\nname: minimal\n---\nBody";
-    let fm = parse_frontmatter(content).expect("should parse");
+    let (fm, _) = parse_frontmatter(content).expect("should parse");
     assert_eq!(fm.name, Some("minimal".to_string()));
     assert_eq!(fm.description, None);
     assert_eq!(fm.license, None);
@@ -31,7 +33,7 @@ fn parse_frontmatter_missing_fields() {
 #[test]
 fn parse_frontmatter_with_metadata() {
     let content = "---\nname: test\ndescription: has metadata\nmetadata:\n  author: me\n  version: \"1.0\"\n---\nBody";
-    let fm = parse_frontmatter(content).expect("should parse");
+    let (fm, _) = parse_frontmatter(content).expect("should parse");
     assert_eq!(fm.name, Some("test".to_string()));
     let meta = fm.metadata.as_ref().expect("should have metadata");
     assert_eq!(meta.get("author"), Some(&"me".to_string()));
@@ -41,7 +43,7 @@ fn parse_frontmatter_with_metadata() {
 #[test]
 fn parse_frontmatter_unknown_fields_ignored() {
     let content = "---\nname: test\nunknown_field: value\nanother: 123\ndescription: works\n---\nBody";
-    let fm = parse_frontmatter(content).expect("should parse");
+    let (fm, _) = parse_frontmatter(content).expect("should parse");
     assert_eq!(fm.name, Some("test".to_string()));
     assert_eq!(fm.description, Some("works".to_string()));
 }
@@ -55,9 +57,47 @@ fn parse_frontmatter_no_frontmatter() {
 #[test]
 fn parse_frontmatter_empty_block() {
     let content = "---\n---\nBody";
-    let fm = parse_frontmatter(content).expect("should parse empty block");
+    let (fm, raw_yaml) = parse_frontmatter(content).expect("should parse empty block");
     assert_eq!(fm.name, None);
     assert_eq!(fm.description, None);
+    assert_eq!(raw_yaml, "");
+}
+
+// ---------------------------------------------------------------------------
+// skill_body (L3: frontmatter-stripped body, shared by agent + compaction)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn skill_body_strips_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("SKILL.md");
+    fs::write(
+        &path,
+        "---\nname: test\ndescription: d\n---\n# Body\nContent here\n",
+    )
+    .unwrap();
+    assert_eq!(
+        skill_body(&path).as_deref(),
+        Some("# Body\nContent here"),
+        "frontmatter must be stripped"
+    );
+}
+
+#[test]
+fn skill_body_without_frontmatter_returns_content() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("SKILL.md");
+    fs::write(&path, "  # Just body\nText\n").unwrap();
+    assert_eq!(
+        skill_body(&path).as_deref(),
+        Some("# Just body\nText"),
+        "no frontmatter: content as-is (trimmed)"
+    );
+}
+
+#[test]
+fn skill_body_missing_file_is_none() {
+    assert!(skill_body(std::path::Path::new("/nonexistent/SKILL.md")).is_none());
 }
 
 // ---------------------------------------------------------------------------

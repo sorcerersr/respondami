@@ -135,9 +135,11 @@ pub(crate) struct SkillHookCommand {
 
 /// Parse YAML frontmatter from the beginning of a file.
 ///
-/// Returns `Some(frontmatter)` if a valid `--- ... ---` block is found at the
-/// start of the file, `None` otherwise.
-pub(crate) fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
+/// Returns `Some((frontmatter, raw_yaml))` if a valid `--- ... ---` block is
+/// found at the start of the file, `None` otherwise. The raw YAML block is
+/// returned so callers (e.g. `parse_hooks_field`) can re-parse it without a
+/// second scan of the file content.
+pub(crate) fn parse_frontmatter(content: &str) -> Option<(SkillFrontmatter, String)> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         return None;
@@ -146,9 +148,29 @@ pub(crate) fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
     let end = after_first.find("---")?;
     let yaml_block = after_first[..end].trim();
     if yaml_block.is_empty() {
-        return Some(SkillFrontmatter::default());
+        return Some((SkillFrontmatter::default(), String::new()));
     }
-    serde_yaml::from_str(yaml_block).ok()
+    serde_yaml::from_str(yaml_block)
+        .ok()
+        .map(|fm| (fm, yaml_block.to_string()))
+}
+
+/// Read a `SKILL.md` file and return its body (frontmatter stripped).
+///
+/// `None` only when the file cannot be read. A file without a
+/// `--- ... ---` frontmatter block is returned as-is (trimmed), matching
+/// the `unwrap_or(&content)` behavior of the former inline extraction.
+#[must_use]
+pub fn skill_body(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    let trimmed = content.trim_start();
+    let after_first = trimmed.strip_prefix("---");
+    let end = after_first.and_then(|a| a.find("---"));
+    let body: &str = match (after_first, end) {
+        (Some(a), Some(e)) => &a[e + 3..],
+        _ => trimmed,
+    };
+    Some(body.trim().to_string())
 }
 
 /// Parse the `hooks:` field from a raw frontmatter YAML block.
@@ -263,14 +285,11 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
     let frontmatter = parse_frontmatter(&content);
 
     // Parse the hooks field in a separate pass so a malformed `hooks:` block
-    // never discards the rest of the frontmatter.
-    let (hooks, hook_warnings) = if let Some(trimmed) = content.trim_start().strip_prefix("---")
-        && let Some(end) = trimmed[3..].find("---")
-    {
-        let yaml_block = trimmed[3..][..end].trim();
-        parse_hooks_field(yaml_block)
-    } else {
-        (Vec::new(), Vec::new())
+    // never discards the rest of the frontmatter. The raw YAML block comes
+    // from `parse_frontmatter` (no second scan of the content).
+    let (hooks, hook_warnings) = match &frontmatter {
+        Some((_, yaml_block)) => parse_hooks_field(yaml_block),
+        None => (Vec::new(), Vec::new()),
     };
     for w in hook_warnings {
         diagnostics.push(SkillDiagnostic {
@@ -285,7 +304,7 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
         .file_name().map_or_else(|| "unknown".to_string(), |n| n.to_string_lossy().to_string());
 
     let name = match &frontmatter {
-        Some(fm) => fm.name.clone().unwrap_or_else(|| dir_name.clone()),
+        Some((fm, _)) => fm.name.clone().unwrap_or_else(|| dir_name.clone()),
         None => dir_name.clone(),
     };
 
@@ -300,7 +319,7 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
     }
 
     // Name mismatch warning: spec requires name == directory name
-    if let Some(fm) = &frontmatter
+    if let Some((fm, _)) = &frontmatter
         && let Some(ref fm_name) = fm.name
         && *fm_name != dir_name
     {
@@ -315,7 +334,7 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
 
     // Description is required
     let description = match &frontmatter {
-        Some(fm) => fm.description.clone(),
+        Some((fm, _)) => fm.description.clone(),
         None => None,
     };
 
@@ -349,12 +368,12 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
 
     // Extract license and metadata
     let license = match &frontmatter {
-        Some(fm) => fm.license.clone(),
+        Some((fm, _)) => fm.license.clone(),
         None => None,
     };
 
     let metadata = match &frontmatter {
-        Some(fm) => fm.metadata.clone().unwrap_or_default(),
+        Some((fm, _)) => fm.metadata.clone().unwrap_or_default(),
         None => HashMap::new(),
     };
 

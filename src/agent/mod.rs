@@ -540,22 +540,18 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
         }
         // Build tool result: activation confirmation + full SKILL.md content
         let mut result = format!("Skill '{skill_name}' activated.");
-        // Read and inject the SKILL.md content
+        // Read and inject the SKILL.md body (frontmatter stripped, L3)
         if let Some(skill) = ctx.skills.iter().find(|s| s.name == skill_name) {
-            match std::fs::read_to_string(&skill.file_path) {
-                Ok(content) => {
-                    let content = content.splitn(2, "---").nth(2).unwrap_or(&content);
+            match crate::skills::skill_body(&skill.file_path) {
+                Some(body) => {
                     result.push_str(&format!(
-                        "\n\n<skill_instructions name=\"{}\">\n{}\n</skill_instructions>",
-                        skill_name,
-                        content.trim()
+                        "\n\n<skill_instructions name=\"{skill_name}\">\n{body}\n</skill_instructions>"
                     ));
                 }
-                Err(e) => {
+                None => {
                     result.push_str(&format!(
-                        "\n\n[Error reading skill file '{}': {}]",
-                        skill.file_path.display(),
-                        e
+                        "\n\n[Error reading skill file '{}': unreadable]",
+                        skill.file_path.display()
                     ));
                 }
             }

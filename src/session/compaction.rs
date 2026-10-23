@@ -228,14 +228,11 @@ pub(crate) fn format_active_skills(active: &[String], skills: &[Skill]) -> Strin
         let Some(skill) = skills.iter().find(|s| &s.name == name) else {
             continue;
         };
-        let Ok(content) = std::fs::read_to_string(&skill.file_path) else {
+        let Some(body) = crate::skills::skill_body(&skill.file_path) else {
             continue;
         };
-        // Strip YAML frontmatter (the body after the second `---`).
-        let body = content.splitn(3, "---").nth(2).unwrap_or(&content);
         blocks.push(format!(
-            "<skill_instructions name=\"{name}\">\n{}\n</skill_instructions>",
-            body.trim()
+            "<skill_instructions name=\"{name}\">\n{body}\n</skill_instructions>"
         ));
     }
 

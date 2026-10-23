@@ -317,11 +317,13 @@ pub fn compile_brief(blocks: &[VccBlock]) -> String {
 /// Cap a brief to `max_lines`, keeping the tail and avoiding a mid-section cut.
 #[must_use]
 pub fn cap_brief(text: &str, max_lines: usize) -> String {
+    if text.is_empty() || max_lines == 0 {
+        return String::new();
+    }
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= max_lines {
         return text.to_string();
     }
-    let omitted = lines.len() - max_lines;
     let kept = &lines[lines.len() - max_lines..];
     let first_header = kept.iter().position(|l| {
         let t = l.trim_start();
@@ -331,6 +333,7 @@ pub fn cap_brief(text: &str, max_lines: usize) -> String {
         Some(p) if p > 0 => &kept[p..],
         _ => kept,
     };
+    let omitted = lines.len() - clean.len();
     format!("...({omitted} earlier lines omitted)\n\n{}", clean.join("\n"))
 }
 
