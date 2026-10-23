@@ -356,8 +356,6 @@ fn hook_result(exit_code: i32, stdout: &str, stderr: &str) -> crate::hooks::Hook
         exit_code,
         stdout: stdout.to_string(),
         stderr: stderr.to_string(),
-        stdout_file: None,
-        stderr_file: None,
     }
 }
 

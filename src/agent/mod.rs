@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::config::Config;
 use crate::history_guard::{HistoryGuard, MessageDigest, message_digest};
-use crate::hooks::{HookContext, HookRegistry, execute_hook};
+use crate::hooks::HookRegistry;
 use crate::session::{
     AgentMessage, CompactionEngine, ContentBlock, RequestTokenUsage, SessionStore, ToolCall,
 };
@@ -135,7 +135,6 @@ pub async fn run_agent_with_snapshot(
     cwd: PathBuf,
     tool_registry: ToolRegistry,
     mut hook_registry: HookRegistry,
-    mut active_skills: Vec<String>,
     skills: Vec<crate::skills::Skill>,
     tx: mpsc::Sender<AgentEvent>,
     cancel_rx: watch::Receiver<bool>,
@@ -404,444 +403,469 @@ pub async fn run_agent_with_snapshot(
             break;
         }
 
-        // Execute tool calls
+        // Execute tool calls. The per-call body lives in
+        // `execute_tool_call` (M5); this loop only handles the
+        // loop-level outcomes.
         let tool_calls: Vec<crate::session::ToolCall> =
             response.tool_calls().into_iter().cloned().collect();
-        let rtk_db_dir = cwd.join(".respondami").join("rtk");
-        // Track which tool call is first (gets full content in JSONL)
-        let mut first_tool_call = true;
-
+        let mut tool_ctx = ToolCallCtx {
+            tx: &tx,
+            config: &config,
+            cwd: &cwd,
+            rtk_state: &rtk_state,
+            tool_registry: &tool_registry,
+            hook_registry: &mut hook_registry,
+            cancel_rx: &cancel_rx,
+            skills: &skills,
+            response: &response,
+            current_context: &mut current_context,
+            context_digests: &mut context_digests,
+            first_tool_call: true,
+        };
         for tc in &tool_calls {
-            // Check for cancellation before each tool call
-            if *cancel_rx.borrow() {
-                let _ = tx
-                    .send(AgentEvent::Done(Err(AbortReason::UserCancelled)))
-                    .await;
-                return;
+            match execute_tool_call(&mut tool_ctx, tc).await {
+                ToolCallOutcome::Continue | ToolCallOutcome::Blocked => {}
+                ToolCallOutcome::Cancelled => return,
             }
+        }
+    }
+}
 
-            // Handle activate_skill tool calls directly.
-            // These are intercepted before normal tool execution.
-            // SkillActivation and SaveToolResult are sent to the TUI — no ToolCallStart/ToolCallDone.
-            if tc.name == "activate_skill" {
-                // Extract skill name from arguments
-                let skill_name = tc
-                    .arguments
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if skill_name.is_empty() {
-                    // Invalid call — send error as SkillActivation with a message
-                    let _ = tx
-                        .send(AgentEvent::SkillActivation {
-                            skill_name: "unknown".to_string(),
-                        })
-                        .await;
-                    let error_result = "Error: skill name is required".to_string();
-                    push_persisted_context_pair(&mut current_context, &mut context_digests, tc, &error_result);
-                    // Persist assistant+tool to session for correct alternation pattern.
-                    // Without this, the activate_skill tool call becomes orphaned
-                    // (no matching tool result) when context is rebuilt from JSONL.
-                    let _ = tx
-                        .send(AgentEvent::SaveAssistantMessage {
-                            content: vec![ContentBlock::ToolCall {
-                                tool_call: tc.clone(),
-                            }],
-                            usage: None,
-                        })
-                        .await;
-                    let _ = tx
-                        .send(AgentEvent::SaveToolResult {
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            tool_args: tc.arguments.clone(),
-                            result: error_result,
-                            images: Vec::new(),
-                        })
-                        .await;
-                    continue;
-                }
-                // Send SkillActivation event to the TUI (only visual feedback)
-                let _ = tx
-                    .send(AgentEvent::SkillActivation {
-                        skill_name: skill_name.clone(),
-                    })
-                    .await;
-                // Update local active_skills snapshot so tool hooks fire in the same turn
-                active_skills.push(skill_name.clone());
-                // Register the skill's frontmatter hooks into the local registry so
-                // they fire for the rest of this turn (activation-scoped).
-                if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
-                    crate::hooks::register_skill_hooks(&mut hook_registry, skill);
-                }
-                // Build tool result: activation confirmation + full SKILL.md content
-                let mut result = format!("Skill '{skill_name}' activated.");
-                // Read and inject the SKILL.md content
-                if let Some(skill) = skills.iter().find(|s| s.name == skill_name) {
-                    match std::fs::read_to_string(&skill.file_path) {
-                        Ok(content) => {
-                            let content = content.splitn(2, "---").nth(2).unwrap_or(&content);
-                            result.push_str(&format!(
-                                "\n\n<skill_instructions name=\"{}\">\n{}\n</skill_instructions>",
-                                skill_name,
-                                content.trim()
-                            ));
-                        }
-                        Err(e) => {
-                            result.push_str(&format!(
-                                "\n\n[Error reading skill file '{}': {}]",
-                                skill.file_path.display(),
-                                e
-                            ));
-                        }
-                    }
-                }
-                push_persisted_context_pair(&mut current_context, &mut context_digests, tc, &result);
-                // Persist assistant+tool to session for correct alternation pattern.
-                // Without this, the activate_skill tool call becomes orphaned
-                // (no matching tool result) when context is rebuilt from JSONL,
-                // corrupting the message alternation pattern for the LLM.
-                let _ = tx
-                    .send(AgentEvent::SaveAssistantMessage {
-                        content: vec![ContentBlock::ToolCall {
-                            tool_call: tc.clone(),
-                        }],
-                        usage: None,
-                    })
-                    .await;
-                let _ = tx
-                    .send(AgentEvent::SaveToolResult {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        tool_args: tc.arguments.clone(),
-                        result,
-                        images: Vec::new(),
-                    })
-                    .await;
-                continue;
-            }
+/// Per-call state for [`execute_tool_call`].
+///
+/// Bundles the captured state of `run_agent_with_snapshot` that the
+/// per-tool-call body needs (M5).
+struct ToolCallCtx<'a> {
+    tx: &'a mpsc::Sender<AgentEvent>,
+    config: &'a Config,
+    cwd: &'a Path,
+    rtk_state: &'a crate::tools::rtk::RtkState,
+    tool_registry: &'a ToolRegistry,
+    hook_registry: &'a mut HookRegistry,
+    cancel_rx: &'a watch::Receiver<bool>,
+    skills: &'a [crate::skills::Skill],
+    response: &'a AgentResponse,
+    current_context: &'a mut Vec<AgentMessage>,
+    context_digests: &'a mut Vec<MessageDigest>,
+    /// `true` before the first tool call of this response, so only the
+    /// first call's `SaveAssistantMessage` carries the full content blocks
+    /// and usage.
+    first_tool_call: bool,
+}
 
-            // Run PreToolUse hooks
-            let pre_tool_hooks = hook_registry.hooks(crate::hooks::HookEvent::PreToolUse);
-            let mut tool_blocked = false;
-            let mut blocked_error = String::new();
-            // stdout from successful hooks, appended to the model-bound tool
-            // result (TUI stays clean; see the SaveToolResult below).
-            let mut pre_tool_outputs: Vec<(String, String)> = Vec::new();
-            for hook in pre_tool_hooks {
-                // Tool-name matcher: a non-matching tool skips the hook
-                // entirely (no shell spawn, no TUI entry).
-                if !hook.matcher.matches(&tc.name) {
-                    continue;
-                }
-                let context = HookContext {
-                    event: crate::hooks::HookEvent::PreToolUse,
-                    hook_name: hook.name.clone(),
-                    cwd: cwd.clone(),
-                    tool_name: Some(tc.name.clone()),
-                    tool_input: Some(tc.arguments.clone()),
-                    tool_result: None,
-                    prompt: None,
-                };
-                let result = execute_hook(hook, &context).await;
-                if result.blocked() {
-                    tool_blocked = true;
-                    blocked_error = result.stderr.clone();
-                    // Send hook message to TUI
-                    let _ = tx
-                        .send(AgentEvent::HookMessage {
-                            event: crate::hooks::HookEvent::PreToolUse,
-                            hook_name: hook.name.clone(),
-                            success: false,
-                            stdout: result.stdout,
-                            stderr: result.stderr,
-                            tool_name: Some(tc.name.clone()),
-                        })
-                        .await;
-                    break;
-                } else if result.success() {
-                    // Send hook message to TUI
-                    let _ = tx
-                        .send(AgentEvent::HookMessage {
-                            event: crate::hooks::HookEvent::PreToolUse,
-                            hook_name: hook.name.clone(),
-                            success: true,
-                            stdout: result.stdout.clone(),
-                            stderr: String::new(),
-                            tool_name: Some(tc.name.clone()),
-                        })
-                        .await;
-                    pre_tool_outputs.push((hook.name.clone(), result.stdout));
-                }
-            }
+/// Outcome of [`execute_tool_call`]: keep the tool-call loop going, or end
+/// the turn (user cancellation).
+enum ToolCallOutcome {
+    /// The tool ran; keep looping.
+    Continue,
+    /// A `PreToolUse` hook blocked the tool; the blocked result was already
+    /// saved, keep looping.
+    Blocked,
+    /// The user cancelled; the turn is already ended.
+    Cancelled,
+}
 
-            if tool_blocked {
-                // Tool call blocked — send error as tool result
-                let _ = tx
-                    .send(AgentEvent::ToolCallStart {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        tool_args: tc.arguments.clone(),
-                    })
-                    .await;
-                let _ = tx
-                    .send(AgentEvent::ToolCallDone {
-                        tool_call_id: tc.id.clone(),
-                        result: format!("Tool call blocked by hook: {blocked_error}"),
-                        has_error: true,
-                        cancelled: false,
-                        rtk_original: None,
-                    })
-                    .await;
-                let blocked_result = format!("Tool call blocked by hook: {blocked_error}");
-                // Persist assistant message for this tool call to maintain alternation
-                // in JSONL (assistant->tool->assistant->tool pattern).
-                let _ = tx
-                    .send(AgentEvent::SaveAssistantMessage {
-                        content: vec![crate::session::ContentBlock::ToolCall {
-                            tool_call: tc.clone(),
-                        }],
-                        usage: None,
-                    })
-                    .await;
-                let _ = tx
-                    .send(AgentEvent::SaveToolResult {
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        tool_args: tc.arguments.clone(),
-                        result: blocked_result.clone(),
-                        images: Vec::new(),
-                    })
-                    .await;
-                // Add to context as a failed tool result
-                push_persisted_context_pair(&mut current_context, &mut context_digests, tc, &blocked_result);
-                continue;
-            }
+/// Execute one tool call: cancellation check, `activate_skill`
+/// interception, `PreToolUse` hooks, registry execution, `PostToolUse` hooks,
+/// and the canonical save + live-context push.
+///
+/// Extracted from `run_agent_with_snapshot` (M5): the per-call body is
+/// self-contained; only the loop-level outcome is reported back.
+async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCallOutcome {
+    // Check for cancellation before each tool call
+    if *ctx.cancel_rx.borrow() {
+        let _ = ctx
+            .tx
+            .send(AgentEvent::Done(Err(AbortReason::UserCancelled)))
+            .await;
+        return ToolCallOutcome::Cancelled;
+    }
 
-            // Signal TUI: tool call is starting (show pending message)
-            let _ = tx
-                .send(AgentEvent::ToolCallStart {
+    // Handle activate_skill tool calls directly.
+    // These are intercepted before normal tool execution.
+    // SkillActivation and SaveToolResult are sent to the TUI — no ToolCallStart/ToolCallDone.
+    if tc.name == "activate_skill" {
+        // Extract skill name from arguments
+        let skill_name = tc
+            .arguments
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if skill_name.is_empty() {
+            // Invalid call — send error as SkillActivation with a message
+            let _ = ctx
+                .tx
+                .send(AgentEvent::SkillActivation {
+                    skill_name: "unknown".to_string(),
+                })
+                .await;
+            let error_result = "Error: skill name is required".to_string();
+            push_persisted_context_pair(ctx.current_context, ctx.context_digests, tc, &error_result);
+            // Persist assistant+tool to session for correct alternation pattern.
+            // Without this, the activate_skill tool call becomes orphaned
+            // (no matching tool result) when context is rebuilt from JSONL.
+            let _ = ctx
+                .tx
+                .send(AgentEvent::SaveAssistantMessage {
+                    content: vec![ContentBlock::ToolCall {
+                        tool_call: tc.clone(),
+                    }],
+                    usage: None,
+                })
+                .await;
+            let _ = ctx
+                .tx
+                .send(AgentEvent::SaveToolResult {
                     tool_call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
                     tool_args: tc.arguments.clone(),
+                    result: error_result,
+                    images: Vec::new(),
                 })
                 .await;
+            return ToolCallOutcome::Continue;
+        }
+        // Send SkillActivation event to the TUI (only visual feedback)
+        let _ = ctx
+            .tx
+            .send(AgentEvent::SkillActivation {
+                skill_name: skill_name.clone(),
+            })
+            .await;
+        // Register the skill's frontmatter hooks into the local registry so
+        // they fire for the rest of this turn (activation-scoped).
+        if let Some(skill) = ctx.skills.iter().find(|s| s.name == skill_name) {
+            crate::hooks::register_skill_hooks(ctx.hook_registry, skill);
+        }
+        // Build tool result: activation confirmation + full SKILL.md content
+        let mut result = format!("Skill '{skill_name}' activated.");
+        // Read and inject the SKILL.md content
+        if let Some(skill) = ctx.skills.iter().find(|s| s.name == skill_name) {
+            match std::fs::read_to_string(&skill.file_path) {
+                Ok(content) => {
+                    let content = content.splitn(2, "---").nth(2).unwrap_or(&content);
+                    result.push_str(&format!(
+                        "\n\n<skill_instructions name=\"{}\">\n{}\n</skill_instructions>",
+                        skill_name,
+                        content.trim()
+                    ));
+                }
+                Err(e) => {
+                    result.push_str(&format!(
+                        "\n\n[Error reading skill file '{}': {}]",
+                        skill.file_path.display(),
+                        e
+                    ));
+                }
+            }
+        }
+        push_persisted_context_pair(ctx.current_context, ctx.context_digests, tc, &result);
+        // Persist assistant+tool to session for correct alternation pattern.
+        // Without this, the activate_skill tool call becomes orphaned
+        // (no matching tool result) when context is rebuilt from JSONL,
+        // corrupting the message alternation pattern for the LLM.
+        let _ = ctx
+            .tx
+            .send(AgentEvent::SaveAssistantMessage {
+                content: vec![ContentBlock::ToolCall {
+                    tool_call: tc.clone(),
+                }],
+                usage: None,
+            })
+            .await;
+        let _ = ctx
+            .tx
+            .send(AgentEvent::SaveToolResult {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                tool_args: tc.arguments.clone(),
+                result,
+                images: Vec::new(),
+            })
+            .await;
+        return ToolCallOutcome::Continue;
+    }
 
-            // RTK rewrite: intercept bash tool calls
-            let (exec_name, exec_args, original_cmd) = if tc.name == "bash"
-                && config.rtk.enabled
-                && rtk_state.is_available()
-            {
-                if let Some(rtk_path) = &rtk_state.path {
-                    if let Some(cmd) = tc.arguments.get("command").and_then(|v| v.as_str()) {
-                        if let Some(rewritten) = rewrite_command(rtk_path, &rtk_db_dir, cmd).await {
-                            let mut new_args = tc.arguments.clone();
-                            new_args["command"] = serde_json::Value::String(rewritten.clone());
-                            (tc.name.clone(), new_args, Some(cmd.to_string()))
-                        } else {
-                            (tc.name.clone(), tc.arguments.clone(), None)
-                        }
-                    } else {
-                        (tc.name.clone(), tc.arguments.clone(), None)
-                    }
+    // Run PreToolUse hooks: a blocked hook (exit 2) stops the tool; its
+    // stderr is injected as the model's feedback.
+    let (tool_blocked, blocked_error, pre_results) = crate::hooks::run_tool_hooks(
+        ctx.tx,
+        ctx.hook_registry,
+        crate::hooks::HookEvent::PreToolUse,
+        ctx.cwd,
+        &tc.name,
+        &tc.arguments,
+        None,
+    )
+    .await;
+    // stdout from successful hooks, appended to the model-bound tool
+    // result (TUI stays clean; see the SaveToolResult below).
+    let pre_tool_outputs: Vec<(String, String)> = pre_results
+        .iter()
+        .filter(|(_, r)| r.success())
+        .map(|(name, r)| (name.clone(), r.stdout.clone()))
+        .collect();
+
+    if tool_blocked {
+        // Tool call blocked — send error as tool result
+        let _ = ctx
+            .tx
+            .send(AgentEvent::ToolCallStart {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                tool_args: tc.arguments.clone(),
+            })
+            .await;
+        let _ = ctx
+            .tx
+            .send(AgentEvent::ToolCallDone {
+                tool_call_id: tc.id.clone(),
+                result: format!("Tool call blocked by hook: {blocked_error}"),
+                has_error: true,
+                cancelled: false,
+                rtk_original: None,
+            })
+            .await;
+        let blocked_result = format!("Tool call blocked by hook: {blocked_error}");
+        // Persist assistant message for this tool call to maintain alternation
+        // in JSONL (assistant->tool->assistant->tool pattern).
+        let _ = ctx
+            .tx
+            .send(AgentEvent::SaveAssistantMessage {
+                content: vec![crate::session::ContentBlock::ToolCall {
+                    tool_call: tc.clone(),
+                }],
+                usage: None,
+            })
+            .await;
+        let _ = ctx
+            .tx
+            .send(AgentEvent::SaveToolResult {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                tool_args: tc.arguments.clone(),
+                result: blocked_result.clone(),
+                images: Vec::new(),
+            })
+            .await;
+        // Add to context as a failed tool result
+        push_persisted_context_pair(ctx.current_context, ctx.context_digests, tc, &blocked_result);
+        return ToolCallOutcome::Blocked;
+    }
+
+    // Signal TUI: tool call is starting (show pending message)
+    let _ = ctx
+        .tx
+        .send(AgentEvent::ToolCallStart {
+            tool_call_id: tc.id.clone(),
+            tool_name: tc.name.clone(),
+            tool_args: tc.arguments.clone(),
+        })
+        .await;
+
+    // RTK rewrite: intercept bash tool calls
+    let rtk_db_dir = ctx.cwd.join(".respondami").join("rtk");
+    let (exec_name, exec_args, original_cmd) = if tc.name == "bash"
+        && ctx.config.rtk.enabled
+        && ctx.rtk_state.is_available()
+    {
+        if let Some(rtk_path) = &ctx.rtk_state.path {
+            if let Some(cmd) = tc.arguments.get("command").and_then(|v| v.as_str()) {
+                if let Some(rewritten) = rewrite_command(rtk_path, &rtk_db_dir, cmd).await {
+                    let mut new_args = tc.arguments.clone();
+                    new_args["command"] = serde_json::Value::String(rewritten.clone());
+                    (tc.name.clone(), new_args, Some(cmd.to_string()))
                 } else {
                     (tc.name.clone(), tc.arguments.clone(), None)
                 }
             } else {
                 (tc.name.clone(), tc.arguments.clone(), None)
-            };
-
-            // Create output channel for streaming tool output
-            let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(64);
-            let main_tx = tx.clone();
-
-            // Spawn a task to forward output chunks to the main channel
-            let output_forwarder = tokio::spawn(async move {
-                while let Some(chunk) = output_rx.recv().await {
-                    if !chunk.is_empty() {
-                        let _ = main_tx.send(AgentEvent::ToolOutput(chunk)).await;
-                    }
-                }
-            });
-
-            // Create per-tool-call cancellation guard and bridge the user's
-            // cancel signal into it. The watcher task sets the guard as soon
-            // as the watch channel flips (Esc/Ctrl+C) or its sender is
-            // dropped (TUI shutdown). Tools clean up from their own guard
-            // checks — the agent loop never drops the tool future to escape.
-            let tool_cancel = CancelGuard::new();
-            let mut watcher_rx = cancel_rx.clone();
-            let watcher_guard = tool_cancel.clone();
-            let cancel_watcher = tokio::spawn(async move {
-                let _ = watcher_rx.wait_for(|v| *v).await;
-                watcher_guard.cancel();
-            });
-
-            let result = tool_registry
-                .execute(
-                    &exec_name,
-                    exec_args.clone(),
-                    &cwd,
-                    Some(&output_tx),
-                    &tool_cancel,
-                )
-                .await;
-            cancel_watcher.abort(); // tool returned — no leak
-            let has_error = result.is_err();
-            // A tool error that coincides with a set guard is a user-initiated
-            // cancellation, not a tool failure (distinguishes the TUI display).
-            let cancelled = has_error && tool_cancel.is_cancelled();
-
-            // Drop the sender to signal the forwarder to stop
-            drop(output_tx);
-            // Give forwarder a moment to flush, then abort if needed
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_millis(50), output_forwarder).await;
-
-            // When tool has an error, send the error message as the result content.
-            // This gives the LLM feedback on why the tool failed (e.g. edit rejection reason).
-            // Matches pi-coding-agent behavior: Anthropic SDK sends error message as tool content.
-            let (final_result, tool_images) = match result {
-                Ok(output) => (output.content, output.images),
-                Err(e) => (e.to_string(), Vec::new()),
-            };
-
-            // Vision gate: drop image attachments when the model can't see them.
-            let (final_result, tool_images) =
-                apply_vision_gate(config.provider.vision, final_result, tool_images);
-
-            // Run PostToolUse hooks (only for successful tool calls).
-            // Collect hook output as a salient instruction: injected as a
-            // separate `user` message after the tool result (not buried in the
-            // tool output, which the model treats as data and ignores).
-            let mut hook_instruction = String::new();
-            if !has_error {
-                let post_tool_hooks = hook_registry.hooks(crate::hooks::HookEvent::PostToolUse);
-                for hook in post_tool_hooks {
-                    // Tool-name matcher: a non-matching tool skips the hook
-                    // entirely (no shell spawn, no TUI entry).
-                    if !hook.matcher.matches(&tc.name) {
-                        continue;
-                    }
-                    let context = HookContext {
-                        event: crate::hooks::HookEvent::PostToolUse,
-                        hook_name: hook.name.clone(),
-                        cwd: cwd.clone(),
-                        tool_name: Some(tc.name.clone()),
-                        tool_input: Some(tc.arguments.clone()),
-                        tool_result: Some(serde_json::json!(final_result)),
-                        prompt: None,
-                    };
-                    let hook_result = execute_hook(hook, &context).await;
-                    // Send hook message to TUI
-                    let _ = tx
-                        .send(AgentEvent::HookMessage {
-                            event: crate::hooks::HookEvent::PostToolUse,
-                            hook_name: hook.name.clone(),
-                            success: hook_result.success(),
-                            stdout: hook_result.stdout.clone(),
-                            stderr: hook_result.stderr.clone(),
-                            tool_name: Some(tc.name.clone()),
-                        })
-                        .await;
-                    if hook_result.blocked() {
-                        // The tool already ran; a blocked PostToolUse is an
-                        // objection the model should still hear.
-                        hook_instruction.push_str(&format_posttool_block(&hook.name, &hook_result));
-                    } else if hook_result.success() && !hook_result.stdout.is_empty() {
-                        hook_instruction.push_str(&format_posttool_block(&hook.name, &hook_result));
-                    } else if !hook_result.success() && !hook_result.blocked() {
-                        tracing::warn!(
-                            hook = %hook.name,
-                            exit_code = hook_result.exit_code,
-                            stderr = %hook_result.stderr,
-                            "PostToolUse hook failed"
-                        );
-                    }
-                }
             }
+        } else {
+            (tc.name.clone(), tc.arguments.clone(), None)
+        }
+    } else {
+        (tc.name.clone(), tc.arguments.clone(), None)
+    };
 
-            // Model-bound tool result: the tool output plus any PreToolUse
-            // hook-injected context. The PostToolUse instruction is NOT here —
-            // it is injected as a separate `user` message below. The TUI
-            // (ToolCallDone) shows the clean `final_result`; the session store
-            // and live context receive `model_result` (tail-append keeps the
-            // prefix stable).
-            let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs);
+    // Create output channel for streaming tool output
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(64);
+    let main_tx = ctx.tx.clone();
 
-            // Signal TUI: tool call finished (update pending message with result)
-            // Note: the tool result sent to TUI does NOT include hook instructions —
-            // those are appended to the model-bound result only.
-            let _ = tx
-                .send(AgentEvent::ToolCallDone {
-                    tool_call_id: tc.id.clone(),
-                    result: final_result.clone(),
-                    has_error,
-                    cancelled,
-                    rtk_original: original_cmd.clone(),
-                })
-                .await;
+    // Spawn a task to forward output chunks to the main channel
+    let output_forwarder = tokio::spawn(async move {
+        while let Some(chunk) = output_rx.recv().await {
+            if !chunk.is_empty() {
+                let _ = main_tx.send(AgentEvent::ToolOutput(chunk)).await;
+            }
+        }
+    });
 
-            // Persist assistant message for this tool call to maintain alternation
-            // in JSONL (assistant->tool->assistant->tool pattern).
-            // First tool call carries the response's non-tool blocks (thinking,
-            // text) plus this tool call; subsequent calls carry just their own.
-            // The same blocks are saved to the session and pushed to the live
-            // context so the two histories stay byte-identical (vLLM
-            // prefix-cache stability).
-            let assistant_blocks = canonical_turn_blocks(&response.content, tc, first_tool_call);
-            let assistant_usage = if first_tool_call {
-                response.usage.clone()
-            } else {
-                None
-            };
-            first_tool_call = false;
-            let _ = tx
-                .send(AgentEvent::SaveAssistantMessage {
-                    content: assistant_blocks.clone(),
-                    usage: assistant_usage.clone(),
-                })
-                .await;
-            // Send tool result for TUI to save to session
-            let _ = tx
-                .send(AgentEvent::SaveToolResult {
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    tool_args: tc.arguments.clone(),
-                    result: model_result.clone(),
-                    images: tool_images.clone(),
-                })
-                .await;
+    // Create per-tool-call cancellation guard and bridge the user's
+    // cancel signal into it. The watcher task sets the guard as soon
+    // as the watch channel flips (Esc/Ctrl+C) or its sender is dropped
+    // (TUI shutdown). Tools clean up from their own guard checks — the
+    // agent loop never drops the tool future to escape.
+    let tool_cancel = CancelGuard::new();
+    let mut watcher_rx = ctx.cancel_rx.clone();
+    let watcher_guard = tool_cancel.clone();
+    let cancel_watcher = tokio::spawn(async move {
+        let _ = watcher_rx.wait_for(|v| *v).await;
+        watcher_guard.cancel();
+    });
 
-            // Add to context for next iteration — the same blocks and usage as
-            // saved above, so live and persisted history never diverge.
-            let assistant_msg = AgentMessage::assistant_with_blocks(assistant_blocks, assistant_usage);
-            let assistant_digest = message_digest(&assistant_msg);
-            let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), model_result, tool_images);
-            let tool_digest = message_digest(&tool_msg);
-            current_context.push(assistant_msg);
-            context_digests.push(assistant_digest);
-            current_context.push(tool_msg);
-            context_digests.push(tool_digest);
+    let result = ctx
+        .tool_registry
+        .execute(
+            &exec_name,
+            exec_args.clone(),
+            ctx.cwd,
+            Some(&output_tx),
+            &tool_cancel,
+        )
+        .await;
+    cancel_watcher.abort(); // tool returned — no leak
+    let has_error = result.is_err();
+    // A tool error that coincides with a set guard is a user-initiated
+    // cancellation, not a tool failure (distinguishes the TUI display).
+    let cancelled = has_error && tool_cancel.is_cancelled();
 
-            // PostToolUse hook instruction: inject as a separate, salient
-            // `user` message after the tool result. The same string is pushed
-            // to the live context and saved to the session (byte-identical),
-            // so the prefix stays stable and the instruction survives resume.
-            if !hook_instruction.is_empty() {
-                let instruction_msg = AgentMessage::user(hook_instruction.trim().to_string());
-                let instruction_digest = message_digest(&instruction_msg);
-                let _ = tx
-                    .send(AgentEvent::SaveHookInstruction {
-                        message: instruction_msg.content().to_string(),
-                    })
-                    .await;
-                current_context.push(instruction_msg);
-                context_digests.push(instruction_digest);
+    // Drop the sender to signal the forwarder to stop
+    drop(output_tx);
+    // Give forwarder a moment to flush, then abort if needed
+    let _ =
+        tokio::time::timeout(std::time::Duration::from_millis(50), output_forwarder).await;
+
+    // When tool has an error, send the error message as the result content.
+    // This gives the LLM feedback on why the tool failed (e.g. edit rejection reason).
+    // Matches pi-coding-agent behavior: Anthropic SDK sends error message as tool content.
+    let (final_result, tool_images) = match result {
+        Ok(output) => (output.content, output.images),
+        Err(e) => (e.to_string(), Vec::new()),
+    };
+
+    // Vision gate: drop image attachments when the model can't see them.
+    let (final_result, tool_images) =
+        apply_vision_gate(ctx.config.provider.vision, final_result, tool_images);
+
+    // Run PostToolUse hooks (only for successful tool calls).
+    // Collect hook output as a salient instruction: injected as a
+    // separate `user` message after the tool result (not buried in the
+    // tool output, which the model treats as data and ignores).
+    let mut hook_instruction = String::new();
+    if !has_error {
+        let (_, _, post_results) = crate::hooks::run_tool_hooks(
+            ctx.tx,
+            ctx.hook_registry,
+            crate::hooks::HookEvent::PostToolUse,
+            ctx.cwd,
+            &tc.name,
+            &tc.arguments,
+            Some(&serde_json::json!(final_result.clone())),
+        )
+        .await;
+        for (hook_name, hook_result) in post_results {
+            if hook_result.blocked() {
+                // The tool already ran; a blocked PostToolUse is an
+                // objection the model should still hear.
+                hook_instruction.push_str(&format_posttool_block(&hook_name, &hook_result));
+            } else if hook_result.success() && !hook_result.stdout.is_empty() {
+                hook_instruction.push_str(&format_posttool_block(&hook_name, &hook_result));
+            } else if !hook_result.success() && !hook_result.blocked() {
+                tracing::warn!(
+                    hook = %hook_name,
+                    exit_code = hook_result.exit_code,
+                    stderr = %hook_result.stderr,
+                    "PostToolUse hook failed"
+                );
             }
         }
     }
+
+    // Model-bound tool result: the tool output plus any PreToolUse
+    // hook-injected context. The PostToolUse instruction is NOT here —
+    // it is injected as a separate `user` message below. The TUI
+    // (ToolCallDone) shows the clean `final_result`; the session store
+    // and live context receive `model_result` (tail-append keeps the
+    // prefix stable).
+    let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs);
+
+    // Signal TUI: tool call finished (update pending message with result)
+    // Note: the tool result sent to TUI does NOT include hook instructions —
+    // those are appended to the model-bound result only.
+    let _ = ctx
+        .tx
+        .send(AgentEvent::ToolCallDone {
+            tool_call_id: tc.id.clone(),
+            result: final_result.clone(),
+            has_error,
+            cancelled,
+            rtk_original: original_cmd.clone(),
+        })
+        .await;
+
+    // Persist assistant message for this tool call to maintain alternation
+    // in JSONL (assistant->tool->assistant->tool pattern).
+    // First tool call carries the response's non-tool blocks (thinking,
+    // text) plus this tool call; subsequent calls carry just their own.
+    // The same blocks are saved to the session and pushed to the live
+    // context so the two histories stay byte-identical (vLLM
+    // prefix-cache stability).
+    let assistant_blocks = canonical_turn_blocks(&ctx.response.content, tc, ctx.first_tool_call);
+    let assistant_usage = if ctx.first_tool_call {
+        ctx.response.usage.clone()
+    } else {
+        None
+    };
+    ctx.first_tool_call = false;
+    let _ = ctx
+        .tx
+        .send(AgentEvent::SaveAssistantMessage {
+            content: assistant_blocks.clone(),
+            usage: assistant_usage.clone(),
+        })
+        .await;
+    // Send tool result for TUI to save to session
+    let _ = ctx
+        .tx
+        .send(AgentEvent::SaveToolResult {
+            tool_call_id: tc.id.clone(),
+            tool_name: tc.name.clone(),
+            tool_args: tc.arguments.clone(),
+            result: model_result.clone(),
+            images: tool_images.clone(),
+        })
+        .await;
+
+    // Add to context for next iteration — the same blocks and usage as
+    // saved above, so live and persisted history never diverge.
+    let assistant_msg = AgentMessage::assistant_with_blocks(assistant_blocks, assistant_usage);
+    let assistant_digest = message_digest(&assistant_msg);
+    let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), model_result, tool_images);
+    let tool_digest = message_digest(&tool_msg);
+    ctx.current_context.push(assistant_msg);
+    ctx.context_digests.push(assistant_digest);
+    ctx.current_context.push(tool_msg);
+    ctx.context_digests.push(tool_digest);
+
+    // PostToolUse hook instruction: inject as a separate, salient
+    // `user` message after the tool result. The same string is pushed
+    // to the live context and saved to the session (byte-identical),
+    // so the prefix stays stable and the instruction survives resume.
+    if !hook_instruction.is_empty() {
+        let instruction_msg = AgentMessage::user(hook_instruction.trim().to_string());
+        let instruction_digest = message_digest(&instruction_msg);
+        let _ = ctx
+            .tx
+            .send(AgentEvent::SaveHookInstruction {
+                message: instruction_msg.content().to_string(),
+            })
+            .await;
+        ctx.current_context.push(instruction_msg);
+        ctx.context_digests.push(instruction_digest);
+    }
+    ToolCallOutcome::Continue
 }
 
 /// Push the assistant+tool message pair for an already-persisted tool call

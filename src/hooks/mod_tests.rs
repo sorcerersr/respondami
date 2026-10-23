@@ -300,6 +300,57 @@ fn format_hook_context_multiple() {
 }
 
 // ---------------------------------------------------------------------------
+// run_tool_hooks: stderr carried to the TUI event
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn run_tool_hooks_carries_real_stderr() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::tui::AgentEvent>(16);
+    let mut registry = HookRegistry::new();
+    registry.add(Hook {
+        event: HookEvent::PreToolUse,
+        name: "err.sh".to_string(),
+        command: "echo oops >&2; exit 0".to_string(),
+        source: HookSource::Project,
+        skill_name: None,
+        skill_dir: None,
+        matcher: ToolMatcher::All,
+    });
+
+    let (blocked, error, results) = run_tool_hooks(
+        &tx,
+        &registry,
+        HookEvent::PreToolUse,
+        std::path::Path::new("."),
+        "bash",
+        &serde_json::json!({"command": "ls"}),
+        None,
+    )
+    .await;
+
+    assert!(!blocked);
+    assert_eq!(error, "");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].1.success());
+
+    let event = rx.recv().await.expect("hook message on channel");
+    match event {
+        crate::tui::AgentEvent::HookMessage {
+            success,
+            stderr,
+            ..
+        } => {
+            assert!(success);
+            assert!(
+                stderr.contains("oops"),
+                "stderr must be carried to the TUI event, got: {stderr:?}"
+            );
+        }
+        other => panic!("expected HookMessage, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SkillSource -> HookSource
 // ---------------------------------------------------------------------------
 

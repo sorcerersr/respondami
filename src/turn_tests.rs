@@ -12,8 +12,8 @@ use crate::config::Config;
 use crate::hooks::{Hook, HookEvent, HookSource, ToolMatcher};
 use crate::session::CompactionPlan;
 use crate::skills::{Skill, SkillSource};
-use crate::turn::{rollback_pending_turn, run_turn_with_input, start_turn, PendingTurn};
-use crate::tui::{App, AppState, ChatMessage};
+use crate::turn::{restart_agent, rollback_pending_turn, run_turn_with_input, start_turn, PendingTurn};
+use crate::tui::{App, AppState, ChatMessage, HookDisplay};
 use tempfile::TempDir;
 
 /// Build a terminal that never queries the real terminal size.
@@ -302,6 +302,77 @@ async fn run_turn_precompact_stdout_captured_for_summary() {
     if let Some(task) = app.compaction_task.take() {
         task.abort();
     }
+}
+
+// ---- M1: restart_agent SSE guard ----
+
+#[tokio::test]
+async fn restart_agent_creates_sse_guard_when_enabled() {
+    let tmp = TempDir::new().unwrap();
+    let config = crate::sse_debug::SseDebugConfig::new(tmp.path().to_path_buf());
+    crate::logging::set_sse_debug_for_test(config);
+
+    let mut app = make_app();
+    let agent = restart_agent(&mut app, "hello".to_string());
+
+    // The restart path now carries the SSE capture guard (M1: it was only
+    // on the launch path before the extraction).
+    assert!(agent.sse_guard.is_some(), "SSE guard must be created when capture is enabled");
+    // Drop the guard to clear the global capture slot for other tests.
+    drop(agent);
+}
+
+// ---- M2: run_tui_hooks Hidden check uniformity ----
+
+#[tokio::test]
+async fn run_tui_hooks_hidden_suppresses_messages() {
+    let mut app = make_app();
+    app.config.hook_display = HookDisplay::Hidden;
+    app.config
+        .hook_registry
+        .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "echo hi"));
+    let pre_len = app.chat.chat_messages.len();
+
+    let (blocked, error, outputs) = crate::hooks::run_tui_hooks(
+        &mut app,
+        HookEvent::UserPromptSubmit,
+        Some("hello".to_string()),
+    )
+    .await;
+
+    assert!(!blocked);
+    assert_eq!(error, "");
+    // The hook ran (stdout collected) but no chat message was pushed.
+    assert_eq!(outputs, vec![("ups.sh".to_string(), "hi\n".to_string())]);
+    assert_eq!(
+        app.chat.chat_messages.len(),
+        pre_len,
+        "Hidden mode must suppress hook messages"
+    );
+}
+
+#[tokio::test]
+async fn run_tui_hooks_visible_pushes_messages() {
+    let mut app = make_app();
+    // Default display mode is Minimal (visible).
+    app.config
+        .hook_registry
+        .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "echo hi"));
+    let pre_len = app.chat.chat_messages.len();
+
+    let (blocked, _error, _outputs) = crate::hooks::run_tui_hooks(
+        &mut app,
+        HookEvent::UserPromptSubmit,
+        Some("hello".to_string()),
+    )
+    .await;
+
+    assert!(!blocked);
+    assert_eq!(app.chat.chat_messages.len(), pre_len + 1);
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::Hook(h)) if h.hook_name == "ups.sh" && h.success
+    ));
 }
 
 // ---- /skillname activation persistence ----

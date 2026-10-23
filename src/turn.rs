@@ -255,46 +255,11 @@ pub async fn run_turn_with_input(
     // and the user cancels it.
     let pre_turn_chat_len = app.chat.chat_messages.len();
 
-    // Run UserPromptSubmit hooks (before adding user message)
-    let user_prompt_hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::UserPromptSubmit);
-
-    let mut prompt_blocked = false;
-    let mut blocked_error = String::new();
-    // stdout from successful hooks, appended to the model-bound input.
-    let mut ups_outputs: Vec<(String, String)> = Vec::new();
-
-    for hook in user_prompt_hooks {
-        let context = crate::hooks::HookContext {
-            event: crate::hooks::HookEvent::UserPromptSubmit,
-            hook_name: hook.name.clone(),
-            cwd: app.config.cwd.clone(),
-            tool_name: None,
-            tool_input: None,
-            tool_result: None,
-            prompt: Some(input.clone()),
-        };
-        let result = crate::hooks::execute_hook(hook, &context).await;
-
-        // Send hook message to TUI (displayed as a hook box, not as XML tags in user message)
-        app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(crate::tui::messages::HookMessage {
-            event: crate::hooks::HookEvent::UserPromptSubmit,
-            hook_name: hook.name.clone(),
-            success: result.success(),
-            stdout: result.stdout.clone(),
-            stderr: result.stderr.clone(),
-            tool_name: None,
-        }));
-        app.chat.auto_scroll = true;
-
-        if result.blocked() {
-            prompt_blocked = true;
-            blocked_error = result.stderr.clone();
-            break;
-        }
-        if result.success() {
-            ups_outputs.push((hook.name.clone(), result.stdout.clone()));
-        }
-    }
+    // Run UserPromptSubmit hooks (before adding user message). A blocked
+    // hook (exit 2) stops the turn; successful stdout is appended to the
+    // model-bound input.
+    let (prompt_blocked, blocked_error, ups_outputs) =
+        crate::hooks::run_tui_hooks(app, crate::hooks::HookEvent::UserPromptSubmit, Some(input.clone())).await;
 
     if prompt_blocked {
         app.add_system_message(&format!("Prompt blocked by hook: {blocked_error}"));
@@ -359,42 +324,8 @@ pub async fn run_turn_with_input(
             // Run PreCompact hooks before deferring. A blocked hook (exit 2)
             // vetoes compaction: undo the turn setup and do not launch the
             // agent (mirrors the mid-turn "don't proceed" semantics).
-            let pre_compact_hooks =
-                app.config.hook_registry.hooks(crate::hooks::HookEvent::PreCompact);
-            let mut precompact_blocked = false;
-            let mut precompact_blocked_error = String::new();
-            let mut precompact_outputs: Vec<(String, String)> = Vec::new();
-            for hook in pre_compact_hooks {
-                let context = crate::hooks::HookContext {
-                    event: crate::hooks::HookEvent::PreCompact,
-                    hook_name: hook.name.clone(),
-                    cwd: app.config.cwd.clone(),
-                    tool_name: None,
-                    tool_input: None,
-                    tool_result: None,
-                    prompt: None,
-                };
-                let result = crate::hooks::execute_hook(hook, &context).await;
-                app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(
-                    crate::tui::messages::HookMessage {
-                        event: crate::hooks::HookEvent::PreCompact,
-                        hook_name: hook.name.clone(),
-                        success: result.success(),
-                        stdout: result.stdout.clone(),
-                        stderr: result.stderr.clone(),
-                        tool_name: None,
-                    },
-                ));
-                app.chat.auto_scroll = true;
-                if result.blocked() {
-                    precompact_blocked = true;
-                    precompact_blocked_error = result.stderr.clone();
-                    break;
-                }
-                if result.success() {
-                    precompact_outputs.push((hook.name.clone(), result.stdout.clone()));
-                }
-            }
+            let (precompact_blocked, precompact_blocked_error, precompact_outputs) =
+                crate::hooks::run_tui_hooks(app, crate::hooks::HookEvent::PreCompact, None).await;
 
             if precompact_blocked {
                 undo_turn_setup(
@@ -503,32 +434,63 @@ fn undo_turn_setup(
     app.editor.cursor_pos = app.editor.input_buffer.len();
 }
 
-/// Launch the agent for a turn whose input is already displayed in chat.
+/// Create the SSE debug capture guard for a turn, if capture is enabled.
 ///
-/// Runs the agent loop in a background task and processes its events until
-/// the turn completes (or the user quits).
+/// The guard holds the global `CURRENT_TURN` slot; the caller must keep it
+/// alive for the duration of the turn (the provider reads the capture
+/// during every request). `None` when SSE debug is not enabled.
+#[must_use]
+pub(crate) fn sse_turn_guard(
+    config: Option<&crate::sse_debug::SseDebugConfig>,
+    session_id: Option<&str>,
+) -> Option<crate::sse_debug::TurnCaptureGuard> {
+    config
+        .and_then(|config| config.start_turn(session_id))
+        .map(crate::sse_debug::set_current_turn)
+}
+
+/// Result of [`restart_agent`]: the spawned agent task and its channels.
 ///
-/// # Errors
+/// The agent task holds its own clones of the event sender and cancel
+/// receiver; the caller only needs the receiver side. `sse_guard` must be
+/// held by the caller until the end of the turn (the provider writes
+/// captures during every request of the task).
+pub(crate) struct RestartedAgent {
+    /// The spawned agent task.
+    pub handle: tokio::task::JoinHandle<()>,
+    /// The event receiver for the TUI event loop.
+    pub rx: tokio::sync::mpsc::Receiver<AgentEvent>,
+    /// The cancel sender (the agent task holds its own receiver clone).
+    pub cancel_tx: tokio::sync::watch::Sender<bool>,
+    /// The SSE capture guard, if capture is enabled.
+    pub sse_guard: Option<crate::sse_debug::TurnCaptureGuard>,
+}
+
+/// Core of the agent restart: the 12 steps shared by every launch/restart
+/// site (M1).
 ///
-/// - Session persistence errors (file I/O).
-/// - Agent streaming errors (network, serialization, context overflow).
-pub async fn launch_agent_turn(
-    app: &mut App,
-    user_msg: String,
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-) -> anyhow::Result<bool> {
+/// Owns: `start_streaming`, tracker start, `reset_request_usage`, the
+/// SSE-debug guard, `build_context_with_system` + AGENTS.md warning,
+/// `append_message`, channel setup, the state clones, and the `spawn`.
+pub(crate) fn restart_agent(app: &mut App, user_msg: String) -> RestartedAgent {
     app.start_streaming(&user_msg);
-    app.agent.tracker.start_with_estimator(&app.session.session_store.cached_estimator());
+    app.agent
+        .tracker
+        .start_with_estimator(&app.session.session_store.cached_estimator());
     app.reset_request_usage();
 
     // Set up SSE debug capture for this turn (if enabled via RESPONDAMI_SSE_DEBUG)
-    let _turn_capture_guard = crate::logging::sse_debug_config()
-        .and_then(|config| config.start_turn(app.session.session_store.session_id()))
-        .map(crate::sse_debug::set_current_turn);
+    let turn_capture_guard = sse_turn_guard(
+        crate::logging::sse_debug_config(),
+        app.session.session_store.session_id(),
+    );
 
     // Build context messages from session_store (which stays in app)
-    let (context_messages, agents_md_error) =
-        crate::agent::build_context_with_system(&mut app.session.session_store, &app.config.cwd, &app.config.skills);
+    let (context_messages, agents_md_error) = crate::agent::build_context_with_system(
+        &mut app.session.session_store,
+        &app.config.cwd,
+        &app.config.skills,
+    );
 
     // Show warning if AGENTS.md couldn't be loaded
     if let Some(err) = agents_md_error {
@@ -552,13 +514,12 @@ pub async fn launch_agent_turn(
     let cwd = app.config.cwd.clone();
     let agent_tool_registry = app.tool_registry.clone();
     let rtk_state = app.config.rtk_state.clone();
-
-    // Build hook registry from cache
     let hook_registry = app.config.hook_registry.clone();
-    let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
     let skills = app.config.skills.clone();
     let history_guard = app.session.history_guard.clone();
 
+    let agent_tx = tx.clone();
+    let agent_cancel_rx = cancel_rx.clone();
     let agent_handle = tokio::spawn(async move {
         crate::agent::run_agent_with_snapshot(
             context_messages,
@@ -567,17 +528,41 @@ pub async fn launch_agent_turn(
             cwd,
             agent_tool_registry,
             hook_registry,
-            active_skills,
             skills,
-            tx,
-            cancel_rx,
+            agent_tx,
+            agent_cancel_rx,
             rtk_state,
             history_guard,
-        ).await;
+        )
+        .await;
     });
 
+    RestartedAgent {
+        handle: agent_handle,
+        rx,
+        cancel_tx,
+        sse_guard: turn_capture_guard,
+    }
+}
+
+/// Launch the agent for a turn whose input is already displayed in chat.
+///
+/// Runs the agent loop in a background task and processes its events until
+/// the turn completes (or the user quits).
+///
+/// # Errors
+///
+/// - Session persistence errors (file I/O).
+/// - Agent streaming errors (network, serialization, context overflow).
+pub async fn launch_agent_turn(
+    app: &mut App,
+    user_msg: String,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> anyhow::Result<bool> {
+    let agent = restart_agent(app, user_msg);
+
     // Process agent events while maintaining TUI responsiveness
-    let quit = process_agent_events(app, agent_handle, cancel_tx, rx, terminal).await;
+    let quit = process_agent_events(app, agent.handle, agent.cancel_tx, agent.rx, terminal).await;
     if quit {
         return Ok(true);
     }

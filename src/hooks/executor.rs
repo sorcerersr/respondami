@@ -45,10 +45,6 @@ pub struct HookResult {
     pub stdout: String,
     /// Standard error (capped at `MAX_OUTPUT_BYTES`).
     pub stderr: String,
-    /// If stdout exceeded `MAX_OUTPUT_BYTES`, this is the path to the temp file.
-    pub stdout_file: Option<PathBuf>,
-    /// If stderr exceeded `MAX_OUTPUT_BYTES`, this is the path to the temp file.
-    pub stderr_file: Option<PathBuf>,
 }
 
 impl HookResult {
@@ -123,8 +119,6 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
                 exit_code: 1,
                 stdout: String::new(),
                 stderr: format!("Failed to spawn hook: {e}"),
-                stdout_file: None,
-                stderr_file: None,
             };
         }
     };
@@ -142,8 +136,6 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
                 exit_code: 1,
                 stdout: String::new(),
                 stderr: format!("Hook execution error: {e}"),
-                stdout_file: None,
-                stderr_file: None,
             };
         }
         Err(_) => {
@@ -155,8 +147,6 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
                     "Hook '{}' timed out after {} seconds",
                     hook.name, HOOK_TIMEOUT_SECS
                 ),
-                stdout_file: None,
-                stderr_file: None,
             };
         }
     };
@@ -169,13 +159,11 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
         exit_code: output.status.code().unwrap_or(-1),
         stdout,
         stderr,
-        stdout_file: None,
-        stderr_file: None,
     }
 }
 
-/// Process raw output bytes, capping at `MAX_OUTPUT_BYTES`.
-/// Returns the capped string (no temp file for now — that's a future enhancement).
+/// Process raw output bytes, capping at `MAX_OUTPUT_BYTES` with a
+/// truncation note when the cap is hit.
 pub(crate) fn process_output(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw).to_string();
     if text.len() <= MAX_OUTPUT_BYTES {

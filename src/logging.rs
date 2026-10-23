@@ -31,6 +31,15 @@ pub fn sse_debug_config() -> Option<&'static crate::sse_debug::SseDebugConfig> {
     SSE_DEBUG.get()
 }
 
+/// Set the SSE debug config for tests (no-op if already set).
+///
+/// `SSE_DEBUG` is a `OnceLock` set by `init()` at startup; in the test
+/// process nothing else sets it, so the first test to call this wins.
+#[cfg(test)]
+pub(crate) fn set_sse_debug_for_test(config: crate::sse_debug::SseDebugConfig) {
+    let _ = SSE_DEBUG.set(config);
+}
+
 /// Initialize file-based logging with size-based rotation.
 ///
 /// Creates `.respondami/logs/` in the current working directory and writes
