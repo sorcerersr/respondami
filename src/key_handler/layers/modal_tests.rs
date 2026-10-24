@@ -48,6 +48,22 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
     }
 
     #[test]
+    fn token_stats_dialog_is_modal() {
+        // L-2: `is_modal_open` now delegates to `App::is_modal`, which covers
+        // `TokenStatsDialog` (the old local predicate missed it, so PgUp/PgDown
+        // and F1 were not blocked while the token stats dialog was open).
+        let mut app = crate::tui::App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        app.modal.state = AppState::TokenStatsDialog;
+        assert!(
+            app.is_modal(),
+            "TokenStatsDialog must be treated as a modal state"
+        );
+    }
+
+    #[test]
     fn f1_opens_help_popup() {
         let key = make_key(KeyCode::F(1), KeyModifiers::NONE);
         assert_eq!(key.code, KeyCode::F(1));
