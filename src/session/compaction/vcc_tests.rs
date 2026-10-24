@@ -25,7 +25,7 @@ impl ProviderTrait for NoopProvider {
     async fn complete(&self, _req: &ChatRequest) -> Result<CompletionResponse, ProviderError> {
         unimplemented!("NoopProvider does not complete")
     }
-    async fn ping(&self) -> Result<(), ProviderError> {
+    async fn ping(&self, _model: &str) -> Result<(), ProviderError> {
         Ok(())
     }
 }

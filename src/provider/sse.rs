@@ -86,6 +86,11 @@ pub(crate) struct ParseState {
     pub(crate) chunks_received: usize,
     pub(crate) reasoning_received: bool,
     pub(crate) finish_reason_received: bool,
+    /// Whether the stream is currently inside a thinking phase. Unlike
+    /// `reasoning_received` (one-shot, for diagnostics), this tracks phase
+    /// transitions so interleaved reasoning→text→reasoning emits a fresh
+    /// `Thinking(true)` per phase and the persisted blocks match the display.
+    in_thinking: bool,
     first_parse_error: Option<String>,
 }
 
@@ -95,6 +100,7 @@ impl ParseState {
             chunks_received: 0,
             reasoning_received: false,
             finish_reason_received: false,
+            in_thinking: false,
             first_parse_error: None,
         }
     }
@@ -127,17 +133,22 @@ pub(crate) async fn process_sse_chunk(
                 .or(delta.reasoning_text.as_ref().filter(|s| !s.is_empty()));
 
             if let Some(text) = reasoning_text {
-                if !state.reasoning_received {
+                if !state.in_thinking {
                     let _ = tx.send(ChatChunk::Thinking(true)).await;
+                    state.in_thinking = true;
                 }
                 state.reasoning_received = true;
                 let _ = tx.send(ChatChunk::Reasoning(text.clone())).await;
-            } else {
-                let _ = tx.send(ChatChunk::Thinking(false)).await;
             }
 
             // Content
             if let Some(ref text) = delta.content {
+                // A text delta closes the open thinking phase (if any) so the
+                // next reasoning delta starts a fresh Thinking block.
+                if state.in_thinking {
+                    let _ = tx.send(ChatChunk::Thinking(false)).await;
+                    state.in_thinking = false;
+                }
                 let _ = tx.send(ChatChunk::Content(text.clone())).await;
                 state.chunks_received += 1;
             }
@@ -215,6 +226,9 @@ pub(super) async fn parse_sse_stream(
 ) -> Result<(), ProviderError> {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    // Bytes of a multibyte UTF-8 character split across chunk boundaries.
+    // `from_utf8_lossy` per chunk would replace the split character with U+FFFD.
+    let mut pending: Vec<u8> = Vec::new();
     let mut state = ParseState::new();
     let mut raw_buffer = RawLineBuffer::new(20);
 
@@ -255,7 +269,7 @@ pub(super) async fn parse_sse_stream(
             }
         };
 
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        append_utf8_safe(&mut pending, &mut buffer, &chunk);
 
         while let Some(newline_pos) = buffer.find('\n') {
             // Check cancellation between lines
@@ -296,6 +310,12 @@ pub(super) async fn parse_sse_stream(
                 }
             }
         }
+    }
+
+    // Flush any trailing partial UTF-8 bytes (lossy — the stream is over).
+    if !pending.is_empty() {
+        buffer.push_str(&String::from_utf8_lossy(&pending));
+        pending.clear();
     }
 
     // Process any remaining data in the buffer (last line without trailing newline).
@@ -359,6 +379,35 @@ pub(super) async fn parse_sse_stream(
         "SSE stream completed"
     );
     Ok(())
+}
+
+/// Append a chunk to `buffer`, buffering bytes of a multibyte UTF-8 character
+/// split across chunk boundaries in `pending` instead of lossily replacing it.
+///
+/// `pending` is kept to at most 3 bytes: an incomplete UTF-8 sequence is at
+/// most 3 bytes long, so anything older is invalid and is flushed lossily.
+pub(crate) fn append_utf8_safe(pending: &mut Vec<u8>, buffer: &mut String, chunk: &[u8]) {
+    pending.extend_from_slice(chunk);
+    // Flush bytes that can no longer be part of an incomplete sequence.
+    let split = pending.len().saturating_sub(3);
+    if split > 0 {
+        let (stale, rest) = pending.split_at(split);
+        buffer.push_str(&String::from_utf8_lossy(stale));
+        *pending = rest.to_vec();
+    }
+    // Decode the longest valid UTF-8 prefix; keep the incomplete tail.
+    let valid_len = utf8_prefix_len(pending);
+    let (valid, tail) = pending.split_at(valid_len);
+    buffer.push_str(std::str::from_utf8(valid).expect("valid prefix by construction"));
+    *pending = tail.to_vec();
+}
+
+/// Length of the longest valid UTF-8 prefix of `bytes`.
+fn utf8_prefix_len(bytes: &[u8]) -> usize {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        Err(e) => e.valid_up_to(),
+    }
 }
 
 /// Wait for the `cancel_rx` watch channel to change from its current value.

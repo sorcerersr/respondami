@@ -19,6 +19,7 @@ use async_openai::types::chat::{
     ChatCompletionTools,
     CreateChatCompletionRequest,
     CreateChatCompletionRequestArgs,
+    CreateChatCompletionResponse,
     FunctionCall,
     FunctionObject,
     ImageUrl,
@@ -37,6 +38,11 @@ use tokio::sync::watch;
 const USER_AGENT: &str = concat!("Respondami/", env!("CARGO_PKG_VERSION"));
 
 /// Provider for OpenAI-compatible endpoints (llama.cpp, Ollama, vLLM, `OpenAI`).
+///
+/// `url`/`api_key` duplicate data held inside `client`'s `OpenAIConfig`, but
+/// async-openai 0.42.2 exposes no public getters for them, and the raw
+/// reqwest streaming path needs both — the duplication is unavoidable until
+/// the dependency grows accessors.
 pub struct LlamaCppProvider {
     url: String,
     api_key: String,
@@ -179,13 +185,7 @@ impl LlamaCppProvider {
         &self,
         req: &ChatRequest,
     ) -> Result<CompletionResponse, ProviderError> {
-        let openai_req = build_openai_request(req, false);
-
-        // Strip stream flag for non-streaming
-        let request: CreateChatCompletionRequest = serde_json::from_value(
-            serde_json::to_value(&openai_req).map_err(ProviderError::Serialization)?,
-        )
-        .map_err(ProviderError::Serialization)?;
+        let request = build_openai_request(req, false);
 
         let response = self
             .client
@@ -194,29 +194,18 @@ impl LlamaCppProvider {
             .await
             .map_err(|e| ProviderError::Network(std::io::Error::other(e)))?;
 
-        let content = response
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .unwrap_or_default();
-
-        let usage = response.usage.map(|u| Usage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-        });
-
-        Ok(CompletionResponse { content, usage })
+        parse_completion_response(response)
     }
 
     // -----------------------------------------------------------------------
     // Health check
     // -----------------------------------------------------------------------
 
-    pub(super) async fn ping_inner(&self) -> Result<(), ProviderError> {
-        // Simple HEAD-style check: try a minimal chat completion
+    pub(super) async fn ping_inner(&self, model: &str) -> Result<(), ProviderError> {
+        // Simple HEAD-style check: try a minimal chat completion with the
+        // configured model (some endpoints reject unknown model names).
         let request = CreateChatCompletionRequestArgs::default()
-            .model("dummy")
+            .model(model)
             .messages(vec![
                 ChatCompletionRequestMessage::User(
                     ChatCompletionRequestUserMessageArgs::default()
@@ -237,6 +226,35 @@ impl LlamaCppProvider {
             ))),
         }
     }
+}
+
+/// Map a non-streaming completion response to the normalized form.
+///
+/// Empty `choices` is an error, not a silent empty string: the LLM compaction
+/// path handles `Err` with a no-summary fallback, so a malformed response must
+/// not masquerade as an empty summary.
+///
+/// # Errors
+///
+/// - [`ProviderError::EmptyResponse`] when the response carries no choices.
+pub(crate) fn parse_completion_response(
+    response: CreateChatCompletionResponse,
+) -> Result<CompletionResponse, ProviderError> {
+    let content = response
+        .choices
+        .first()
+        .and_then(|c| c.message.content.clone())
+        .ok_or_else(|| ProviderError::EmptyResponse {
+            detail: "non-streaming completion returned no choices".to_string(),
+        })?;
+
+    let usage = response.usage.map(|u| Usage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+    });
+
+    Ok(CompletionResponse { content, usage })
 }
 
 // ---------------------------------------------------------------------------
@@ -262,8 +280,8 @@ impl ProviderTrait for LlamaCppProvider {
         self.complete_inner(req).await
     }
 
-    async fn ping(&self) -> Result<(), ProviderError> {
-        self.ping_inner().await
+    async fn ping(&self, model: &str) -> Result<(), ProviderError> {
+        self.ping_inner(model).await
     }
 }
 

@@ -646,7 +646,7 @@ impl ProviderTrait for MockProvider {
         })
     }
 
-    async fn ping(&self) -> Result<(), ProviderError> {
+    async fn ping(&self, _model: &str) -> Result<(), ProviderError> {
         Ok(())
     }
 }

@@ -99,10 +99,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Check endpoint (non-blocking, result shown as system message via oneshot)
     let provider = crate::provider::Provider::from_settings(&config.provider.settings);
+    let endpoint_model = config.provider.model.clone();
     let (endpoint_tx, mut endpoint_rx) = tokio::sync::oneshot::channel();
     let endpoint_check = tokio::spawn(async move {
         let result = match provider {
-            Ok(p) => match p.ping().await {
+            Ok(p) => match p.ping(&endpoint_model).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(format!("LLM endpoint unreachable: {e}")),
             },
