@@ -236,7 +236,23 @@ impl LlmCompaction {
             if accumulated >= keep_recent_tokens {
                 // Return i+1 (keep from next entry), not i.
                 // Entry i pushed us over the budget — it should be COMPACTED, not kept.
-                return Some(std::cmp::min(i + 1, end_index));
+                let base = std::cmp::min(i + 1, end_index);
+                // A cut landing on a Tool result would orphan it (its assistant
+                // tool-call was compacted) — advance past leading Tool entries.
+                let mut cut = base;
+                while cut < end_index
+                    && matches!(
+                        &entries[cut],
+                        SessionEntry::Message { message, .. } if matches!(message, AgentMessage::Tool { .. })
+                    )
+                {
+                    cut += 1;
+                }
+                if cut > base && cut == end_index {
+                    // The advance ran out of safe entries — nothing to keep.
+                    return None;
+                }
+                return Some(cut);
             }
 
             // This is a valid cut point (user, assistant, system, or model change)
@@ -297,7 +313,23 @@ impl LlmCompaction {
 
         // Keep the second half (newest half), compact the first half (oldest half)
         let midpoint = valid_cuts.len() / 2;
-        Some(valid_cuts[midpoint])
+        let base = valid_cuts[midpoint];
+        // Defensive: a cut must never land on a Tool result (orphaned from its
+        // compacted tool-call). valid_cuts excludes Tool entries, so this is a
+        // no-op today; keep the invariant explicit.
+        let mut cut = base;
+        while cut < end_index
+            && matches!(
+                &entries[cut],
+                SessionEntry::Message { message, .. } if matches!(message, AgentMessage::Tool { .. })
+            )
+        {
+            cut += 1;
+        }
+        if cut > base && cut == end_index {
+            return None;
+        }
+        Some(cut)
     }
 
     /// Serialize entries before the cut point into a text block for summarization.

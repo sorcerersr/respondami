@@ -37,7 +37,9 @@ pub struct SessionMeta {
 #[derive(Debug)]
 pub struct SessionStore {
     sessions_dir: PathBuf,
-    current_session_path: Option<PathBuf>,
+    /// `pub(crate)` so tests can point the store at an unwritable path to
+    /// exercise the rewrite-failure propagation (L-28).
+    pub(crate) current_session_path: Option<PathBuf>,
     current_session_id: Option<String>,
     entries: Vec<SessionEntry>,
     /// Calibrated estimator for the current entries (see
@@ -66,16 +68,18 @@ pub fn build_context_from_entries(entries: &[SessionEntry]) -> Vec<AgentMessage>
     let mut skip_until: Option<String> = None;
 
     for entry in entries {
+        // Any entry that is the first-kept target ends the skip, whatever its
+        // type (a ModelChange/Custom target must not drop the whole tail).
+        if let Some(ref skip_id) = skip_until {
+            if entry.id() == *skip_id {
+                skip_until = None;
+            } else {
+                continue;
+            }
+        }
         match entry {
             SessionEntry::Session { .. } => continue,
             SessionEntry::Message { message, .. } => {
-                if let Some(ref skip_id) = skip_until {
-                    if entry.id() == *skip_id {
-                        skip_until = None;
-                    } else {
-                        continue;
-                    }
-                }
                 // Skip system messages from session history — the system
                 // prompt is injected by build_context_with_system() to
                 // avoid duplicate system messages that break templates
@@ -278,6 +282,15 @@ impl SessionStore {
         if let Some(ref path) = self.current_session_path {
             self.append_entry_to_disk(&entry, path)?;
         }
+        #[cfg(debug_assertions)]
+        {
+            let fresh = build_context_from_entries(&self.entries);
+            debug_assert_eq!(
+                estimate_tokens_from_messages(&fresh, &self.cached_estimator),
+                self.cached_context_tokens,
+                "context cache must be recomputed on append_entry"
+            );
+        };
         Ok(id)
     }
 
@@ -689,21 +702,32 @@ impl SessionStore {
 
     /// Rewrite the entire session file from memory.
     ///
+    /// Writes to a temp file in the same directory, fsyncs, then renames over
+    /// the original, so a crash leaves either the old or the new file, never
+    /// a truncated one.
+    ///
     /// # Errors
     ///
-    /// - I/O errors when creating, writing, or flushing the session file.
-    fn rewrite_session_file(&self, path: &std::path::Path) -> io::Result<()> {
+    /// - Serialization errors for any entry (a partially rewritten file must
+    ///   not be written).
+    /// - I/O errors when creating, writing, syncing, or renaming the file.
+    fn rewrite_session_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let mut content = String::new();
         for entry in &self.entries {
-            if let Ok(json) = serde_json::to_string(entry) {
-                content.push_str(&json);
-                content.push('\n');
-            }
+            let json = serde_json::to_string(entry)
+                .with_context(|| "serializing session entry for rewrite")?;
+            content.push_str(&json);
+            content.push('\n');
         }
-        let file = std::fs::File::create(path)?;
+        let tmp_path = path.with_extension("jsonl.tmp");
+        let file = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
         let mut writer = std::io::BufWriter::new(file);
         writer.write_all(content.as_bytes())?;
         writer.flush()?;
+        writer.into_inner()?.sync_all()?;
+        std::fs::rename(&tmp_path, path)
+            .with_context(|| format!("renaming {} over {}", tmp_path.display(), path.display()))?;
         Ok(())
     }
 }

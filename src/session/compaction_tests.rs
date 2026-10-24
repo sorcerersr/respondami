@@ -300,6 +300,59 @@ use tempfile::TempDir;
     }
 
     #[test]
+    fn find_cut_point_advances_past_orphaned_tool_result() {
+        // Regression (M-6): the budget-crossing entry is an assistant tool-call
+        // and i+1 lands on its tool result. The cut must advance to the next
+        // non-Tool entry so the kept prefix never starts with an orphan.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry("Y", "user"),          // index 1, 0 tokens
+            make_message_entry("XXXX", "assistant"),  // index 2, 1 token (tool-call)
+            make_message_entry("tool output", "tool"), // index 3, skipped in walk
+            make_message_entry("B", "user"),          // index 4, 0 tokens
+            make_message_entry("C", "assistant"),     // index 5, 0 tokens
+        ];
+
+        // keep=1: walk i=5 (0), i=4 (0), i=3 (tool, skip), i=2 (1 >= 1)
+        // → base=3 (tool) → advance to 4 (user).
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 6, 1);
+        assert_eq!(
+            cut, Some(4),
+            "cut must not land on the orphaned tool result"
+        );
+    }
+
+    #[test]
+    fn find_cut_point_advance_exhausted_returns_none() {
+        // M-6: if advancing past leading Tool entries runs out of safe entries
+        // (cut reaches end_index), there is nothing safe to keep → None.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry("Y", "user"),           // index 1, 0 tokens
+            make_message_entry("XXXX", "assistant"),   // index 2, 1 token
+            make_message_entry("tool output", "tool"), // index 3
+            make_message_entry("more output", "tool"), // index 4
+        ];
+
+        // keep=1: i=4,3 are tools (skipped); i=2 (1 >= 1) → base=3 →
+        // advance 3,4 → 5 = end_index → None.
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 1);
+        assert_eq!(cut, None, "advance exhausted the range → nothing safe to keep");
+    }
+
+    #[test]
     fn min_floor_blocks_over_aggressive_cut() {
         // When token-based cut keeps 0 messages, the floor guard should block.
         // This tests the caller-side guard, not the algorithm.
