@@ -150,7 +150,7 @@ pub(crate) fn parse_frontmatter(content: &str) -> Option<(SkillFrontmatter, Stri
     if yaml_block.is_empty() {
         return Some((SkillFrontmatter::default(), String::new()));
     }
-    serde_yaml::from_str(yaml_block)
+    noyalib::from_str(yaml_block)
         .ok()
         .map(|fm| (fm, yaml_block.to_string()))
 }
@@ -183,7 +183,7 @@ pub fn skill_body(path: &Path) -> Option<String> {
 /// Unknown events and non-`command` types are warnings with the entry
 /// skipped — a malformed hook never fails skill loading.
 pub(crate) fn parse_hooks_field(yaml_block: &str) -> (Vec<SkillHook>, Vec<String>) {
-    let value: serde_yaml::Value = match serde_yaml::from_str(yaml_block) {
+    let value: noyalib::Value = match noyalib::from_str(yaml_block) {
         Ok(v) => v,
         Err(_) => return (Vec::new(), vec![]),
     };
@@ -191,7 +191,7 @@ pub(crate) fn parse_hooks_field(yaml_block: &str) -> (Vec<SkillHook>, Vec<String
         return (Vec::new(), vec![]);
     };
 
-    let groups: HashMap<String, Vec<SkillHookGroup>> = match serde_yaml::from_value(hooks_node.clone()) {
+    let groups: HashMap<String, Vec<SkillHookGroup>> = match noyalib::from_value(hooks_node) {
         Ok(g) => g,
         Err(e) => {
             return (Vec::new(), vec![format!("malformed hooks field: {e}")]);
@@ -399,7 +399,7 @@ pub(crate) fn parse_skill(file_path: &Path, source: SkillSource) -> Result<(Skil
 /// Scan a directory for `SKILL.md` files.
 ///
 /// Looks at immediate subdirectories of `dir` for a `SKILL.md` file in each.
-/// Flat `SKILL.md` files directly in `dir` are also checked.
+/// A flat `SKILL.md` directly in `dir` is not supported.
 pub(crate) fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<(Skill, Vec<SkillDiagnostic>)> {
     let mut results = Vec::new();
 
