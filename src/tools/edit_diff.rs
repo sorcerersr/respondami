@@ -393,6 +393,34 @@ pub fn apply_edits(
         Cow::Borrowed(content)
     };
 
+    // Re-resolve exact matches against the base content space. When any edit
+    // is fuzzy, the base is the normalized content and an exact match's byte
+    // offset in the original space does not necessarily hold in base space
+    // (normalization can shift offsets). Re-running the search in base space
+    // keeps every replacement's index/match_length consistent with base_content.
+    if used_fuzzy {
+        for (i, m) in &mut matches {
+            if m.used_fuzzy {
+                continue;
+            }
+            let old_text = &edits[*i].0;
+            let Some(r) = fuzzy_find_text(&base_content, old_text) else {
+                // Shouldn't happen: the text was found in original space
+                // and normalization is deterministic, but guard anyway.
+                let old_text_preview =
+                    old_text.lines().take(10).collect::<Vec<_>>().join("\n");
+                let file_preview = base_content.lines().take(20).collect::<Vec<_>>().join("\n");
+                return Err(EditError::NotFound {
+                    path: path.to_string(),
+                    old_text_preview,
+                    file_preview,
+                });
+            };
+            m.index = r.index;
+            m.match_length = r.match_length;
+        }
+    }
+
     // Check uniqueness for each edit in the appropriate content space
     for (old_text, _) in edits {
         let count = fuzzy_count_occurrences(&base_content, old_text);

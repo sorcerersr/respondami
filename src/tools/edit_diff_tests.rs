@@ -275,6 +275,23 @@ fn apply_edits_overlapping() {
     assert!(matches!(result.unwrap_err(), EditError::Overlapping { .. }));
 }
 
+#[test]
+fn apply_edits_mixed_exact_and_fuzzy_re_resolves_exact_in_base_space() {
+    // Regression (M-4): when one edit is fuzzy, the base is the normalized
+    // content. The exact edit's byte offset in the original space (13) does
+    // not hold in base space (11) because normalization stripped the trailing
+    // whitespace on the first line. Both edits must land in the right region.
+    let content = "alpha  \nbeta\ngamma\n";
+    let edits = vec![
+        ("gamma".to_string(), "GAMMA".to_string()), // exact in original space
+        ("alpha\nbeta".to_string(), "ALPHA\nBETA".to_string()), // fuzzy (trailing ws)
+    ];
+    let result = apply_edits(content, &edits, "test.txt");
+    assert!(result.is_ok(), "edits should apply: {result:?}");
+    let r = result.unwrap();
+    assert_eq!(r.new_content, "ALPHA\nBETA\nGAMMA\n");
+}
+
 // ===== Diff Tests =====
 
 #[test]
