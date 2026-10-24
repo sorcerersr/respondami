@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1239 total)
+cargo test --workspace                         # all tests (1259 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1239 tests** (1021 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1259 tests** (1041 root + 38 ratatui-widgets + 180 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -317,14 +317,13 @@ cargo test --workspace                       # all tests pass
 | `crates/ratatui-widgets/src/panel_overlay.rs`           | Centered panel overlay widget          |
 | `crates/ratatui-widgets/src/autocomplete_popup.rs`      | Autocomplete dropdown widget           |
 | `crates/ratatui-widgets/src/command_palette_overlay.rs` | Command palette widget                 |
-| `crates/ratatui-widgets/src/prompt_editor_overlay.rs`   | Prompt editor widget                   |
 | `crates/ratatui-md/src/lib.rs`                          | Markdown rendering entry point         |
 | `crates/ratatui-md/src/parsing.rs`                      | Markdown parsing with pulldown-cmark   |
 | `crates/ratatui-md/src/height.rs`                       | Height calculation for markdown blocks |
 
 ## Test Files
 
-### Root Crate Tests (1021 tests)
+### Root Crate Tests (1041 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -393,5 +392,5 @@ cargo test --workspace                       # all tests pass
 
 | Test File                 | Coverage                                                                                                                    | Tests |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, prompt editor, header bar                                               | 43    |
-| `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 175   |
+| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, header bar                                               | 38    |
+| `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 180   |
