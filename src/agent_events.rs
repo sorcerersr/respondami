@@ -52,7 +52,7 @@ pub async fn process_agent_events(
     mut cancel_tx: tokio::sync::watch::Sender<bool>,
     mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-) -> bool {
+) {
     let mut done = false;
     let theme = Theme::gh_dark();
     // Pending auto-compaction task (spawn-and-poll pattern).
@@ -551,7 +551,6 @@ pub async fn process_agent_events(
     // The SSE capture guard lives until the very end of the turn (the
     // provider writes captures during every request of the agent task).
     drop(sse_guard);
-    false
 }
 
 /// Calculate the visible height of the chat area in lines.

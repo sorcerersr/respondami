@@ -50,24 +50,36 @@ impl MessageDigest {
 ///
 /// `usage` is token bookkeeping only — it is never sent to the LLM — so it
 /// must not influence the digest: a usage drift is not a cache break.
-fn message_wire_value(msg: &AgentMessage) -> serde_json::Value {
-    let mut value = serde_json::to_value(msg).unwrap_or(serde_json::Value::Null);
+///
+/// Returns `Err` if the message fails to serialize; the caller must not fall
+/// back to a constant (that would mask real drift by digesting distinct
+/// unserializable messages identically).
+fn message_wire_value(msg: &AgentMessage) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(msg)?;
     if let serde_json::Value::Object(map) = &mut value
         && map.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
     {
         map.remove("usage");
     }
-    value
+    Ok(value)
 }
 
 /// Compute the digest for one outgoing message.
 ///
 /// The digest is stable for a message: two messages that serialize
-/// identically (ignoring `usage`) produce the same digest.
+/// identically (ignoring `usage`) produce the same digest. A message that
+/// fails to serialize is digested from a raw debug representation (with a
+/// warning) so distinct messages still differ instead of collapsing to a
+/// shared `"null"` digest.
 #[must_use]
 pub fn message_digest(msg: &AgentMessage) -> MessageDigest {
-    let json = message_wire_value(msg).to_string();
-    MessageDigest::from_bytes(json.as_bytes())
+    match message_wire_value(msg) {
+        Ok(value) => MessageDigest::from_bytes(value.to_string().as_bytes()),
+        Err(e) => {
+            tracing::warn!("history guard: failed to serialize message for digest: {e}");
+            MessageDigest::from_bytes(format!("unserializable:{msg:?}").as_bytes())
+        }
+    }
 }
 
 /// A detected prefix divergence between two consecutive outgoing requests.

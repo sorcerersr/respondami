@@ -12,7 +12,7 @@ use tracing::subscriber::set_global_default;
 use tracing_subscriber::EnvFilter;
 
 /// Respondami data directory name (relative to CWD).
-const RESPORDAMI_DIR: &str = ".respondami";
+const RESPONDAMI_DIR: &str = ".respondami";
 /// Logs subdirectory inside .respondami.
 const LOGS_DIR: &str = "logs";
 /// Log file name (without extension).
@@ -40,12 +40,11 @@ pub(crate) fn set_sse_debug_for_test(config: crate::sse_debug::SseDebugConfig) {
     let _ = SSE_DEBUG.set(config);
 }
 
-/// Initialize file-based logging with size-based rotation.
+/// Initialize file-based logging with daily rotation.
 ///
 /// Creates `.respondami/logs/` in the current working directory and writes
-/// structured log output to `respondami.log`. When the file exceeds
-/// `MAX_LOG_SIZE_MB` (1 MB), it is rotated to `respondami.log.1`,
-/// and up to `MAX_ROTATED_FILES` (5) rotated files are kept.
+/// structured log output to `respondami.log`. The appender rotates at
+/// midnight, keeping 7 daily files (e.g. `respondami.log.2026-06-26`).
 ///
 /// Log level is controlled via the `RUST_LOG` environment variable,
 /// with a minimum floor of `info` (cannot be lowered below info).
@@ -152,7 +151,7 @@ pub fn install_panic_hook() {
 /// Resolve the log directory: `<CWD>/.respondami/logs/`.
 pub(crate) fn log_dir_path() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    cwd.join(RESPORDAMI_DIR)
+    cwd.join(RESPONDAMI_DIR)
         .join(LOGS_DIR)
 }
 

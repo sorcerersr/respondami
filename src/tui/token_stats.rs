@@ -76,23 +76,29 @@ impl ProjectTokenStats {
 /// Reads every `.jsonl` file in `.respondami/sessions/`, parses `Assistant`
 /// messages, and sums their `Usage.prompt_tokens` and `Usage.completion_tokens`.
 ///
-/// Returns `None` if the sessions directory does not exist or contains no valid
-/// session files.
-#[must_use]
-pub fn compute_project_stats(cwd: &Path) -> Option<ProjectTokenStats> {
+/// Returns `Ok(default)` when the sessions directory does not exist or contains
+/// no valid session files ("no sessions"), and `Err(message)` when a read error
+/// occurs (the directory can't be listed, or a file can't be read) so the dialog
+/// can distinguish an empty result from a failure.
+pub fn compute_project_stats(cwd: &Path) -> Result<ProjectTokenStats, String> {
     let sessions_dir = cwd.join(".respondami").join("sessions");
     if !sessions_dir.exists() {
-        return None;
+        return Ok(ProjectTokenStats::default());
     }
 
     let mut session_count = 0usize;
     let mut total_input: u64 = 0;
     let mut total_output: u64 = 0;
 
-    for entry in std::fs::read_dir(&sessions_dir).ok()? {
+    let entries = std::fs::read_dir(&sessions_dir)
+        .map_err(|e| format!("cannot list {}: {e}", sessions_dir.display()))?;
+
+    for entry in entries {
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(e) => {
+                return Err(format!("cannot read entry in {}: {e}", sessions_dir.display()));
+            }
         };
 
         let path = entry.path();
@@ -100,7 +106,9 @@ pub fn compute_project_stats(cwd: &Path) -> Option<ProjectTokenStats> {
             session_count += 1;
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    return Err(format!("cannot read {}: {e}", path.display()));
+                }
             };
 
             for (i, line) in content.lines().enumerate() {
@@ -138,10 +146,10 @@ pub fn compute_project_stats(cwd: &Path) -> Option<ProjectTokenStats> {
     }
 
     if session_count == 0 {
-        return None;
+        return Ok(ProjectTokenStats::default());
     }
 
-    Some(ProjectTokenStats {
+    Ok(ProjectTokenStats {
         session_count,
         total_input_tokens: total_input,
         total_output_tokens: total_output,

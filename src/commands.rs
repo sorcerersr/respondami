@@ -135,7 +135,7 @@ pub async fn execute_palette_command(
         "token_stats" => {
             let cwd = app.config.cwd.clone();
             app.token_stats_task = Some(tokio::task::spawn_blocking(move || {
-                super::tui::token_stats::compute_project_stats(&cwd).unwrap_or_default()
+                super::tui::token_stats::compute_project_stats(&cwd)
             }));
             app.modal.state = AppState::TokenStatsDialog;
         }

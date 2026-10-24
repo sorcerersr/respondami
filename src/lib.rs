@@ -100,7 +100,7 @@ pub async fn run() -> anyhow::Result<()> {
     // Check endpoint (non-blocking, result shown as system message via oneshot)
     let provider = crate::provider::Provider::from_settings(&config.provider.settings);
     let endpoint_model = config.provider.model.clone();
-    let (endpoint_tx, mut endpoint_rx) = tokio::sync::oneshot::channel();
+    let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
     let endpoint_check = tokio::spawn(async move {
         let result = match provider {
             Ok(p) => match p.ping(&endpoint_model).await {
@@ -144,10 +144,9 @@ pub async fn run() -> anyhow::Result<()> {
     // Discover files for @-autocomplete
     app.discover_files();
 
-    // Show endpoint check result as a system message (non-blocking)
-    if let Ok(Err(msg)) = endpoint_rx.try_recv() {
-        app.add_system_message(&format!("⚠ {msg}"));
-    }
+    // Store the endpoint-check receiver on the app; the main loop polls it
+    // with `try_recv` each iteration so a slow check's result is still shown.
+    app.endpoint_rx = Some(endpoint_rx);
 
     // Async event stream — proper tokio integration, no background threads.
     let mut events = EventStream::new();
@@ -177,19 +176,39 @@ pub async fn run() -> anyhow::Result<()> {
             && task.is_finished()
         {
             let handle = app.token_stats_task.take().unwrap();
-            if let Ok(stats) = handle.await {
-                app.modal.token_stats = Some(stats);
+            match handle.await {
+                Ok(result) => app.modal.token_stats = Some(result),
+                Err(_) => app.modal.token_stats = Some(Err(
+                    "token stats task panicked".to_string(),
+                )),
             }
         }
 
-        // Poll in-flight token stats computation task.
-        if let Some(task) = app.token_stats_task.as_mut()
-            && task.is_finished()
-        {
-            let handle = app.token_stats_task.take().unwrap();
-            if let Ok(stats) = handle.await {
-                app.modal.token_stats = Some(stats);
+        // Poll the pending LLM endpoint-check result (delivered at most once).
+        // `Empty` = not yet sent, keep polling; `Closed` = sender dropped,
+        // stop. The owned result is captured first so the mutable borrow of
+        // `app` is released before we mutate it.
+        let endpoint_outcome = app
+            .endpoint_rx
+            .as_mut()
+            .map(tokio::sync::oneshot::Receiver::try_recv);
+        match endpoint_outcome {
+            Some(Ok(Ok(()))) => {
+                // Check succeeded; nothing to show.
+                app.endpoint_rx = None;
             }
+            Some(Ok(Err(msg))) => {
+                app.endpoint_rx = None;
+                app.add_system_message(&format!("⚠ {msg}"));
+            }
+            Some(Err(tokio::sync::oneshot::error::TryRecvError::Closed)) => {
+                // Sender dropped without a result; stop polling.
+                app.endpoint_rx = None;
+            }
+            Some(Err(tokio::sync::oneshot::error::TryRecvError::Empty)) => {
+                // Not yet sent; keep polling next iteration.
+            }
+            None => {}
         }
 
         // Wait for event or animation tick

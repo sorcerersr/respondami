@@ -20,7 +20,9 @@ pub struct ModalState {
     pub command_palette_preserved_input: String,
     pub command_palette_preserved_cursor: usize,
     pub compact_keep_input: String,
-    pub token_stats: Option<ProjectTokenStats>,
+    /// Token stats result. `None` = loading; `Some(Ok(stats))` = stats (possibly
+    /// empty when there are no sessions); `Some(Err(msg))` = a read error to show.
+    pub token_stats: Option<Result<ProjectTokenStats, String>>,
 }
 
 impl ModalState {

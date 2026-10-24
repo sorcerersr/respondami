@@ -454,6 +454,12 @@ fn undo_turn_setup(
     // it can't leak into a later compaction's summary.
     app.pending_precompact_context = None;
     if created_session {
+        // The auto-created session file is empty (no messages were saved before
+        // the turn was rolled back); remove it so orphaned empty `.jsonl` files
+        // don't accumulate. The store is then replaced with a fresh one.
+        if let Some(path) = app.session.session_store.current_session_path.clone() {
+            let _ = std::fs::remove_file(&path);
+        }
         app.session.session_store = crate::session::SessionStore::new(&app.config.cwd);
         app.session.reset_history_guard();
     }
@@ -591,10 +597,7 @@ pub async fn launch_agent_turn(
     let agent = restart_agent(app, user_msg);
 
     // Process agent events while maintaining TUI responsiveness
-    let quit = process_agent_events(app, agent.handle, agent.cancel_tx, agent.rx, terminal).await;
-    if quit {
-        return Ok(true);
-    }
+    process_agent_events(app, agent.handle, agent.cancel_tx, agent.rx, terminal).await;
 
     app.modal.state = AppState::Idle;
     Ok(false)

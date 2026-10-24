@@ -53,6 +53,31 @@ fn clip_short_text_unchanged() {
     assert_eq!(clip("hi", 10), "hi");
 }
 
+/// L-31 regression: `clip` must not panic when `max` falls mid-multibyte
+/// character. A CJK string where the byte offset lands inside a 3-byte
+/// character must floor to the previous boundary instead of panicking.
+#[test]
+fn clip_cjk_mid_char_boundary() {
+    // Each CJK char is 3 bytes. max=5 lands inside the 2nd char (bytes 3..6).
+    let text = "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}\u{5b57}\u{7b26}"; // 6 CJK chars = 18 bytes
+    let out = clip(text, 5);
+    // Must be a valid prefix ending on a char boundary, ≤ 5 bytes.
+    assert!(out.len() <= 5);
+    assert!(out.chars().count() <= 1);
+    // The result must be a prefix of the input.
+    assert!(text.starts_with(&out));
+}
+
+/// L-31: the word-boundary fallback (`unwrap_or(max)`) also floors, so a
+/// CJK string with no spaces must not panic at the boundary.
+#[test]
+fn clip_cjk_no_word_boundary() {
+    let text = "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}"; // 4 CJK chars = 12 bytes
+    let out = clip(text, 7); // 7 is mid 3rd char (bytes 6..9)
+    assert!(out.len() <= 7);
+    assert!(text.starts_with(&out));
+}
+
 #[test]
 fn non_empty_lines_trims_and_filters() {
     let lines = non_empty_lines("  a  \n\n  b  \n");

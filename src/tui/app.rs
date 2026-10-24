@@ -53,7 +53,9 @@ pub struct App {
         Option<tokio::task::JoinHandle<anyhow::Result<crate::session::CompactionPlan>>>,
     /// In-flight token stats computation task.
     /// `Some` = stats being computed in background, dialog shows loading indicator.
-    pub token_stats_task: Option<tokio::task::JoinHandle<super::token_stats::ProjectTokenStats>>,
+    /// The `Result` distinguishes an empty ("no sessions") result from a read error.
+    pub token_stats_task:
+        Option<tokio::task::JoinHandle<Result<super::token_stats::ProjectTokenStats, String>>>,
     /// Deferred turn waiting on background compaction (pre-prompt path).
     /// `Some` = the turn's input was captured; the main loop launches the
     /// agent when `compaction_task` finishes, or rolls back on cancel.
@@ -67,6 +69,11 @@ pub struct App {
     /// (threshold/overflow, pre-prompt). Set by the compaction launcher;
     /// read by `handle_compaction_result` on success.
     pub compaction_trigger: &'static str,
+    /// Pending LLM endpoint-check result. Polled with `try_recv` each loop
+    /// iteration so a slow check's result is shown as a system message on the
+    /// next frame, not only if it finished before the first frame. `None`
+    /// once delivered (or if the sender was dropped without a result).
+    pub endpoint_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
 }
 
 impl std::fmt::Debug for App {
@@ -89,6 +96,7 @@ impl std::fmt::Debug for App {
                 &self.pending_precompact_context.is_some(),
             )
             .field("compaction_trigger", &self.compaction_trigger)
+            .field("endpoint_rx", &self.endpoint_rx.is_some())
             .finish()
     }
 }
@@ -167,6 +175,7 @@ impl App {
             pending_turn: None,
             pending_precompact_context: None,
             compaction_trigger: "auto",
+            endpoint_rx: None,
         }
     }
 

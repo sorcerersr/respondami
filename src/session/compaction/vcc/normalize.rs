@@ -69,6 +69,9 @@ pub fn clip(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
+    // Floor to a char boundary: `max` (and the word-boundary fallback) can fall
+    // mid-multibyte character, and `text[..n]` panics on a non-boundary.
+    let max = text.floor_char_boundary(max);
     // Try to cut at a word boundary.
     let cut = text[..max]
         .rfind(' ')

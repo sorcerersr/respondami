@@ -68,7 +68,7 @@ impl<'de> Deserialize<'de> for ProviderConfig {
         let context_window = obj
             .get("context_window")
             .and_then(serde_json::Value::as_u64)
-            .map_or(32768, |v| v as u32);
+            .map_or(32768, |v| u32::try_from(v).unwrap_or(u32::MAX));
         let vision = obj
             .get("vision")
             .and_then(serde_json::Value::as_bool)
@@ -366,11 +366,16 @@ impl Default for Config {
 
 impl Config {
     /// Get the config directory path ($`XDG_CONFIG_HOME/respondami` or ~/.config/respondami).
+    ///
+    /// The fallback uses a real home lookup (never a literal, unexpanded `~`),
+    /// so a system without `HOME` degrades to a relative `.config` rather than
+    /// a path that is never expanded.
     #[must_use]
     pub fn config_dir() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("respondami")
+        let base = dirs::config_dir()
+            .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+            .unwrap_or_else(|| PathBuf::from(".config"));
+        base.join("respondami")
     }
 
     /// Get the config file path.

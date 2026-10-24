@@ -7,12 +7,11 @@ use crate::image::ImageContent;
 use crate::session::{ContentBlock, Usage};
 
 /// A partial tool call being accumulated during streaming.
-#[derive(Debug, Clone)]
-pub struct PartialToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
-}
+///
+/// Defined in [`crate::provider`] (the source of truth where tool calls are
+/// generated) and re-exported here so TUI code can refer to it without a deep
+/// path. The two former copies are a single type now and cannot drift.
+pub use crate::provider::PartialToolCall;
 
 /// Reason why compaction is needed.
 #[derive(Debug, Clone, Copy)]
