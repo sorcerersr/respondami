@@ -31,7 +31,7 @@ impl ReadToolCall {
                 total_lines: None,
                 content: result.to_string(),
                 has_error: true,
-                cancelled: false,
+                cancelled,
                 expanded,
             };
         }

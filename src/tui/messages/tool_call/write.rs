@@ -24,7 +24,7 @@ impl WriteToolCall {
                 path: tool_args.and_then(|a| a.get("path").and_then(|v| v.as_str())).unwrap_or("unknown").to_string(),
                 content: String::new(),
                 has_error: true,
-                cancelled: false,
+                cancelled,
                 expanded,
             };
         }

@@ -158,6 +158,10 @@ impl CompactionStrategy for VccCompaction {
         let vcc_config = &config.compaction.vcc;
         let est = crate::agent::token_estimation::TokenEstimator::from_entries(&entries);
 
+        if entries.is_empty() {
+            return Err(anyhow::anyhow!("No messages to compact"));
+        }
+
         let live_start = cut::find_live_start(&entries);
         let live_len = entries.len() - live_start;
         if live_len <= 2 {

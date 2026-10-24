@@ -79,6 +79,7 @@ impl KeyHandler for SessionSelectHandler {
                 if let Err(e) = do_load_session(app) {
                     // Show error and stay in session select
                     tracing::error!("Failed to load session: {}", e);
+                    app.add_system_message(&format!("Failed to load session: {e}"));
                 }
                 TransitionAction::None
             }))

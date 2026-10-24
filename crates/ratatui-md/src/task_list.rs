@@ -23,7 +23,7 @@ pub fn render(
     let bg_fill = Paragraph::new(Text::from(vec![])).style(theme.text_style());
     bg_fill.render(area, buf);
 
-    let text_width = area.width as usize - 3; // "☑ " = ~3 chars
+    let text_width = (area.width as usize).saturating_sub(3); // "☑ " = ~3 chars
     let mut y_offset = 0u16;
 
     for item in items {
@@ -176,5 +176,18 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(&items, area, &mut buf, &TestTheme);
         // Should not panic — clips at area boundary
+    }
+
+    // ─── Narrow area (saturating_sub regression) ───
+
+    #[test]
+    fn render_narrow_area_no_underflow() {
+        let items = vec![TaskListItem { checked: false, text: Text::from("item") }];
+        for width in [1u16, 2, 3] {
+            let area = Rect::new(0, 0, width, 5);
+            let mut buf = Buffer::empty(area);
+            render(&items, area, &mut buf, &TestTheme);
+            // Should not panic — text width saturates at 0
+        }
     }
 }

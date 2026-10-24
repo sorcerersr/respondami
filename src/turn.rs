@@ -87,7 +87,9 @@ pub async fn start_turn(
         return Ok(false);
     }
 
-    // Check for slash commands (palette commands triggered via /)
+    // Check for slash commands (palette commands triggered via /).
+    // Runs before skill activation: a skill whose name fuzzy-matches a
+    // command id is shadowed by the command.
     if let Some((cmd, _args)) = parse_slash_command(&input) {
         return execute_palette_command(app, cmd, terminal).await;
     }
@@ -207,28 +209,22 @@ async fn handle_skill_activation(
             }
         }
     } else {
-        // Skill not found — check if it's a palette command instead
-        let commands = crate::tui::editor::get_palette_commands();
-        let is_command = commands
-            .iter()
-            .any(|c| c.id == name || fuzzy_match_case_insensitive(name, c.id).is_some());
-        if is_command {
-            None // Let parse_slash_command handle it
+        // Skill not found. No palette-command fallback: if `name` matched a
+        // command, `parse_slash_command` in `start_turn` would have handled
+        // it before this function ran.
+        let available: Vec<&str> = app.config.skills.iter().map(|s| s.name.as_str()).collect();
+        let msg = if available.is_empty() {
+            format!("Skill \"{name}\" not found. No skills loaded.")
         } else {
-            let available: Vec<&str> = app.config.skills.iter().map(|s| s.name.as_str()).collect();
-            let msg = if available.is_empty() {
-                format!("Skill \"{name}\" not found. No skills loaded.")
-            } else {
-                format!(
-                    "Skill \"{}\" not found. Available skills: {}",
-                    name,
-                    available.join(", ")
-                )
-            };
-            app.add_system_message(&msg);
-            app.chat.auto_scroll = true;
-            Some(false)
-        }
+            format!(
+                "Skill \"{}\" not found. Available skills: {}",
+                name,
+                available.join(", ")
+            )
+        };
+        app.add_system_message(&msg);
+        app.chat.auto_scroll = true;
+        Some(false)
     }
 }
 

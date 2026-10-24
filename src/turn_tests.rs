@@ -484,6 +484,31 @@ async fn skill_activation_persists_to_session_header() {
     }
 }
 
+// ---- L-6: unknown skill has no command fallback ----
+
+#[tokio::test]
+async fn unknown_skill_returns_not_found() {
+    // `/zzz` fuzzy-matches no command id, so `parse_slash_command` passes it
+    // to `handle_skill_activation`, which must stop the turn with a
+    // not-found system message (no fall-through to `run_turn_with_input`).
+    let mut app = App::new(Config::default(), PathBuf::from("."));
+    app.editor.input_buffer = "/zzz".to_string();
+    let mut terminal = make_terminal();
+
+    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+
+    assert!(!quit);
+    let not_found = app.chat
+        .chat_messages
+        .iter()
+        .any(|m| matches!(m, ChatMessage::System(s) if s.content.contains("not found")));
+    assert!(not_found, "expected a not-found system message");
+    assert!(
+        !app.chat.chat_messages.iter().any(|m| matches!(m, ChatMessage::User(_))),
+        "turn must not fall through to run_turn_with_input"
+    );
+}
+
 // ---- Rollback ----
 
 #[test]

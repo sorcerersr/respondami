@@ -10,7 +10,6 @@ use super::ToolCallRender;
 pub struct BashToolCall {
     pub command: String,
     pub output: String,
-    pub exit_code: Option<i32>,
     pub has_error: bool,
     /// User-initiated cancellation (Esc) — header shows `⚠ cancelled`.
     pub cancelled: bool,
@@ -30,7 +29,6 @@ impl BashToolCall {
         Self {
             command,
             output: result.to_string(),
-            exit_code: None,
             has_error,
             cancelled,
             rtk_original,

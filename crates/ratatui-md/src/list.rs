@@ -41,7 +41,7 @@ fn render_inner(
 
     let prefix = "  ".repeat(indent);
     let bullet_width = prefix.chars().count() + if ordered { 4 } else { 2 };
-    let text_width = area.width as usize - bullet_width.max(1);
+    let text_width = (area.width as usize).saturating_sub(bullet_width.max(1));
 
     let mut y_offset = 0u16;
 
@@ -291,6 +291,20 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(&items, 1, false, area, &mut buf, &TestTheme);
         // Should not panic — clips at area boundary
+    }
+
+    // ─── Narrow area (saturating_sub regression) ───
+
+    #[test]
+    fn render_narrow_area_no_underflow() {
+        let items = vec![ListItem { text: Text::from("item"), children: vec![] }];
+        for width in [1u16, 2, 3, 4] {
+            let area = Rect::new(0, 0, width, 5);
+            let mut buf = Buffer::empty(area);
+            render(&items, 1, false, area, &mut buf, &TestTheme);
+            render(&items, 1, true, area, &mut buf, &TestTheme);
+            // Should not panic — text width saturates at 0
+        }
     }
 
     // ─── list_item_text_height ───

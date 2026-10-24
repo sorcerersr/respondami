@@ -509,7 +509,7 @@ pub async fn process_agent_events(
                             {
                                 // Signal cooperative cancellation
                                 let _ = cancel_tx.send(true);
-                                app.add_system_message("Cancelling... (press again to force quit)");
+                                app.add_system_message("Cancelling... (Ctrl+D to force quit)");
                                 app.chat.auto_scroll = true;
                                 // Don't set done yet — wait for the agent to finish
                                 // The Done event will be sent when the agent finishes

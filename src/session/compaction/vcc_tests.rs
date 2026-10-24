@@ -79,6 +79,20 @@ async fn vcc_compute_too_few_is_noop() {
 }
 
 #[tokio::test]
+async fn vcc_compute_empty_session_is_clean_error() {
+    // Empty entries used to underflow `entries.len() - live_start` (M-5).
+    let config = crate::config::Config::default();
+    let result = VccCompaction
+        .compute(provider(), config, vec![], std::env::current_dir().unwrap(), vec![], None)
+        .await;
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("No messages"),
+        "expected 'No messages to compact', got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn vcc_compute_merges_previous_compaction() {
     let mut entries = session_with_turns(3);
     let kept_id = entries[1].id();
