@@ -12,6 +12,8 @@ pub mod token_estimation;
 #[cfg(test)]
 mod mod_tests;
 #[cfg(test)]
+mod streaming_tests;
+#[cfg(test)]
 mod token_estimation_tests;
 
 #[doc(inline)]
@@ -126,7 +128,7 @@ pub fn build_context_with_system(
 /// Cancellation is cooperative via a watch channel — the task checks at natural break points.
 #[expect(
     clippy::too_many_arguments,
-    reason = "render signature unified across all message types"
+    reason = "agent entry point takes the full turn context; a struct would hide the data flow"
 )]
 pub async fn run_agent_with_snapshot(
     context_messages: Vec<AgentMessage>,
@@ -455,6 +457,7 @@ struct ToolCallCtx<'a> {
 
 /// Outcome of [`execute_tool_call`]: keep the tool-call loop going, or end
 /// the turn (user cancellation).
+#[derive(Debug)]
 enum ToolCallOutcome {
     /// The tool ran; keep looping.
     Continue,
@@ -493,13 +496,9 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
             .unwrap_or("")
             .to_string();
         if skill_name.is_empty() {
-            // Invalid call — send error as SkillActivation with a message
-            let _ = ctx
-                .tx
-                .send(AgentEvent::SkillActivation {
-                    skill_name: "unknown".to_string(),
-                })
-                .await;
+            // Invalid call — no SkillActivation event (an empty name must not
+            // pollute the TUI's active_skills set or the saved session header).
+            // Return an error tool result so the model can correct itself.
             let error_result = "Error: skill name is required".to_string();
             push_persisted_context_pair(
                 ctx.current_context,
@@ -1098,7 +1097,11 @@ async fn handle_retry(
     let delay = if let Some(d) = retry_after {
         d
     } else {
-        let base = base_delay_ms * (1u64 << (*retry_count - 1));
+        // Clamp the shift to 32: `1u64 << n` panics in debug for n >= 64, and a
+        // misconfigured max_retries must not crash the agent loop. The delay is
+        // already impractically large well before the clamp kicks in.
+        let shift = (*retry_count - 1).min(32);
+        let base = base_delay_ms * (1u64 << shift);
         // Add ±25% random jitter to prevent thundering herd
         let jitter = 0.75 + fastrand::f64() * 0.5; // 0.75..1.25
         std::time::Duration::from_millis((base as f64 * jitter) as u64)

@@ -90,6 +90,44 @@ impl AgentResponse {
     }
 }
 
+/// Ensures a oneshot sender is always sent, even if the owning task panics.
+///
+/// A dropped-unsent oneshot sender makes the receiver's `await` return
+/// `Err(RecvError)`, which the streaming loop's `if let Ok(Err(e))` skips —
+/// silently converting a provider-task panic into a truncated-but-"successful"
+/// response. This guard holds the sender in an `Option`; a real send takes it
+/// out, and `Drop` sends a sentinel `IncompleteStream` error if it's still
+/// there (i.e. the task panicked before sending).
+pub(crate) struct OneshotGuard {
+    tx: Option<oneshot::Sender<Result<(), ProviderError>>>,
+}
+
+impl OneshotGuard {
+    #[must_use]
+    pub(crate) fn new(tx: oneshot::Sender<Result<(), ProviderError>>) -> Self {
+        Self { tx: Some(tx) }
+    }
+
+    /// Take the sender out to perform a real send. Returns `None` if already
+    /// taken (or if `Drop` already fired, which can't happen before the task
+    /// body completes).
+    pub(crate) fn take(&mut self) -> Option<oneshot::Sender<Result<(), ProviderError>>> {
+        self.tx.take()
+    }
+}
+
+impl Drop for OneshotGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            // The task panicked before sending. Send a sentinel so the
+            // receiver treats it as a retryable provider error, not a success.
+            let _ = tx.send(Err(ProviderError::IncompleteStream {
+                detail: "provider task panicked".to_string(),
+            }));
+        }
+    }
+}
+
 /// Build a `Provider` from config.
 ///
 /// # Errors
@@ -142,16 +180,24 @@ pub async fn stream_response_from_messages(
 
     // Spawn the provider streaming task with error propagation via oneshot.
     // This ensures ProviderError::ContextOverflow is not silently dropped.
+    // The OneshotGuard ensures the sender is always sent: if the task panics,
+    // Drop sends a sentinel IncompleteStream error so the receiver's
+    // `if let Ok(Err(e))` path fires instead of treating the partial stream
+    // as a normal completion.
     let (stream_err_tx, stream_err_rx) = oneshot::channel();
     let provider_clone = provider.clone_provider();
     let req_clone = request.clone();
     let cancel_rx_clone = cancel_rx.clone();
     let stream_handle = tokio::spawn(async move {
+        let mut guard = OneshotGuard::new(stream_err_tx);
         let result = provider_clone
             .stream_chat(&req_clone, chunk_tx, cancel_rx_clone)
             .await;
-        // Send error to main task if stream_chat failed
-        let _ = stream_err_tx.send(result);
+        // Send error to main task if stream_chat failed. Taking the sender out
+        // of the guard means Drop won't double-send.
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(result);
+        }
     });
 
     let mut blocks: Vec<ContentBlock> = Vec::new();
@@ -281,7 +327,7 @@ pub async fn stream_response_from_messages(
             .collect::<Vec<_>>()
             .join("\n");
         let prompt_tokens = est.estimate_tokens(
-            &request.messages.iter().map(super::super::provider::Message::content).collect::<Vec<_>>().join("\n"),
+            &request.messages.iter().map(crate::provider::Message::content).collect::<Vec<_>>().join("\n"),
         );
         let completion_tokens = est.estimate_tokens(&text_content);
         let total = prompt_tokens.saturating_add(completion_tokens);

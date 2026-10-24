@@ -6,6 +6,7 @@ use tempfile::TempDir;
 use crate::image::ImageContent;
 use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
 use crate::skills::{Skill, SkillSource};
+use crate::tui::AgentEvent;
 
 fn img() -> ImageContent {
     ImageContent {
@@ -308,4 +309,81 @@ fn push_context_message_lockstep_digests() {
     assert_eq!(digests.len(), 2);
     assert_eq!(digests[0], first_digest);
     assert_eq!(digests[1], second_digest);
+}
+
+/// L-14 regression: `activate_skill` with an empty name must not emit a
+/// `SkillActivation` event (the old code emitted `skill_name: "unknown"`,
+/// which polluted the TUI's `active_skills` set and the saved session header).
+/// It still returns an error tool result so the model can correct itself.
+#[tokio::test]
+async fn activate_skill_empty_name_emits_no_activation_event() {
+    use crate::agent::streaming::AgentResponse;
+    use crate::config::Config;
+    use crate::history_guard::MessageDigest;
+    use crate::hooks::HookRegistry;
+    use crate::tools::rtk::RtkState;
+    use crate::tools::ToolRegistry;
+    use tokio::sync::{mpsc, watch};
+
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let config = Config::default();
+    let rtk_state = RtkState {
+        path: None,
+        version_ok: false,
+    };
+    let tool_registry = ToolRegistry::new();
+    let mut hook_registry = HookRegistry::new();
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let _ = cancel_tx;
+    let skills: &[Skill] = &[];
+    let response = AgentResponse {
+        content: Vec::new(),
+        usage: None,
+    };
+    let mut current_context: Vec<AgentMessage> = Vec::new();
+    let mut context_digests: Vec<MessageDigest> = Vec::new();
+
+    let mut ctx = super::ToolCallCtx {
+        tx: &tx,
+        config: &config,
+        cwd: std::path::Path::new("."),
+        rtk_state: &rtk_state,
+        tool_registry: &tool_registry,
+        hook_registry: &mut hook_registry,
+        cancel_rx: &cancel_rx,
+        skills,
+        response: &response,
+        current_context: &mut current_context,
+        context_digests: &mut context_digests,
+        first_tool_call: true,
+    };
+
+    let tc = ToolCall {
+        id: "call_empty".to_string(),
+        name: "activate_skill".to_string(),
+        arguments: serde_json::json!({ "name": "" }),
+    };
+
+    let outcome = super::execute_tool_call(&mut ctx, &tc).await;
+    assert!(
+        matches!(outcome, super::ToolCallOutcome::Continue),
+        "empty skill name should continue the loop, got: {outcome:?}"
+    );
+
+    // No SkillActivation event must be emitted for an empty name.
+    let mut saw_activation = false;
+    let mut saw_error_result = false;
+    while let Ok(event) = rx.try_recv() {
+        match &event {
+            AgentEvent::SkillActivation { .. } => saw_activation = true,
+            AgentEvent::SaveToolResult { result, .. }
+                if result.contains("skill name is required") =>
+            {
+                saw_error_result = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(!saw_activation, "no SkillActivation event for empty name");
+    assert!(saw_error_result, "error tool result must be saved");
 }
