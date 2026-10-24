@@ -110,11 +110,19 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
         );
     }
 
-    // Spawn the shell command
-    let mut cmd = Command::new("bash");
+    // Spawn the hook. Directory hooks carry a `script` path: spawn it
+    // directly as `bash <script>` (no `-c`), so paths with spaces or quotes
+    // survive as a single argument. Everything else runs via `bash -c`.
+    let mut cmd = if let Some(script) = &hook.script {
+        let mut cmd = Command::new("bash");
+        cmd.arg(script);
+        cmd
+    } else {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&hook.command);
+        cmd
+    };
     cmd.kill_on_drop(true)
-        .arg("-c")
-        .arg(&hook.command)
         .current_dir(&context.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

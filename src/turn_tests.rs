@@ -62,6 +62,7 @@ fn make_hook(event: HookEvent, name: &str, command: &str) -> Hook {
         event,
         name: name.to_string(),
         command: command.to_string(),
+        script: None,
         source: HookSource::Project,
         skill_name: None,
         skill_dir: None,

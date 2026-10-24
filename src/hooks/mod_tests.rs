@@ -299,6 +299,7 @@ async fn run_tool_hooks_carries_real_stderr() {
         event: HookEvent::PreToolUse,
         name: "err.sh".to_string(),
         command: "echo oops >&2; exit 0".to_string(),
+        script: None,
         source: HookSource::Project,
         skill_name: None,
         skill_dir: None,

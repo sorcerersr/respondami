@@ -135,8 +135,12 @@ pub struct Hook {
     pub event: HookEvent,
     /// The hook name (script filename; skill hooks are tagged `<skill>:<name>`).
     pub name: String,
-    /// The shell command to execute.
+    /// The shell command to execute (config/skill hooks; `bash -c` form).
     pub command: String,
+    /// Script path to spawn directly as `bash <script>` without a shell
+    /// (directory hooks only). The path is passed as a single argument, so
+    /// it may contain spaces or quotes without breaking the spawn.
+    pub script: Option<PathBuf>,
     /// Where this hook was loaded from.
     pub source: HookSource,
     /// Name of the skill defining this hook (skill hooks only).
@@ -256,6 +260,7 @@ pub fn load_directory_hooks(base_dir: &Path, source: HookSource) -> Vec<Hook> {
                 event: *event,
                 name: name.clone(),
                 command: format!("bash {}", path.display()),
+                script: Some(path),
                 source: source.clone(),
                 skill_name: None,
                 skill_dir: None,

@@ -57,6 +57,7 @@ pub fn register_skill_hooks(registry: &mut HookRegistry, skill: &Skill) {
             event: hook.event,
             name: format!("{}:{}", skill.name, derive_hook_name(&hook.command)),
             command: hook.command.clone(),
+            script: None,
             source: skill.source.into(),
             skill_name: Some(skill.name.clone()),
             skill_dir: Some(skill.base_dir.clone()),

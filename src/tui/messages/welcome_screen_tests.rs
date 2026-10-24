@@ -9,6 +9,7 @@ fn make_hook(event: HookEvent, name: &str, source: HookSource) -> Hook {
         event,
         name: name.to_string(),
         command: "echo test".to_string(),
+        script: None,
         source,
         skill_name: None,
         skill_dir: None,

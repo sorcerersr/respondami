@@ -12,6 +12,7 @@ async fn execute_hook_success() {
         event: HookEvent::PreToolUse,
         name: "test.sh".to_string(),
         command: "echo 'hello world'".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -41,6 +42,7 @@ async fn execute_hook_blocking() {
         event: HookEvent::PreToolUse,
         name: "block.sh".to_string(),
         command: "echo 'blocked' >&2; exit 2".to_string(),
+        script: None,
         source: HookSource::Project,
         skill_name: None,
         skill_dir: None,
@@ -69,6 +71,7 @@ async fn execute_hook_non_blocking_error() {
         event: HookEvent::PostToolUse,
         name: "warn.sh".to_string(),
         command: "echo 'warning' >&2; exit 1".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -98,6 +101,7 @@ async fn execute_hook_environment_variables() {
         event: HookEvent::UserPromptSubmit,
         name: "env-test.sh".to_string(),
         command: "echo HOOK_EVENT=$HOOK_EVENT HOOK_NAME=$HOOK_NAME PROMPT=$PROMPT".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -127,6 +131,7 @@ async fn execute_hook_timeout() {
         event: HookEvent::PreToolUse,
         name: "slow.sh".to_string(),
         command: "sleep 31".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -157,6 +162,7 @@ async fn execute_hook_output_truncation() {
         event: HookEvent::Stop,
         name: "big-output.sh".to_string(),
         command: format!("echo '{large_text}'"),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -185,6 +191,7 @@ async fn execute_hook_skill_env_vars() {
         event: HookEvent::PreToolUse,
         name: "planning:inject.sh".to_string(),
         command: "echo SKILL_NAME=$SKILL_NAME SKILL_DIR=$SKILL_DIR".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: Some("planning".to_string()),
         skill_dir: Some(PathBuf::from("/skills/planning")),
@@ -213,6 +220,7 @@ async fn execute_hook_no_skill_env_vars_for_directory_hook() {
         event: HookEvent::PreToolUse,
         name: "dir.sh".to_string(),
         command: "echo NAME=${SKILL_NAME:-unset} DIR=${SKILL_DIR:-unset}".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -233,6 +241,48 @@ async fn execute_hook_no_skill_env_vars_for_directory_hook() {
     let result = execute_hook(&hook, &context).await;
     assert!(result.stdout.contains("NAME=unset"));
     assert!(result.stdout.contains("DIR=unset"));
+}
+
+#[tokio::test]
+async fn execute_hook_script_path_with_space_and_quote() {
+    // M-4: a `script` hook is spawned as `bash <path>` (no `-c`), so the
+    // path reaches the script intact even with a space and a quote. `$0`
+    // is the script path only in the direct-spawn form (it would be
+    // "bash" under `bash -c`).
+    let dir = tempfile::TempDir::new().unwrap();
+    let script_name = "my 'hook'.sh";
+    let script_path = dir.path().join(script_name);
+    std::fs::write(&script_path, "#!/bin/bash\necho ZERO=$0").unwrap();
+
+    let hook = Hook {
+        event: HookEvent::PreToolUse,
+        name: script_name.to_string(),
+        command: format!("bash {}", script_path.display()),
+        script: Some(script_path.clone()),
+        source: HookSource::Project,
+        skill_name: None,
+        skill_dir: None,
+        matcher: super::loader::ToolMatcher::All,
+    };
+    let context = HookContext {
+        event: HookEvent::PreToolUse,
+        hook_name: script_name.to_string(),
+        cwd: dir.path().to_path_buf(),
+        tool_name: None,
+        tool_input: None,
+        tool_result: None,
+        prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
+    };
+
+    let result = execute_hook(&hook, &context).await;
+    assert!(result.success(), "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains(&format!("ZERO={}", script_path.display())),
+        "expected $0 to be the script path, got: {}",
+        result.stdout
+    );
 }
 
 #[test]

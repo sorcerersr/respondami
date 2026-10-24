@@ -119,6 +119,7 @@ fn hook_registry_add_and_get() {
         event: HookEvent::PreToolUse,
         name: "test.sh".to_string(),
         command: "echo test".to_string(),
+        script: None,
         source: HookSource::Global,
         skill_name: None,
         skill_dir: None,
@@ -195,6 +196,25 @@ fn load_directory_hooks_sorted_by_name() {
     assert_eq!(hooks.len(), 2);
     assert_eq!(hooks[0].name, "a-first.sh");
     assert_eq!(hooks[1].name, "b-zap.sh");
+}
+
+#[test]
+fn load_directory_hooks_path_with_space_and_quote_has_script() {
+    // M-4: a path with a space and a single quote must load with `script`
+    // set so the executor spawns `bash <path>` (no `-c`, no quoting).
+    let dir = TempDir::new().unwrap();
+    let hooks_dir = dir.path().join("hooks");
+    let event_dir = hooks_dir.join("PreToolUse");
+    fs::create_dir_all(&event_dir).unwrap();
+
+    let script_name = "my 'hook'.sh";
+    let script_path = event_dir.join(script_name);
+    fs::write(&script_path, "#!/bin/bash\necho ok").unwrap();
+
+    let hooks = load_directory_hooks(dir.path(), HookSource::Project);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].name, script_name);
+    assert_eq!(hooks[0].script.as_deref(), Some(script_path.as_path()));
 }
 
 // ---------------------------------------------------------------------------
