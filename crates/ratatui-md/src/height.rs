@@ -476,7 +476,7 @@ mod tests {
     fn height_list_empty_item() {
         let block = ContentBlock::List {
             ordered: false, start: 1,
-            items: vec![ListItem { text: Text::from(vec![]), children: vec![] }],
+            items: vec![ListItem { text: Text::from(vec![]), children: vec![], checked: None }],
         };
         assert_eq!(content_block_height(&block, 80, &TestTheme), 1); // bullet only
     }
@@ -489,8 +489,10 @@ mod tests {
                 text: Text::from("parent"),
                 children: vec![ListItem {
                     text: Text::from("child"),
-                    children: vec![ListItem { text: Text::from("grandchild"), children: vec![] }],
+                    children: vec![ListItem { text: Text::from("grandchild"), children: vec![], checked: None }],
+                    checked: None,
                 }],
+                checked: None,
             }],
         };
         // parent: 2, child: 2, grandchild: 1 = 5
@@ -502,7 +504,7 @@ mod tests {
     fn height_list_zero_width() {
         let block = ContentBlock::List {
             ordered: false, start: 1,
-            items: vec![ListItem { text: Text::from("item"), children: vec![] }],
+            items: vec![ListItem { text: Text::from("item"), children: vec![], checked: None }],
         };
         // width=0 → text_width=0 → wrapped_height returns lines.len() = 1, +1 = 2
         assert_eq!(content_block_height(&block, 0, &TestTheme), 2);

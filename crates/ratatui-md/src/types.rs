@@ -32,6 +32,9 @@ pub enum ContentBlock {
 pub struct ListItem {
     pub text: ratatui::text::Text<'static>,
     pub children: Vec<Self>,
+    /// Checkbox state for task-list items. `None` for a plain list item,
+    /// `Some(true)`/`Some(false)` for a checked/unchecked task item.
+    pub checked: Option<bool>,
 }
 
 /// A task list item with checkbox state.
@@ -162,7 +165,7 @@ mod tests {
     fn render_block_list() {
         let block = ContentBlock::List {
             ordered: false, start: 1,
-            items: vec![ListItem { text: Text::from("item"), children: vec![] }],
+            items: vec![ListItem { text: Text::from("item"), children: vec![], checked: None }],
         };
         let area = Rect::new(0, 0, 20, 5);
         let mut buf = Buffer::empty(area);
@@ -220,7 +223,7 @@ mod tests {
 
     #[test]
     fn list_item_clone() {
-        let item = ListItem { text: Text::from("test"), children: vec![] };
+        let item = ListItem { text: Text::from("test"), children: vec![], checked: None };
         let cloned = item.clone();
         assert_eq!(
             cloned.text.lines[0].spans[0].content.as_ref(),

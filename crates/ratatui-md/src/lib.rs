@@ -415,8 +415,8 @@ mod tests {
             ordered: false,
             start: 1,
             items: vec![
-                ListItem { text: Text::from("item 1"), children: vec![] },
-                ListItem { text: Text::from("item 2"), children: vec![] },
+                ListItem { text: Text::from("item 1"), children: vec![], checked: None },
+                ListItem { text: Text::from("item 2"), children: vec![], checked: None },
             ],
         };
         // 2 items × (1 line + 1 blank) = 4
@@ -432,9 +432,10 @@ mod tests {
                 ListItem {
                     text: Text::from("parent"),
                     children: vec![
-                        ListItem { text: Text::from("child 1"), children: vec![] },
-                        ListItem { text: Text::from("child 2"), children: vec![] },
+                        ListItem { text: Text::from("child 1"), children: vec![], checked: None },
+                        ListItem { text: Text::from("child 2"), children: vec![], checked: None },
                     ],
+                    checked: None,
                 },
             ],
         };
@@ -532,7 +533,7 @@ mod tests {
         // Ordered list: bullet width = 4, text_width = width - 4
         let ordered = ContentBlock::List {
             ordered: true, start: 1,
-            items: vec![ListItem { text: Text::from(long_text.clone()), children: vec![] }],
+            items: vec![ListItem { text: Text::from(long_text.clone()), children: vec![], checked: None }],
         };
         let ordered_h = ordered.height(80, &theme);
         // text_width = 76, 77 chars wraps to 2 lines, +1 = 3
@@ -541,7 +542,7 @@ mod tests {
         // Unordered list: bullet width = 2, text_width = width - 4 (same in height calc)
         let unordered = ContentBlock::List {
             ordered: false, start: 1,
-            items: vec![ListItem { text: Text::from(long_text), children: vec![] }],
+            items: vec![ListItem { text: Text::from(long_text), children: vec![], checked: None }],
         };
         let unordered_h = unordered.height(80, &theme);
         // text_width = 76 (height calc uses -4 for all lists), 77 chars wraps to 2, +1 = 3

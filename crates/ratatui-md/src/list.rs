@@ -159,8 +159,8 @@ mod tests {
     #[test]
     fn render_unordered_list() {
         let items = vec![
-            ListItem { text: Text::from("item 1"), children: vec![] },
-            ListItem { text: Text::from("item 2"), children: vec![] },
+            ListItem { text: Text::from("item 1"), children: vec![], checked: None },
+            ListItem { text: Text::from("item 2"), children: vec![], checked: None },
         ];
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
@@ -185,8 +185,8 @@ mod tests {
     #[test]
     fn render_ordered_list() {
         let items = vec![
-            ListItem { text: Text::from("first"), children: vec![] },
-            ListItem { text: Text::from("second"), children: vec![] },
+            ListItem { text: Text::from("first"), children: vec![], checked: None },
+            ListItem { text: Text::from("second"), children: vec![], checked: None },
         ];
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
@@ -199,8 +199,8 @@ mod tests {
     #[test]
     fn render_ordered_list_custom_start() {
         let items = vec![
-            ListItem { text: Text::from("three"), children: vec![] },
-            ListItem { text: Text::from("four"), children: vec![] },
+            ListItem { text: Text::from("three"), children: vec![], checked: None },
+            ListItem { text: Text::from("four"), children: vec![], checked: None },
         ];
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
@@ -218,9 +218,10 @@ mod tests {
             ListItem {
                 text: Text::from("parent"),
                 children: vec![
-                    ListItem { text: Text::from("child A"), children: vec![] },
-                    ListItem { text: Text::from("child B"), children: vec![] },
+                    ListItem { text: Text::from("child A"), children: vec![], checked: None },
+                    ListItem { text: Text::from("child B"), children: vec![], checked: None },
                 ],
+                checked: None,
             },
         ];
         let area = Rect::new(0, 0, 30, 10);
@@ -241,10 +242,12 @@ mod tests {
                     ListItem {
                         text: Text::from("level 2"),
                         children: vec![
-                            ListItem { text: Text::from("level 3"), children: vec![] },
+                            ListItem { text: Text::from("level 3"), children: vec![], checked: None },
                         ],
+                        checked: None,
                     },
                 ],
+                checked: None,
             },
         ];
         let area = Rect::new(0, 0, 40, 10);
@@ -260,7 +263,7 @@ mod tests {
 
     #[test]
     fn render_zero_area() {
-        let items = vec![ListItem { text: Text::from("item"), children: vec![] }];
+        let items = vec![ListItem { text: Text::from("item"), children: vec![], checked: None }];
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         render(&items, 1, false, area, &mut buf, &TestTheme);
@@ -270,7 +273,7 @@ mod tests {
     #[test]
     fn render_item_with_empty_text() {
         let items = vec![
-            ListItem { text: Text::from(vec![]), children: vec![] },
+            ListItem { text: Text::from(vec![]), children: vec![], checked: None },
         ];
         let area = Rect::new(0, 0, 20, 5);
         let mut buf = Buffer::empty(area);
@@ -283,9 +286,9 @@ mod tests {
     #[test]
     fn render_clipped_area() {
         let items = vec![
-            ListItem { text: Text::from("item 1"), children: vec![] },
-            ListItem { text: Text::from("item 2"), children: vec![] },
-            ListItem { text: Text::from("item 3"), children: vec![] },
+            ListItem { text: Text::from("item 1"), children: vec![], checked: None },
+            ListItem { text: Text::from("item 2"), children: vec![], checked: None },
+            ListItem { text: Text::from("item 3"), children: vec![], checked: None },
         ];
         let area = Rect::new(0, 0, 20, 2); // Only room for 1 item
         let mut buf = Buffer::empty(area);
@@ -297,7 +300,7 @@ mod tests {
 
     #[test]
     fn render_narrow_area_no_underflow() {
-        let items = vec![ListItem { text: Text::from("item"), children: vec![] }];
+        let items = vec![ListItem { text: Text::from("item"), children: vec![], checked: None }];
         for width in [1u16, 2, 3, 4] {
             let area = Rect::new(0, 0, width, 5);
             let mut buf = Buffer::empty(area);
@@ -311,27 +314,27 @@ mod tests {
 
     #[test]
     fn list_item_text_height_empty() {
-        let item = ListItem { text: Text::from(vec![]), children: vec![] };
+        let item = ListItem { text: Text::from(vec![]), children: vec![], checked: None };
         assert_eq!(list_item_text_height(&item, 40), 1);
     }
 
     #[test]
     fn list_item_text_height_single_line() {
-        let item = ListItem { text: Text::from("short"), children: vec![] };
+        let item = ListItem { text: Text::from("short"), children: vec![], checked: None };
         assert_eq!(list_item_text_height(&item, 40), 2); // text + blank
     }
 
     #[test]
     fn list_item_text_height_wraps() {
         let long = "a".repeat(80);
-        let item = ListItem { text: Text::from(long), children: vec![] };
+        let item = ListItem { text: Text::from(long), children: vec![], checked: None };
         let h = list_item_text_height(&item, 40);
         assert!(h >= 2, "Long text should wrap: height={}", h);
     }
 
     #[test]
     fn list_item_text_height_zero_width() {
-        let item = ListItem { text: Text::from("text"), children: vec![] };
+        let item = ListItem { text: Text::from("text"), children: vec![], checked: None };
         assert_eq!(list_item_text_height(&item, 0), 1);
     }
 }
