@@ -1,5 +1,16 @@
 # TODO
 
+## Code-review 2026-10-23 deferrals
+
+Deferred from the code-review triage (2026-10-23, `docs/plans/2026-10-23-code-review-triage-design.md`). The 36 "fix now" items are done across 7 commits on `next`; these 7 are deferred by design. (L-32 was already tracked here.)
+
+- **L-11:** `toggle_all_tool_output` repeats near-identical arms — DRY only, no bug; a TUI refactor for its own sake.
+- **L-25:** `file_queue` canonicalize fallback keys new files by raw path — rare race, low value to fix now.
+- **L-26:** `file_queue` cleanup can free a held permit early — unlikely window, hard to reproduce.
+- **L-29:** resumed tool results always render `has_error: false` — needs a JSONL schema change to persist the flag; out of scope for this pass.
+- **L-34:** `render_status_bar` spawns `git` every frame — perf not correctness; the cache-invalidation strategy is its own design decision.
+- **L-36:** test helpers `make_app`/`make_key` duplicated across 5 files — test-only, no runtime impact.
+
 ## Future: VCC real read-file tracking (L2 deferral)
 
 Deferred from the arch-findings triage (2026-10-22, `docs/plans/2026-10-22-arch-findings-triage-design.md`).
