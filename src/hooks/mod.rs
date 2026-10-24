@@ -290,6 +290,8 @@ impl From<SkillSource> for HookSource {
 }
 
 #[cfg(test)]
+mod compaction_restart_tests;
+#[cfg(test)]
 mod executor_tests;
 #[cfg(test)]
 mod loader_tests;
