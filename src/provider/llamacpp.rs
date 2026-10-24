@@ -357,10 +357,11 @@ fn inject_reasoning_content(
     if let Some(messages) = request.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut msg_idx = 0;
         for (_orig_idx, orig_msg) in msg_pairs {
-            // to_openai_message skips empty assistant messages, so we need to
-            // align original messages with the filtered list.
-            if matches!(orig_msg, Message::Assistant { content, tool_calls, .. }
-                if content.is_empty() && tool_calls.is_empty())
+            // to_openai_message skips assistant messages with no content, no
+            // reasoning, and no tool calls, so we need to align original
+            // messages with the filtered list using the same three-way guard.
+            if matches!(orig_msg, Message::Assistant { content, tool_calls, reasoning, .. }
+                if content.is_empty() && tool_calls.is_empty() && reasoning.is_empty())
             {
                 continue;
             }
@@ -439,14 +440,15 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
         Message::Assistant {
             content,
             tool_calls,
-            ..
+            reasoning,
         } => {
-            // Guard: skip assistant messages with no content, no reasoning, and no tool calls.
-            // OpenAI API requires "either content or tool_calls, but not none".
+            // Guard: skip assistant messages with no content, no reasoning, and
+            // no tool calls. OpenAI API requires "either content or tool_calls,
+            // but not none". Reasoning-only messages are kept: the reasoning is
+            // injected post-hoc as `reasoning_content` in `inject_reasoning_content`.
             // Some providers silently drop or error on empty assistant messages.
             // Modeled on pi-coding-agent's convertMessages() guard.
-            let has_reasoning = false; // reasoning handled separately via JSON injection
-            if content.is_empty() && tool_calls.is_empty() && !has_reasoning {
+            if content.is_empty() && tool_calls.is_empty() && reasoning.is_empty() {
                 return None;
             }
             let mut builder = ChatCompletionRequestAssistantMessageArgs::default();

@@ -74,6 +74,20 @@ fn make_text_choice(content: &str) -> ChatChoice {
     }
 
     #[test]
+    fn to_openai_message_keeps_reasoning_only_assistant() {
+        // M-2: an assistant message with only reasoning (no content, no
+        // tool_calls) must be kept — the reasoning is injected post-hoc as
+        // `reasoning_content` in `inject_reasoning_content`.
+        let msg = Message::Assistant {
+            reasoning: "Let me think about this...".to_string(),
+            content: String::new(),
+            tool_calls: Vec::new(),
+        };
+        assert!(to_openai_message(&msg).is_some(),
+            "reasoning-only assistant message must be kept");
+    }
+
+    #[test]
     fn to_openai_message_keeps_assistant_with_empty_content_and_tool_calls() {
         // Assistant with empty content but tool_calls → Some
         let msg = Message::Assistant {

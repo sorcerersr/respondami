@@ -176,3 +176,86 @@ use super::sse::{ParseState, SseChoice, SseChunk, append_utf8_safe, process_sse_
         assert_eq!(buffer, "héllo");
         assert!(pending.is_empty(), "no trailing bytes");
     }
+
+    // ---------------------------------------------------------------------------
+    // append_utf8_safe — 4-byte char split (M-1 regression)
+    // ---------------------------------------------------------------------------
+
+    /// A 4-byte emoji split 1+3 must decode intact (the old code flushed the
+    /// first byte lossily, corrupting the character).
+    #[test]
+    fn append_utf8_safe_4byte_split_1_3() {
+        // U+1F600 "😀" = F0 9F 98 80, split after the first byte.
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buffer = String::new();
+
+        append_utf8_safe(&mut pending, &mut buffer, b"\xF0");
+        assert_eq!(buffer, "");
+        assert_eq!(pending, vec![0xF0]);
+
+        append_utf8_safe(&mut pending, &mut buffer, b"\x9F\x98\x80");
+        assert_eq!(buffer, "😀");
+        assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    /// A 4-byte emoji split 2+2 must decode intact.
+    #[test]
+    fn append_utf8_safe_4byte_split_2_2() {
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buffer = String::new();
+
+        append_utf8_safe(&mut pending, &mut buffer, b"\xF0\x9F");
+        assert_eq!(buffer, "");
+        assert_eq!(pending, vec![0xF0, 0x9F]);
+
+        append_utf8_safe(&mut pending, &mut buffer, b"\x98\x80");
+        assert_eq!(buffer, "😀");
+        assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    /// A 4-byte emoji split 3+1 must decode intact.
+    #[test]
+    fn append_utf8_safe_4byte_split_3_1() {
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buffer = String::new();
+
+        append_utf8_safe(&mut pending, &mut buffer, b"\xF0\x9F\x98");
+        assert_eq!(buffer, "");
+        assert_eq!(pending, vec![0xF0, 0x9F, 0x98]);
+
+        append_utf8_safe(&mut pending, &mut buffer, b"\x80");
+        assert_eq!(buffer, "😀");
+        assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    /// A stream of 0xFF bytes (never a valid UTF-8 start) must keep `pending`
+    /// bounded (≤ 3 bytes) and emit U+FFFD, never accumulating garbage.
+    #[test]
+    fn append_utf8_safe_invalid_bytes_bounded_pending() {
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buffer = String::new();
+
+        for _ in 0..10 {
+            append_utf8_safe(&mut pending, &mut buffer, &[0xFF]);
+            assert!(pending.len() <= 3, "pending must stay bounded");
+        }
+        // Each 0xFF is invalid and flushed lossily as U+FFFD.
+        assert_eq!(buffer, "\u{FFFD}".repeat(10));
+        assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    /// Mixed valid multibyte and invalid bytes: valid chars survive, invalid
+    /// bytes become U+FFFD, and `pending` ends empty.
+    #[test]
+    fn append_utf8_safe_mixed_valid_and_invalid() {
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buffer = String::new();
+
+        // "a" + 0xFF + "é" (C3 A9 split) + 0xFF
+        append_utf8_safe(&mut pending, &mut buffer, b"a\xFF");
+        append_utf8_safe(&mut pending, &mut buffer, b"\xC3");
+        append_utf8_safe(&mut pending, &mut buffer, b"\xA9\xFF");
+
+        assert_eq!(buffer, "a\u{FFFD}é\u{FFFD}");
+        assert_eq!(pending, Vec::<u8>::new());
+    }

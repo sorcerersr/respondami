@@ -384,22 +384,25 @@ pub(super) async fn parse_sse_stream(
 /// Append a chunk to `buffer`, buffering bytes of a multibyte UTF-8 character
 /// split across chunk boundaries in `pending` instead of lossily replacing it.
 ///
-/// `pending` is kept to at most 3 bytes: an incomplete UTF-8 sequence is at
-/// most 3 bytes long, so anything older is invalid and is flushed lossily.
+/// The longest valid UTF-8 prefix is decoded first; the tail is kept in
+/// `pending` only if it is a genuine incomplete sequence (a multi-byte start
+/// byte followed by fewer continuation bytes than it declares). Any other tail
+/// is invalid and is flushed lossily, so `pending` never holds garbage and
+/// stays bounded (a genuine incomplete sequence is at most 3 bytes).
 pub(crate) fn append_utf8_safe(pending: &mut Vec<u8>, buffer: &mut String, chunk: &[u8]) {
     pending.extend_from_slice(chunk);
-    // Flush bytes that can no longer be part of an incomplete sequence.
-    let split = pending.len().saturating_sub(3);
-    if split > 0 {
-        let (stale, rest) = pending.split_at(split);
-        buffer.push_str(&String::from_utf8_lossy(stale));
-        *pending = rest.to_vec();
-    }
-    // Decode the longest valid UTF-8 prefix; keep the incomplete tail.
+    // Decode the longest valid UTF-8 prefix; keep the tail.
     let valid_len = utf8_prefix_len(pending);
     let (valid, tail) = pending.split_at(valid_len);
     buffer.push_str(std::str::from_utf8(valid).expect("valid prefix by construction"));
-    *pending = tail.to_vec();
+    // Keep the tail only if it is a genuine incomplete sequence; otherwise it
+    // is invalid and is flushed lossily.
+    if is_incomplete_sequence(tail) {
+        *pending = tail.to_vec();
+    } else {
+        buffer.push_str(&String::from_utf8_lossy(tail));
+        pending.clear();
+    }
 }
 
 /// Length of the longest valid UTF-8 prefix of `bytes`.
@@ -408,6 +411,23 @@ fn utf8_prefix_len(bytes: &[u8]) -> usize {
         Ok(_) => bytes.len(),
         Err(e) => e.valid_up_to(),
     }
+}
+
+/// Returns `true` if `bytes` is a genuine incomplete UTF-8 sequence: a
+/// multi-byte start byte followed by fewer continuation bytes than the start
+/// byte declares. ASCII, orphan continuation bytes, and invalid start bytes
+/// (0xF8-0xFF) are not incomplete sequences.
+fn is_incomplete_sequence(bytes: &[u8]) -> bool {
+    let Some(&first) = bytes.first() else {
+        return false;
+    };
+    let expected = match first {
+        0xC0..=0xDF => 2, // 2-byte start: 110xxxxx
+        0xE0..=0xEF => 3, // 3-byte start: 1110xxxx
+        0xF0..=0xF7 => 4, // 4-byte start: 11110xxx
+        _ => return false, // ASCII, orphan continuation byte, invalid start (F8-FF)
+    };
+    bytes[1..].iter().all(|b| b & 0b1100_0000 == 0b1000_0000) && bytes.len() < expected
 }
 
 /// Wait for the `cancel_rx` watch channel to change from its current value.
