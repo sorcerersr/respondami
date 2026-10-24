@@ -7,8 +7,8 @@
 
 use std::fmt;
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::session::CompactionPlan;
 use crate::tui::{App, AppState, Theme};
@@ -71,9 +71,7 @@ pub fn tick_activity_indicator(app: &mut App, theme: &Theme) {
     if app.is_working() {
         let (label, _, _) = crate::tui::status_bar::get_activity(&app.modal.state, theme);
         app.ui.activity_indicator.tick(label);
-    } else if app.modal.state == AppState::TokenStatsDialog
-        && app.token_stats_task.is_some()
-    {
+    } else if app.modal.state == AppState::TokenStatsDialog && app.token_stats_task.is_some() {
         app.ui.activity_indicator.tick("Gathering metrics");
     }
 }
@@ -110,6 +108,9 @@ pub fn join_panic_message(error: tokio::task::JoinError) -> String {
 /// When `pinned_scroll_guard` is `true`, `auto_scroll` is guarded by
 /// `!app.chat.pinned_scroll`. When `false`, `auto_scroll` is set
 /// unconditionally (correct for user-initiated compaction).
+///
+/// On success, fires the `PostCompact` hooks (side-effect-only; their stdout
+/// never reaches the model) with `trigger` and the removed-message count.
 pub async fn handle_compaction_result(
     app: &mut App,
     handle: tokio::task::JoinHandle<anyhow::Result<CompactionPlan>>,
@@ -133,6 +134,23 @@ pub async fn handle_compaction_result(
             ) {
                 Ok((tb, ta, mr)) => {
                     app.add_compaction_message(tb.saturating_sub(ta), mr);
+                    // Fire the PostCompact hooks (side-effect-only). The trigger
+                    // is carried on the App by the compaction launcher. A blocked
+                    // PostCompact (exit 2) cannot undo the compaction, so it is
+                    // logged as a non-blocking error (the TUI still shows it).
+                    let (post_blocked, post_error, _) = crate::hooks::run_tui_hooks(
+                        app,
+                        crate::hooks::HookEvent::PostCompact,
+                        None,
+                        Some(crate::hooks::CompactInfo {
+                            trigger: app.compaction_trigger,
+                            messages_removed: mr,
+                        }),
+                    )
+                    .await;
+                    if post_blocked {
+                        tracing::warn!("PostCompact hook blocked (non-blocking): {post_error}");
+                    }
                     // Compaction rewrote the session history — the next
                     // outgoing prefix is legitimately different, so reset the
                     // history guard baseline (see `crate::history_guard`).
@@ -233,7 +251,8 @@ pub async fn poll_compaction_task(
     app: &mut App,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> CompactionPollResult {
-    if !app.compaction_task
+    if !app
+        .compaction_task
         .as_ref()
         .is_some_and(tokio::task::JoinHandle::is_finished)
     {
@@ -241,7 +260,10 @@ pub async fn poll_compaction_task(
     }
 
     // Checked above — the task is guaranteed to exist.
-    let handle = app.compaction_task.take().expect("compaction task exists while finished");
+    let handle = app
+        .compaction_task
+        .take()
+        .expect("compaction task exists while finished");
     let _ = handle_compaction_result(app, handle, false).await;
 
     if let Some(pending) = app.pending_turn.take() {

@@ -3,8 +3,8 @@
 //! Maps palette command IDs to their handlers: session management (new, compact,
 //! resume), display toggles (thinking, reasoning), model switching, and quit.
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::config::Config;
 use crate::session::SessionStore;
@@ -99,7 +99,8 @@ pub async fn execute_palette_command(
             } else {
                 app.add_user_message(crate::agents_md::GENERATE_CHAT_MESSAGE);
                 let prompt = crate::agents_md::GENERATE_PROMPT.to_string();
-                return run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal).await;
+                return run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal)
+                    .await;
             }
         }
         // Toggle commands — act directly and persist
@@ -154,10 +155,7 @@ pub async fn execute_palette_command(
 /// # Errors
 ///
 /// - Provider build errors.
-pub async fn execute_compact(
-    app: &mut App,
-    keep: Option<usize>,
-) -> anyhow::Result<bool> {
+pub async fn execute_compact(app: &mut App, keep: Option<usize>) -> anyhow::Result<bool> {
     if app.compaction_task.is_some() {
         app.notify_compaction_in_progress();
         return Ok(false);
@@ -181,8 +179,12 @@ pub async fn execute_compact(
     let cwd = app.config.cwd.clone();
     let skills = app.config.skills.clone();
 
+    // Manual compaction — the PostCompact hook reports trigger = "manual".
+    app.compaction_trigger = "manual";
     app.compaction_task = Some(tokio::spawn(async move {
-        engine.compute_compaction(provider, config, entries, cwd, skills, keep).await
+        engine
+            .compute_compaction(provider, config, entries, cwd, skills, keep)
+            .await
     }));
     Ok(false)
 }
@@ -194,15 +196,29 @@ pub async fn execute_compact(
 pub fn get_palette_command_description(id: &str, app: &App) -> String {
     match id {
         "toggle_thinking" => {
-            format!("Toggle thinking display {}", app.config.thinking_display.palette_mode_display())
+            format!(
+                "Toggle thinking display {}",
+                app.config.thinking_display.palette_mode_display()
+            )
         }
         "toggle_tool_output" => {
-            let current = if app.config.tool_output_expanded { "expanded" } else { "collapsed" };
-            let next = if app.config.tool_output_expanded { "collapsed" } else { "expanded" };
+            let current = if app.config.tool_output_expanded {
+                "expanded"
+            } else {
+                "collapsed"
+            };
+            let next = if app.config.tool_output_expanded {
+                "collapsed"
+            } else {
+                "expanded"
+            };
             format!("Toggle tool output [{current} → {next}]")
         }
         "toggle_hook_mode" => {
-            format!("Toggle hook display {}", app.config.hook_display.palette_mode_display())
+            format!(
+                "Toggle hook display {}",
+                app.config.hook_display.palette_mode_display()
+            )
         }
         _ => {
             // Static description from PaletteCommand
@@ -214,4 +230,3 @@ pub fn get_palette_command_description(id: &str, app: &App) -> String {
         }
     }
 }
-

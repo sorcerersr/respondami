@@ -501,7 +501,12 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
                 })
                 .await;
             let error_result = "Error: skill name is required".to_string();
-            push_persisted_context_pair(ctx.current_context, ctx.context_digests, tc, &error_result);
+            push_persisted_context_pair(
+                ctx.current_context,
+                ctx.context_digests,
+                tc,
+                &error_result,
+            );
             // Persist assistant+tool to session for correct alternation pattern.
             // Without this, the activate_skill tool call becomes orphaned
             // (no matching tool result) when context is rebuilt from JSONL.
@@ -584,8 +589,9 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     }
 
     // Run PreToolUse hooks: a blocked hook (exit 2) stops the tool; its
-    // stderr is injected as the model's feedback.
-    let (tool_blocked, blocked_error, pre_results) = crate::hooks::run_tool_hooks(
+    // stderr is injected as the model's feedback. Successful hook stdout is
+    // a side effect and never reaches the model.
+    let (tool_blocked, blocked_error, _) = crate::hooks::run_tool_hooks(
         ctx.tx,
         ctx.hook_registry,
         crate::hooks::HookEvent::PreToolUse,
@@ -595,13 +601,6 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
         None,
     )
     .await;
-    // stdout from successful hooks, appended to the model-bound tool
-    // result (TUI stays clean; see the SaveToolResult below).
-    let pre_tool_outputs: Vec<(String, String)> = pre_results
-        .iter()
-        .filter(|(_, r)| r.success())
-        .map(|(name, r)| (name.clone(), r.stdout.clone()))
-        .collect();
 
     if tool_blocked {
         // Tool call blocked — send error as tool result
@@ -646,7 +645,12 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
             })
             .await;
         // Add to context as a failed tool result
-        push_persisted_context_pair(ctx.current_context, ctx.context_digests, tc, &blocked_result);
+        push_persisted_context_pair(
+            ctx.current_context,
+            ctx.context_digests,
+            tc,
+            &blocked_result,
+        );
         return ToolCallOutcome::Blocked;
     }
 
@@ -662,16 +666,17 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
 
     // RTK rewrite: intercept bash tool calls
     let rtk_db_dir = ctx.cwd.join(".respondami").join("rtk");
-    let (exec_name, exec_args, original_cmd) = if tc.name == "bash"
-        && ctx.config.rtk.enabled
-        && ctx.rtk_state.is_available()
-    {
-        if let Some(rtk_path) = &ctx.rtk_state.path {
-            if let Some(cmd) = tc.arguments.get("command").and_then(|v| v.as_str()) {
-                if let Some(rewritten) = rewrite_command(rtk_path, &rtk_db_dir, cmd).await {
-                    let mut new_args = tc.arguments.clone();
-                    new_args["command"] = serde_json::Value::String(rewritten.clone());
-                    (tc.name.clone(), new_args, Some(cmd.to_string()))
+    let (exec_name, exec_args, original_cmd) =
+        if tc.name == "bash" && ctx.config.rtk.enabled && ctx.rtk_state.is_available() {
+            if let Some(rtk_path) = &ctx.rtk_state.path {
+                if let Some(cmd) = tc.arguments.get("command").and_then(|v| v.as_str()) {
+                    if let Some(rewritten) = rewrite_command(rtk_path, &rtk_db_dir, cmd).await {
+                        let mut new_args = tc.arguments.clone();
+                        new_args["command"] = serde_json::Value::String(rewritten.clone());
+                        (tc.name.clone(), new_args, Some(cmd.to_string()))
+                    } else {
+                        (tc.name.clone(), tc.arguments.clone(), None)
+                    }
                 } else {
                     (tc.name.clone(), tc.arguments.clone(), None)
                 }
@@ -680,10 +685,7 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
             }
         } else {
             (tc.name.clone(), tc.arguments.clone(), None)
-        }
-    } else {
-        (tc.name.clone(), tc.arguments.clone(), None)
-    };
+        };
 
     // Create output channel for streaming tool output
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -730,8 +732,7 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     // Drop the sender to signal the forwarder to stop
     drop(output_tx);
     // Give forwarder a moment to flush, then abort if needed
-    let _ =
-        tokio::time::timeout(std::time::Duration::from_millis(50), output_forwarder).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(50), output_forwarder).await;
 
     // When tool has an error, send the error message as the result content.
     // This gives the LLM feedback on why the tool failed (e.g. edit rejection reason).
@@ -745,11 +746,11 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     let (final_result, tool_images) =
         apply_vision_gate(ctx.config.provider.vision, final_result, tool_images);
 
-    // Run PostToolUse hooks (only for successful tool calls).
-    // Collect hook output as a salient instruction: injected as a
-    // separate `user` message after the tool result (not buried in the
-    // tool output, which the model treats as data and ignores).
-    let mut hook_instruction = String::new();
+    // Run PostToolUse hooks (only for successful tool calls). These are
+    // side effects; their stdout never reaches the model. A blocked hook
+    // (exit 2) is an objection the model should still hear, so its stderr is
+    // appended to the model-bound tool result (the blocked-hook exception).
+    let mut blocked_posttool: Vec<String> = Vec::new();
     if !has_error {
         let (_, _, post_results) = crate::hooks::run_tool_hooks(
             ctx.tx,
@@ -765,10 +766,8 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
             if hook_result.blocked() {
                 // The tool already ran; a blocked PostToolUse is an
                 // objection the model should still hear.
-                hook_instruction.push_str(&format_posttool_block(&hook_name, &hook_result));
-            } else if hook_result.success() && !hook_result.stdout.is_empty() {
-                hook_instruction.push_str(&format_posttool_block(&hook_name, &hook_result));
-            } else if !hook_result.success() && !hook_result.blocked() {
+                blocked_posttool.push(hook_result.stderr.clone());
+            } else if !hook_result.success() {
                 tracing::warn!(
                     hook = %hook_name,
                     exit_code = hook_result.exit_code,
@@ -779,13 +778,19 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
         }
     }
 
-    // Model-bound tool result: the tool output plus any PreToolUse
-    // hook-injected context. The PostToolUse instruction is NOT here —
-    // it is injected as a separate `user` message below. The TUI
-    // (ToolCallDone) shows the clean `final_result`; the session store
-    // and live context receive `model_result` (tail-append keeps the
-    // prefix stable).
-    let model_result = model_bound_tool_result(&final_result, &pre_tool_outputs);
+    // Model-bound tool result: the clean tool output, plus any blocked
+    // `PostToolUse` stderr (the blocked-hook exception). The TUI
+    // (`ToolCallDone`) shows the clean `final_result`; the session store and
+    // live context both receive `model_result`, so they stay byte-identical.
+    let model_result = if blocked_posttool.is_empty() {
+        final_result.clone()
+    } else {
+        let mut r = final_result.clone();
+        for reason in &blocked_posttool {
+            r.push_str(&format!("\n\n[hook blocked: {reason}]"));
+        }
+        r
+    };
 
     // Signal TUI: tool call finished (update pending message with result)
     // Note: the tool result sent to TUI does NOT include hook instructions —
@@ -838,29 +843,19 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     // saved above, so live and persisted history never diverge.
     let assistant_msg = AgentMessage::assistant_with_blocks(assistant_blocks, assistant_usage);
     let assistant_digest = message_digest(&assistant_msg);
-    let tool_msg = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), model_result, tool_images);
+    let tool_msg = AgentMessage::tool(
+        tc.id.clone(),
+        tc.name.clone(),
+        tc.arguments.clone(),
+        model_result,
+        tool_images,
+    );
     let tool_digest = message_digest(&tool_msg);
     ctx.current_context.push(assistant_msg);
     ctx.context_digests.push(assistant_digest);
     ctx.current_context.push(tool_msg);
     ctx.context_digests.push(tool_digest);
 
-    // PostToolUse hook instruction: inject as a separate, salient
-    // `user` message after the tool result. The same string is pushed
-    // to the live context and saved to the session (byte-identical),
-    // so the prefix stays stable and the instruction survives resume.
-    if !hook_instruction.is_empty() {
-        let instruction_msg = AgentMessage::user(hook_instruction.trim().to_string());
-        let instruction_digest = message_digest(&instruction_msg);
-        let _ = ctx
-            .tx
-            .send(AgentEvent::SaveHookInstruction {
-                message: instruction_msg.content().to_string(),
-            })
-            .await;
-        ctx.current_context.push(instruction_msg);
-        ctx.context_digests.push(instruction_digest);
-    }
     ToolCallOutcome::Continue
 }
 
@@ -879,7 +874,13 @@ fn push_persisted_context_pair(
         }],
         None,
     );
-    let tool = AgentMessage::tool(tc.id.clone(), tc.name.clone(), tc.arguments.clone(), result.to_string(), Vec::new());
+    let tool = AgentMessage::tool(
+        tc.id.clone(),
+        tc.name.clone(),
+        tc.arguments.clone(),
+        result.to_string(),
+        Vec::new(),
+    );
     push_context_message(context, digests, assistant);
     push_context_message(context, digests, tool);
 }
@@ -896,50 +897,6 @@ fn push_context_message(
     context.push(message);
 }
 
-/// Model-bound tool result: the clean tool output plus any `PreToolUse`
-/// hook-injected context (see `format_hook_context`).
-///
-/// The `PostToolUse` hook instruction is NOT part of this — it is injected as a
-/// separate `user` message after the tool result, because the model treats a
-/// tool result as data and ignores instructions buried in it.
-///
-/// The TUI shows the clean result; the session store and live context both
-/// receive this form, so they stay byte-identical. The tail-append keeps the
-/// outgoing prefix stable for provider prefix caching. A blocked `PreToolUse`
-/// hook never reaches this path — the blocked branch saves its own result and
-/// skips the tool entirely, so it injects nothing.
-#[must_use]
-pub(crate) fn model_bound_tool_result(
-    final_result: &str,
-    pre_tool_outputs: &[(String, String)],
-) -> String {
-    let mut result = final_result.to_string();
-    result.push_str(&crate::hooks::format_hook_context(pre_tool_outputs));
-    result
-}
-
-/// Format a single `PostToolUse` hook outcome into a framed instruction block.
-///
-/// The block is a salient, imperative directive (not data buried in a tool
-/// result, which the model ignores):
-/// - blocked (exit 2): the stderr as the body (an objection the model should hear)
-/// - success (exit 0) with non-empty stdout: the stdout as the body
-/// - failed (other exit code): empty (the caller logs a warning)
-///
-/// Multiple blocks are concatenated by the caller in registry order and
-/// injected as a single `user` message after the tool result.
-#[must_use]
-pub(crate) fn format_posttool_block(hook_name: &str, hook_result: &crate::hooks::HookResult) -> String {
-    let body = if hook_result.blocked() {
-        &hook_result.stderr
-    } else if hook_result.success() && !hook_result.stdout.is_empty() {
-        &hook_result.stdout
-    } else {
-        return String::new();
-    };
-    format!("\n\n[Hook instruction — {hook_name}]\n{body}")
-}
-
 /// Verify the outgoing context prefix against the history guard before each
 /// request.
 ///
@@ -952,9 +909,7 @@ fn check_outgoing_history(
     digests: &[MessageDigest],
     context: &[AgentMessage],
 ) {
-    let mut guard = history_guard
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut guard = history_guard.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(violation) = guard.check_and_update(digests) else {
         return;
     };

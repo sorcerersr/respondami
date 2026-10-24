@@ -34,6 +34,10 @@ pub struct HookContext {
     pub tool_result: Option<serde_json::Value>,
     /// User's prompt text (`UserPromptSubmit` only).
     pub prompt: Option<String>,
+    /// Compaction trigger, `"manual"` or `"auto"` (`PostCompact` only).
+    pub compact_trigger: Option<String>,
+    /// Number of messages removed by the compaction (`PostCompact` only).
+    pub compact_messages_removed: Option<u32>,
 }
 
 /// Result of executing a hook.
@@ -87,11 +91,23 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
     if let Some(prompt) = &context.prompt {
         env_vars.insert("PROMPT".to_string(), prompt.clone());
     }
+    if let Some(compact_trigger) = &context.compact_trigger {
+        env_vars.insert("COMPACT_TRIGGER".to_string(), compact_trigger.clone());
+    }
+    if let Some(compact_messages_removed) = &context.compact_messages_removed {
+        env_vars.insert(
+            "COMPACT_MESSAGES_REMOVED".to_string(),
+            compact_messages_removed.to_string(),
+        );
+    }
     if let Some(skill_name) = &hook.skill_name {
         env_vars.insert("SKILL_NAME".to_string(), skill_name.clone());
     }
     if let Some(skill_dir) = &hook.skill_dir {
-        env_vars.insert("SKILL_DIR".to_string(), skill_dir.to_string_lossy().to_string());
+        env_vars.insert(
+            "SKILL_DIR".to_string(),
+            skill_dir.to_string_lossy().to_string(),
+        );
     }
 
     // Spawn the shell command

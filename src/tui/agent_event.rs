@@ -35,23 +35,39 @@ pub enum AgentEvent {
     /// Reasoning text delta — hidden by default, counted for t/s.
     Reasoning(String),
     /// A tool call is about to be executed; show a pending message.
-    ToolCallStart { tool_call_id: String, tool_name: String, tool_args: serde_json::Value },
+    ToolCallStart {
+        tool_call_id: String,
+        tool_name: String,
+        tool_args: serde_json::Value,
+    },
     /// Incremental output from a running tool call; append to pending message.
     ToolOutput(String),
     /// A tool call finished; update the pending message with results.
     /// `cancelled` marks a user-initiated cancellation (Esc) — displayed as a
     /// neutral warning, not an error. It is not persisted (no JSONL schema
     /// change); a reloaded card shows the result text without the marker.
-    ToolCallDone { tool_call_id: String, result: String, has_error: bool, cancelled: bool, rtk_original: Option<String> },
+    ToolCallDone {
+        tool_call_id: String,
+        result: String,
+        has_error: bool,
+        cancelled: bool,
+        rtk_original: Option<String>,
+    },
     /// Token usage from an LLM response.
     Usage(Usage),
     /// Compaction completed (display message).
-    Compaction { tokens_saved: u32, message_count: u32 },
+    Compaction {
+        tokens_saved: u32,
+        message_count: u32,
+    },
     /// The agent finished (or errored).
     /// `Err(AbortReason)` indicates the run was cancelled by the user.
     Done(Result<(), AbortReason>),
     /// Save an assistant message to the session.
-    SaveAssistantMessage { content: Vec<ContentBlock>, usage: Option<Usage> },
+    SaveAssistantMessage {
+        content: Vec<ContentBlock>,
+        usage: Option<Usage>,
+    },
     /// Save a tool result to the session.
     SaveToolResult {
         tool_call_id: String,
@@ -60,12 +76,6 @@ pub enum AgentEvent {
         result: String,
         images: Vec<ImageContent>,
     },
-    /// Save a `PostToolUse` hook instruction to the session as a `user` message.
-    ///
-    /// The same string is pushed to the live context by the agent loop, so the
-    /// persisted form and the live form stay byte-identical (vLLM prefix-cache
-    /// stability). The message is model-only — it is not added to the TUI chat.
-    SaveHookInstruction { message: String },
     /// Agent signals that compaction is needed.
     /// Main thread performs compaction and restarts the agent.
     NeedsCompaction {
@@ -87,11 +97,23 @@ pub enum AgentEvent {
     /// Compaction failed.
     CompactionError { message: String },
     /// Auto-retry begins after transient provider error.
-    RetryStart { attempt: u32, max_attempts: u32, delay_ms: u64, error: String },
+    RetryStart {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error: String,
+    },
     /// Auto-retry completes (success or final failure).
     RetryEnd { success: bool, attempt: u32 },
     /// A hook has executed; display a hook message.
-    HookMessage { event: crate::hooks::HookEvent, hook_name: String, success: bool, stdout: String, stderr: String, tool_name: Option<String> },
+    HookMessage {
+        event: crate::hooks::HookEvent,
+        hook_name: String,
+        success: bool,
+        stdout: String,
+        stderr: String,
+        tool_name: Option<String>,
+    },
     /// Skill activation — display a skill activation message and update `active_skills`.
     SkillActivation { skill_name: String },
 }

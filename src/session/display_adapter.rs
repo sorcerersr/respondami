@@ -6,13 +6,15 @@
 
 use crate::hooks::HookEvent;
 use crate::session::{AgentMessage, SessionEntry};
+use crate::tui::messages::tool_call::build_tool_call_variant;
 use crate::tui::messages::{
     AssistantMessage, ChatMessage, HookMessage, ToolCallMessage, UserMessage,
 };
-use crate::tui::messages::tool_call::build_tool_call_variant;
 
-/// Frame prefix of a persisted `PostToolUse` hook instruction block
-/// (see `agent::format_posttool_block`).
+/// Frame prefix of a persisted `PostToolUse` hook instruction block, as
+/// written by the pre-simplification framer. Kept only to render *old*
+/// sessions that already have these persisted; new sessions no longer
+/// persist hook instructions as user messages.
 const HOOK_INSTRUCTION_PREFIX: &str = "[Hook instruction — ";
 
 /// Adapter that converts session entries into display-ready chat messages.
@@ -68,7 +70,9 @@ impl SessionDisplayAdapter {
                             }
                         }
                     }
-                    AgentMessage::Assistant { content: blocks, .. } => {
+                    AgentMessage::Assistant {
+                        content: blocks, ..
+                    } => {
                         use crate::session::ContentBlock;
                         // Decompose content blocks into visual entries.
                         // Thinking blocks become ThinkingMessage, text blocks become AssistantMessage,
@@ -128,12 +132,13 @@ impl SessionDisplayAdapter {
 
 /// Parse `[Hook instruction — <name>]` framed blocks out of a user message.
 ///
-/// The framer (`agent::format_posttool_block`) emits `\n\n[frame]\n<body>`
-/// per block; multiple blocks are concatenated in registry order, so a
-/// message may carry several. Returns `Some(blocks)` only when the message
-/// is entirely framed blocks; `None` otherwise (leading text, a frame
-/// without a closing `]` on its header line, or an empty name), in which
-/// case the caller renders a normal user bubble.
+/// The legacy framer emitted `\n\n[frame]\n<body>` per block; multiple blocks
+/// were concatenated in registry order, so a message may carry several. This
+/// only ever matches *old* sessions (new sessions no longer persist hook
+/// instructions). Returns `Some(blocks)` only when the message is entirely
+/// framed blocks; `None` otherwise (leading text, a frame without a closing
+/// `]` on its header line, or an empty name), in which case the caller
+/// renders a normal user bubble.
 fn parse_hook_instruction_blocks(content: &str) -> Option<Vec<(String, String)>> {
     let first = content.trim_start_matches('\n');
     let first = first.strip_prefix(HOOK_INSTRUCTION_PREFIX)?;
@@ -171,7 +176,9 @@ fn parse_hook_instruction_blocks(content: &str) -> Option<Vec<(String, String)>>
         if name.is_empty() || name.contains('\n') {
             return None;
         }
-        let body = chunk[close + 1..].strip_prefix('\n').unwrap_or(&chunk[close + 1..]);
+        let body = chunk[close + 1..]
+            .strip_prefix('\n')
+            .unwrap_or(&chunk[close + 1..]);
         blocks.push((name.to_string(), body.to_string()));
     }
     Some(blocks)

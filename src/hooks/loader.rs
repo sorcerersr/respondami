@@ -14,7 +14,7 @@ use regex::Regex;
 // Data types
 // ---------------------------------------------------------------------------
 
-/// The five hook events.
+/// The six hook events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookEvent {
     UserPromptSubmit,
@@ -22,6 +22,7 @@ pub enum HookEvent {
     PostToolUse,
     Stop,
     PreCompact,
+    PostCompact,
 }
 
 impl std::fmt::Display for HookEvent {
@@ -32,6 +33,7 @@ impl std::fmt::Display for HookEvent {
             HookEvent::PostToolUse => write!(f, "PostToolUse"),
             HookEvent::Stop => write!(f, "Stop"),
             HookEvent::PreCompact => write!(f, "PreCompact"),
+            HookEvent::PostCompact => write!(f, "PostCompact"),
         }
     }
 }
@@ -46,6 +48,7 @@ impl HookEvent {
             HookEvent::PostToolUse => "PostToolUse",
             HookEvent::Stop => "Stop",
             HookEvent::PreCompact => "PreCompact",
+            HookEvent::PostCompact => "PostCompact",
         }
     }
 
@@ -58,6 +61,7 @@ impl HookEvent {
             HookEvent::PostToolUse,
             HookEvent::Stop,
             HookEvent::PreCompact,
+            HookEvent::PostCompact,
         ]
     }
 
@@ -73,6 +77,7 @@ impl HookEvent {
             "PostToolUse" => Some(Self::PostToolUse),
             "Stop" => Some(Self::Stop),
             "PreCompact" => Some(Self::PreCompact),
+            "PostCompact" => Some(Self::PostCompact),
             _ => None,
         }
     }
@@ -161,7 +166,10 @@ impl HookRegistry {
     /// Get hooks for a given event.
     #[must_use]
     pub fn hooks(&self, event: HookEvent) -> &[Hook] {
-        self.hooks.get(&event).map(std::vec::Vec::as_slice).unwrap_or(&[])
+        self.hooks
+            .get(&event)
+            .map(std::vec::Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Add a hook to the registry.

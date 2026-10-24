@@ -151,8 +151,7 @@ fn rebuild_hook_registry_includes_active_skill_hooks() {
     let skills = vec![skill, inactive];
     let active: HashSet<String> = HashSet::from(["active".to_string()]);
 
-    let registry =
-        rebuild_hook_registry(&skills, &active, config_dir.path(), cwd.path());
+    let registry = rebuild_hook_registry(&skills, &active, config_dir.path(), cwd.path());
     assert_eq!(registry.total_count(), 1);
     assert!(registry.has_hooks(HookEvent::Stop));
     assert_eq!(registry.hooks(HookEvent::Stop)[0].name, "active:echo bye");
@@ -171,8 +170,7 @@ fn rebuild_hook_registry_empty_active_set() {
         }],
     );
     let active: HashSet<String> = HashSet::new();
-    let registry =
-        rebuild_hook_registry(&[skill], &active, config_dir.path(), cwd.path());
+    let registry = rebuild_hook_registry(&[skill], &active, config_dir.path(), cwd.path());
     assert_eq!(registry.total_count(), 0);
 }
 
@@ -198,8 +196,7 @@ fn rebuild_hook_registry_merges_directory_hooks() {
         }],
     );
     let active: HashSet<String> = HashSet::from(["s".to_string()]);
-    let registry =
-        rebuild_hook_registry(&[skill], &active, config_dir.path(), cwd.path());
+    let registry = rebuild_hook_registry(&[skill], &active, config_dir.path(), cwd.path());
     assert_eq!(registry.total_count(), 2);
     assert!(registry.has_hooks(HookEvent::PreToolUse));
     assert!(registry.has_hooks(HookEvent::Stop));
@@ -234,10 +231,7 @@ fn derive_hook_name_falls_back_to_full_command() {
 #[test]
 fn derive_hook_name_ignores_env_var_tokens() {
     // `${SKILL_DIR}` has no path separator, so the next path-like token wins.
-    assert_eq!(
-        derive_hook_name("bash ${SKILL_DIR}/a/b/real.sh"),
-        "real.sh"
-    );
+    assert_eq!(derive_hook_name("bash ${SKILL_DIR}/a/b/real.sh"), "real.sh");
 }
 
 #[test]
@@ -251,19 +245,13 @@ fn derive_hook_name_skips_env_assignment_tokens() {
 
 #[test]
 fn derive_hook_name_skips_simple_assignment() {
-    assert_eq!(
-        derive_hook_name("FOO=bar sh /a/b/c.sh"),
-        "c.sh"
-    );
+    assert_eq!(derive_hook_name("FOO=bar sh /a/b/c.sh"), "c.sh");
 }
 
 #[test]
 fn derive_hook_name_assignment_only_falls_back() {
     // No non-assignment path-like token → full-command fallback.
-    assert_eq!(
-        derive_hook_name("SKILL_DIR=/a/b/c"),
-        "SKILL_DIR=/a/b/c"
-    );
+    assert_eq!(derive_hook_name("SKILL_DIR=/a/b/c"), "SKILL_DIR=/a/b/c");
 }
 
 // ---------------------------------------------------------------------------
@@ -336,9 +324,7 @@ async fn run_tool_hooks_carries_real_stderr() {
     let event = rx.recv().await.expect("hook message on channel");
     match event {
         crate::tui::AgentEvent::HookMessage {
-            success,
-            stderr,
-            ..
+            success, stderr, ..
         } => {
             assert!(success);
             assert!(

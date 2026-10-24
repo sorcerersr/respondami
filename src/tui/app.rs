@@ -13,11 +13,11 @@ use super::agent_state::AgentState;
 use super::chat_state::ChatState;
 use super::config_state::ConfigState;
 use super::editor_state::EditorState;
-use super::messages::{
-    AssistantMessage, ChatMessage, CompactionMessage, SystemMessage, ThinkingMessage, ToolCallMessage,
-    ToolCallVariant, UserMessage,
-};
 use super::messages::tool_call::MAX_CONTENT_LINES;
+use super::messages::{
+    AssistantMessage, ChatMessage, CompactionMessage, SystemMessage, ThinkingMessage,
+    ToolCallMessage, ToolCallVariant, UserMessage,
+};
 use super::modal_state::ModalState;
 use super::session_state::SessionState;
 use super::ui_state::UIState;
@@ -49,7 +49,8 @@ pub struct App {
     pub active_skills: HashSet<String>,
     /// In-flight compaction task from manual compaction via command palette.
     /// `Some` = compaction running in background, UI shows sweep animation.
-    pub compaction_task: Option<tokio::task::JoinHandle<anyhow::Result<crate::session::CompactionPlan>>>,
+    pub compaction_task:
+        Option<tokio::task::JoinHandle<anyhow::Result<crate::session::CompactionPlan>>>,
     /// In-flight token stats computation task.
     /// `Some` = stats being computed in background, dialog shows loading indicator.
     pub token_stats_task: Option<tokio::task::JoinHandle<super::token_stats::ProjectTokenStats>>,
@@ -61,6 +62,11 @@ pub struct App {
     /// the summary in `handle_compaction_result`, then cleared. `None` when
     /// no `PreCompact` hook produced output.
     pub pending_precompact_context: Option<String>,
+    /// How the in-flight compaction was triggered, for the `PostCompact`
+    /// hook: `"manual"` (command palette `/compact`) or `"auto"`
+    /// (threshold/overflow, pre-prompt). Set by the compaction launcher;
+    /// read by `handle_compaction_result` on success.
+    pub compaction_trigger: &'static str,
 }
 
 impl std::fmt::Debug for App {
@@ -82,6 +88,7 @@ impl std::fmt::Debug for App {
                 "pending_precompact_context",
                 &self.pending_precompact_context.is_some(),
             )
+            .field("compaction_trigger", &self.compaction_trigger)
             .finish()
     }
 }
@@ -106,15 +113,22 @@ impl App {
 
         // Resolve RTK state (path + version check)
         let rtk_state = crate::tools::rtk::resolve_rtk_state();
-        let rtk_warning = (rtk_state.path.is_some() && !rtk_state.version_ok).then(|| (
+        let rtk_warning = (rtk_state.path.is_some() && !rtk_state.version_ok).then(|| {
+            (
                 "rtk too old (need ≥ 0.23.0), rewrite disabled".to_string(),
                 Instant::now(),
-            ));
+            )
+        });
 
         // Discover skills (global + project, project wins on collision)
         let (skills, skill_diagnostics) = crate::skills::load_skills(&Config::config_dir(), &cwd);
         for diag in &skill_diagnostics {
-            tracing::info!("Skill {}: {} ({})", diag.level, diag.message, diag.path.display());
+            tracing::info!(
+                "Skill {}: {} ({})",
+                diag.level,
+                diag.message,
+                diag.path.display()
+            );
         }
 
         // Load hooks from directory-based sources
@@ -152,12 +166,14 @@ impl App {
             token_stats_task: None,
             pending_turn: None,
             pending_precompact_context: None,
+            compaction_trigger: "auto",
         }
     }
 
     /// Initialize tracker with restored session totals.
     pub fn restore_tracker(&mut self, session_tokens: u32, session_seconds: f64) {
-        self.agent.tracker = crate::context::TokenRateTracker::restore(session_tokens, session_seconds);
+        self.agent.tracker =
+            crate::context::TokenRateTracker::restore(session_tokens, session_seconds);
     }
 
     /// Activate a skill by name. Returns true if the skill was not already active.
@@ -170,14 +186,23 @@ impl App {
     pub fn is_working(&self) -> bool {
         matches!(
             self.modal.state,
-            super::mode::AppState::Streaming | super::mode::AppState::ToolExec | super::mode::AppState::Compacting
+            super::mode::AppState::Streaming
+                | super::mode::AppState::ToolExec
+                | super::mode::AppState::Compacting
         )
     }
 
     /// Check if the app is in a modal state that blocks normal input.
     #[must_use]
     pub fn is_modal(&self) -> bool {
-        matches!(self.modal.state, super::mode::AppState::InitPopup | super::mode::AppState::SessionSelect | super::mode::AppState::CommandPalette | super::mode::AppState::HelpPopup | super::mode::AppState::TokenStatsDialog)
+        matches!(
+            self.modal.state,
+            super::mode::AppState::InitPopup
+                | super::mode::AppState::SessionSelect
+                | super::mode::AppState::CommandPalette
+                | super::mode::AppState::HelpPopup
+                | super::mode::AppState::TokenStatsDialog
+        )
     }
 
     /// Get the current palette filter query, derived from whichever source is active.
@@ -201,9 +226,11 @@ impl App {
             }
             _ => {
                 // No assistant message at the end — create one
-                self.chat.chat_messages.push(ChatMessage::Assistant(AssistantMessage {
-                    content: token.to_string(),
-                }));
+                self.chat
+                    .chat_messages
+                    .push(ChatMessage::Assistant(AssistantMessage {
+                        content: token.to_string(),
+                    }));
             }
         }
     }
@@ -229,18 +256,27 @@ impl App {
     ///
     /// Creates a `Pending` variant showing tool name + args.
     /// Tracks the `tool_call_id` → `chat_messages` index in `pending_tool_call_ids`.
-    pub fn add_pending_tool_call(&mut self, tool_call_id: &str, tool_name: &str, tool_args: &serde_json::Value) {
+    pub fn add_pending_tool_call(
+        &mut self,
+        tool_call_id: &str,
+        tool_name: &str,
+        tool_args: &serde_json::Value,
+    ) {
         let idx = self.chat.chat_messages.len();
-        self.chat.chat_messages.push(ChatMessage::ToolCall(ToolCallMessage {
-            variant: ToolCallVariant::Pending {
-                tool_name: tool_name.to_string(),
-                tool_args: tool_args.clone(),
-                output: String::new(),
-                animation_start: Some(Instant::now()),
-                effect_added: false,
-            },
-        }));
-        self.agent.pending_tool_call_ids.insert(tool_call_id.to_string(), idx);
+        self.chat
+            .chat_messages
+            .push(ChatMessage::ToolCall(ToolCallMessage {
+                variant: ToolCallVariant::Pending {
+                    tool_name: tool_name.to_string(),
+                    tool_args: tool_args.clone(),
+                    output: String::new(),
+                    animation_start: Some(Instant::now()),
+                    effect_added: false,
+                },
+            }));
+        self.agent
+            .pending_tool_call_ids
+            .insert(tool_call_id.to_string(), idx);
     }
 
     /// Append streaming output to the last pending tool call message.
@@ -275,9 +311,11 @@ impl App {
             let (tool_name, tool_args) = if idx < self.chat.chat_messages.len() {
                 match &self.chat.chat_messages[idx] {
                     ChatMessage::ToolCall(msg) => match &msg.variant {
-                        ToolCallVariant::Pending { tool_name, tool_args, .. } => {
-                            (tool_name.clone(), Some(tool_args.clone()))
-                        }
+                        ToolCallVariant::Pending {
+                            tool_name,
+                            tool_args,
+                            ..
+                        } => (tool_name.clone(), Some(tool_args.clone())),
                         _ => ("unknown".to_string(), None),
                     },
                     _ => ("unknown".to_string(), None),
@@ -288,7 +326,14 @@ impl App {
             let tool_args_ref = tool_args.as_ref();
             // Replace pending message with result
             self.chat.chat_messages[idx] = ChatMessage::ToolCall(ToolCallMessage {
-                variant: self.build_tool_call_variant(&tool_name, result, has_error, cancelled, tool_args_ref, rtk_original),
+                variant: self.build_tool_call_variant(
+                    &tool_name,
+                    result,
+                    has_error,
+                    cancelled,
+                    tool_args_ref,
+                    rtk_original,
+                ),
             });
         }
     }
@@ -317,17 +362,21 @@ impl App {
 
     /// Add a compaction message.
     pub fn add_compaction_message(&mut self, tokens_saved: u32, message_count: u32) {
-        self.chat.chat_messages.push(ChatMessage::Compaction(CompactionMessage {
-            tokens_saved,
-            message_count,
-        }));
+        self.chat
+            .chat_messages
+            .push(ChatMessage::Compaction(CompactionMessage {
+                tokens_saved,
+                message_count,
+            }));
     }
 
     /// Add a system message to chat.
     pub fn add_system_message(&mut self, content: &str) {
-        self.chat.chat_messages.push(ChatMessage::System(SystemMessage {
-            content: content.to_string(),
-        }));
+        self.chat
+            .chat_messages
+            .push(ChatMessage::System(SystemMessage {
+                content: content.to_string(),
+            }));
     }
 
     /// Show a transient status-bar note that compaction is in progress.
@@ -344,14 +393,22 @@ impl App {
 
     /// Add a thinking block message to chat.
     pub fn add_thinking_message(&mut self) {
-        self.chat.chat_messages.push(ChatMessage::Thinking(ThinkingMessage {
-            reasoning: String::new(),
-        }));
+        self.chat
+            .chat_messages
+            .push(ChatMessage::Thinking(ThinkingMessage {
+                reasoning: String::new(),
+            }));
     }
 
     /// Append reasoning text to the most recent Thinking message.
     pub fn push_reasoning(&mut self, text: &str) {
-        if let Some(ChatMessage::Thinking(msg)) = self.chat.chat_messages.iter_mut().rev().find(|m| matches!(m, ChatMessage::Thinking(_))) {
+        if let Some(ChatMessage::Thinking(msg)) = self
+            .chat
+            .chat_messages
+            .iter_mut()
+            .rev()
+            .find(|m| matches!(m, ChatMessage::Thinking(_)))
+        {
             msg.reasoning.push_str(text);
         }
     }
@@ -364,8 +421,16 @@ impl App {
     /// Mirrors zed's `accumulate_token_usage` pattern.
     pub fn accumulate_token_usage(&mut self, usage: &Usage) {
         let current = RequestTokenUsage {
-            input_tokens: self.session.current_request_usage.input_tokens.max(usage.prompt_tokens),
-            output_tokens: self.session.current_request_usage.output_tokens.max(usage.completion_tokens),
+            input_tokens: self
+                .session
+                .current_request_usage
+                .input_tokens
+                .max(usage.prompt_tokens),
+            output_tokens: self
+                .session
+                .current_request_usage
+                .output_tokens
+                .max(usage.completion_tokens),
             estimated: false,
         };
 
@@ -399,8 +464,10 @@ impl App {
 
     /// Discover entries for @-autocomplete.
     pub fn discover_files(&mut self) {
-        self.editor.discovered_files =
-            super::editor::FileDiscovery::discover_entries(&self.config.cwd, &self.config.config.ui.file_always_visible);
+        self.editor.discovered_files = super::editor::FileDiscovery::discover_entries(
+            &self.config.cwd,
+            &self.config.config.ui.file_always_visible,
+        );
     }
 
     /// Toggle expand/collapse state for all tool call output messages.
@@ -453,8 +520,17 @@ impl App {
 
     /// Fuzzy match entries for autocomplete.
     #[must_use]
-    pub fn fuzzy_match_files(&self, query: &str, show_hidden: bool) -> Vec<super::editor::FileMatch> {
-        super::editor::FileDiscovery::fuzzy_match(&self.editor.discovered_files, query, 100, show_hidden)
+    pub fn fuzzy_match_files(
+        &self,
+        query: &str,
+        show_hidden: bool,
+    ) -> Vec<super::editor::FileMatch> {
+        super::editor::FileDiscovery::fuzzy_match(
+            &self.editor.discovered_files,
+            query,
+            100,
+            show_hidden,
+        )
     }
 
     /// Save current config to disk immediately.
@@ -533,7 +609,8 @@ impl App {
     /// Returns `None` if the index is out of bounds.
     #[must_use]
     pub fn get_history_message(&self, index: usize) -> Option<&str> {
-        self.chat.chat_messages
+        self.chat
+            .chat_messages
             .iter()
             .rev()
             .filter_map(|m| {
@@ -550,7 +627,11 @@ impl App {
     /// Count the number of User messages in the chat.
     #[must_use]
     pub fn history_message_count(&self) -> usize {
-        self.chat.chat_messages.iter().filter(|m| matches!(m, ChatMessage::User(_))).count()
+        self.chat
+            .chat_messages
+            .iter()
+            .filter(|m| matches!(m, ChatMessage::User(_)))
+            .count()
     }
 
     /// Reset history navigation state.

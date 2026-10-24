@@ -3,11 +3,11 @@
 
 use std::collections::HashSet;
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
-use crate::session::CompactionSettings;
 use crate::agent::token_estimation::TokenEstimator;
+use crate::session::CompactionSettings;
 use crate::tui::editor::fuzzy_match_case_insensitive;
 use crate::tui::{AgentEvent, App, AppState};
 
@@ -128,7 +128,9 @@ fn parse_slash_command(input: &str) -> Option<(&'static str, String)> {
         if let Some(score) = fuzzy_match_case_insensitive(name, cmd.id) {
             match best {
                 Some((best_score, _)) if score <= best_score => {}
-                _ => { best = Some((score, cmd.id)); }
+                _ => {
+                    best = Some((score, cmd.id));
+                }
             }
         }
     }
@@ -159,9 +161,7 @@ async fn handle_skill_activation(
         let content = match std::fs::read_to_string(&skill.file_path) {
             Ok(c) => c,
             Err(e) => {
-                app.add_system_message(&format!(
-                    "Could not read skill \"{name}\": {e}"
-                ));
+                app.add_system_message(&format!("Could not read skill \"{name}\": {e}"));
                 app.chat.auto_scroll = true;
                 return Some(false);
             }
@@ -170,7 +170,12 @@ async fn handle_skill_activation(
         let user_input = if user_args.is_empty() {
             format!("Skill: {}\n\n{}", name, content.trim())
         } else {
-            format!("Skill: {}\n\n{}\n\nUser: {}", name, content.trim(), user_args)
+            format!(
+                "Skill: {}\n\n{}\n\nUser: {}",
+                name,
+                content.trim(),
+                user_args
+            )
         };
 
         // Snapshot pre-turn skills before activation so a cancelled
@@ -185,7 +190,15 @@ async fn handle_skill_activation(
         // Delegate to run_turn_with_input
         // Display only the original user input (e.g. "/refine some prompt") in chat.
         // LLM receives the full SKILL.md + prompt.
-        match run_turn_with_input(app, user_input, Some(input.to_string()), pre_turn_skills, terminal).await {
+        match run_turn_with_input(
+            app,
+            user_input,
+            Some(input.to_string()),
+            pre_turn_skills,
+            terminal,
+        )
+        .await
+        {
             Ok(quit) => Some(quit),
             Err(e) => {
                 app.add_system_message(&format!("Skill execution failed: {e}"));
@@ -196,7 +209,9 @@ async fn handle_skill_activation(
     } else {
         // Skill not found — check if it's a palette command instead
         let commands = crate::tui::editor::get_palette_commands();
-        let is_command = commands.iter().any(|c| c.id == name || fuzzy_match_case_insensitive(name, c.id).is_some());
+        let is_command = commands
+            .iter()
+            .any(|c| c.id == name || fuzzy_match_case_insensitive(name, c.id).is_some());
         if is_command {
             None // Let parse_slash_command handle it
         } else {
@@ -256,10 +271,15 @@ pub async fn run_turn_with_input(
     let pre_turn_chat_len = app.chat.chat_messages.len();
 
     // Run UserPromptSubmit hooks (before adding user message). A blocked
-    // hook (exit 2) stops the turn; successful stdout is appended to the
-    // model-bound input.
-    let (prompt_blocked, blocked_error, ups_outputs) =
-        crate::hooks::run_tui_hooks(app, crate::hooks::HookEvent::UserPromptSubmit, Some(input.clone())).await;
+    // hook (exit 2) stops the turn; successful stdout is a side effect and
+    // never reaches the model.
+    let (prompt_blocked, blocked_error, _ups_outputs) = crate::hooks::run_tui_hooks(
+        app,
+        crate::hooks::HookEvent::UserPromptSubmit,
+        Some(input.clone()),
+        None,
+    )
+    .await;
 
     if prompt_blocked {
         app.add_system_message(&format!("Prompt blocked by hook: {blocked_error}"));
@@ -267,10 +287,9 @@ pub async fn run_turn_with_input(
         return Ok(false);
     }
 
-    // Model-bound input: the user's text plus any hook-injected context.
-    // The TUI displays the original `display` text; the model and session
-    // store receive `model_input` (tail-append keeps the prefix stable).
-    let model_input = input.clone() + &crate::hooks::format_hook_context(&ups_outputs);
+    // The model receives exactly the user's text — hook stdout is a side
+    // effect and never reaches the model, so `model_input` is the input itself.
+    let model_input = input.clone();
 
     // Display text: what the user sees in chat and what the editor is
     // restored to on cancel. `None` → the input itself.
@@ -316,7 +335,10 @@ pub async fn run_turn_with_input(
             .system_prompt_tokens(&app.config.cwd, &app.config.skills);
 
         // Use estimate_context_tokens which prefers actual LLM usage data
-        let estimated = app.session.session_store.estimate_context_tokens(system_overhead);
+        let estimated = app
+            .session
+            .session_store
+            .estimate_context_tokens(system_overhead);
         let user_msg_tokens = est.estimate_tokens(&model_input);
         let total_with_input = estimated.saturating_add(user_msg_tokens);
 
@@ -325,7 +347,8 @@ pub async fn run_turn_with_input(
             // vetoes compaction: undo the turn setup and do not launch the
             // agent (mirrors the mid-turn "don't proceed" semantics).
             let (precompact_blocked, precompact_blocked_error, precompact_outputs) =
-                crate::hooks::run_tui_hooks(app, crate::hooks::HookEvent::PreCompact, None).await;
+                crate::hooks::run_tui_hooks(app, crate::hooks::HookEvent::PreCompact, None, None)
+                    .await;
 
             if precompact_blocked {
                 undo_turn_setup(
@@ -369,8 +392,13 @@ pub async fn run_turn_with_input(
             let cwd = app.config.cwd.clone();
             let skills = app.config.skills.clone();
 
+            // Auto compaction (pre-prompt) — the PostCompact hook reports
+            // trigger = "auto".
+            app.compaction_trigger = "auto";
             app.compaction_task = Some(tokio::spawn(async move {
-                engine.compute_compaction(provider, config, entries, cwd, skills, None).await
+                engine
+                    .compute_compaction(provider, config, entries, cwd, skills, None)
+                    .await
             }));
 
             app.pending_turn = Some(PendingTurn {
@@ -501,9 +529,10 @@ pub(crate) fn restart_agent(app: &mut App, user_msg: String) -> RestartedAgent {
     // Save user message to session (session_store stays in app)
     if app.session.session_store.has_active_session() {
         let parent_id = app.session.session_store.last_entry_id();
-        if let Err(e) = app.session.session_store
-            .append_message(parent_id, crate::session::AgentMessage::user(user_msg.clone()))
-        {
+        if let Err(e) = app.session.session_store.append_message(
+            parent_id,
+            crate::session::AgentMessage::user(user_msg.clone()),
+        ) {
             tracing::error!("Failed to save user message: {e}");
         }
     }

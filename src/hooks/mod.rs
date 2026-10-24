@@ -1,8 +1,11 @@
 //! Hooks system — shell scripts that execute at lifecycle points.
 //!
-//! Hooks fire synchronously inside the agent loop, blocking the agent's
-//! execution until the hook completes. They can inject context (exit 0),
-//! block actions (exit 2), or log non-blocking errors (other exit codes).
+//! Hooks are pure side effects plus vetoes: their stdout never reaches the
+//! model, with exactly two exceptions. A *blocked* hook (exit 2) returns its
+//! stderr to the model (as a tool result, a new turn, or a compaction veto),
+//! and the `PreCompact` success path appends its stdout to the compaction
+//! summary. Every other event is fire-and-forget. A blocked action (exit 2)
+//! is a veto; other non-zero exit codes log a non-blocking error.
 //!
 //! Two locations for hooks:
 //! 1. **Skill frontmatter** — YAML `hooks:` block in `SKILL.md`. Skill hooks
@@ -14,14 +17,14 @@
 mod executor;
 mod loader;
 
-#[doc(inline)]
-pub use executor::{execute_hook, HookContext, HookResult};
-#[doc(inline)]
-pub use loader::{
-    load_all_hooks, load_directory_hooks, Hook, HookEvent, HookSource, HookRegistry, ToolMatcher,
-};
 use crate::skills::{Skill, SkillSource};
 use crate::tui::{AgentEvent, App, ChatMessage, HookDisplay};
+#[doc(inline)]
+pub use executor::{HookContext, HookResult, execute_hook};
+#[doc(inline)]
+pub use loader::{
+    Hook, HookEvent, HookRegistry, HookSource, ToolMatcher, load_all_hooks, load_directory_hooks,
+};
 use std::collections::HashSet;
 use std::path::Path;
 use tokio::sync::mpsc;
@@ -117,20 +120,19 @@ pub(crate) fn derive_hook_name(command: &str) -> String {
 /// Used by [`derive_hook_name`] to skip assignments like
 /// `SKILL_DIR="${SKILL_DIR:-/...}";` whose value may contain a path.
 fn is_env_assignment(token: &str) -> bool {
-    token
-        .split_once('=')
-        .is_some_and(|(key, _)| {
-            !key.is_empty()
-                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
+    token.split_once('=').is_some_and(|(key, _)| {
+        !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// Format successful hook stdout into a context-injection suffix.
 ///
 /// Each non-empty `(name, stdout)` pair becomes a visible
-/// `[hook: <name>]` block appended after the host content (user message,
-/// tool result, or compaction summary). Returns an empty string when no
-/// hook produced output, so callers can append unconditionally.
+/// `[hook: <name>]` block appended after the host content. Only the
+/// `PreCompact` success path still uses this (the one model-bound
+/// injection); every other event's stdout is a side effect and never
+/// reaches the model. Returns an empty string when no hook produced
+/// output, so callers can append unconditionally.
 #[must_use]
 pub fn format_hook_context(outputs: &[(String, String)]) -> String {
     let mut suffix = String::new();
@@ -142,18 +144,34 @@ pub fn format_hook_context(outputs: &[(String, String)]) -> String {
     suffix
 }
 
+/// Metadata for the `PostCompact` event, passed to the hook as the
+/// `COMPACT_TRIGGER` and `COMPACT_MESSAGES_REMOVED` environment variables.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CompactInfo {
+    /// How the compaction was triggered: `"manual"` or `"auto"`.
+    pub trigger: &'static str,
+    /// Number of messages removed by the compaction.
+    pub messages_removed: u32,
+}
+
 /// Run all hooks for `event` on the TUI side (app-based call sites).
 ///
 /// Pushes one `ChatMessage::Hook` per executed hook, suppressed when
 /// `hook_display` is `Hidden` (uniform across every call site). A blocking
 /// hook (exit 2) stops the run; its stderr is returned as the error.
 ///
+/// `compact` carries the `PostCompact` metadata (trigger + removed count);
+/// pass `None` for every other event.
+///
 /// Returns `(blocked, blocked_error, outputs)` where `outputs` is the
-/// `(name, stdout)` of each successful hook, in registry order.
+/// `(name, stdout)` of each successful hook, in registry order. Only the
+/// `PreCompact` caller treats `outputs` as model-bound; all other events
+/// are side-effect-only and ignore it.
 pub(crate) async fn run_tui_hooks(
     app: &mut App,
     event: HookEvent,
     prompt: Option<String>,
+    compact: Option<CompactInfo>,
 ) -> (bool, String, Vec<(String, String)>) {
     let mut blocked = false;
     let mut blocked_error = String::new();
@@ -167,17 +185,21 @@ pub(crate) async fn run_tui_hooks(
             tool_input: None,
             tool_result: None,
             prompt: prompt.clone(),
+            compact_trigger: compact.map(|c| c.trigger.to_string()),
+            compact_messages_removed: compact.map(|c| c.messages_removed),
         };
         let result = execute_hook(hook, &context).await;
         if app.config.hook_display != HookDisplay::Hidden {
-            app.chat.chat_messages.push(ChatMessage::Hook(crate::tui::messages::HookMessage {
-                event,
-                hook_name: hook.name.clone(),
-                success: result.success(),
-                stdout: result.stdout.clone(),
-                stderr: result.stderr.clone(),
-                tool_name: None,
-            }));
+            app.chat
+                .chat_messages
+                .push(ChatMessage::Hook(crate::tui::messages::HookMessage {
+                    event,
+                    hook_name: hook.name.clone(),
+                    success: result.success(),
+                    stdout: result.stdout.clone(),
+                    stderr: result.stderr.clone(),
+                    tool_name: None,
+                }));
             app.chat.auto_scroll = true;
         }
         if result.blocked() {
@@ -231,6 +253,8 @@ pub(crate) async fn run_tool_hooks(
             tool_input: Some(tool_input.clone()),
             tool_result: tool_result.cloned(),
             prompt: None,
+            compact_trigger: None,
+            compact_messages_removed: None,
         };
         let result = execute_hook(hook, &context).await;
         let _ = tx

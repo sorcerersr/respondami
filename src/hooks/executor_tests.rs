@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use super::executor::{process_output, MAX_OUTPUT_BYTES};
-use super::{execute_hook, HookContext};
+use super::executor::{MAX_OUTPUT_BYTES, process_output};
+use super::{HookContext, execute_hook};
 use crate::hooks::loader::{Hook, HookEvent, HookSource};
 
 #[tokio::test]
@@ -25,6 +25,8 @@ async fn execute_hook_success() {
         tool_input: Some(serde_json::json!({"command": "ls"})),
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -52,6 +54,8 @@ async fn execute_hook_blocking() {
         tool_input: None,
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -78,6 +82,8 @@ async fn execute_hook_non_blocking_error() {
         tool_input: None,
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -105,6 +111,8 @@ async fn execute_hook_environment_variables() {
         tool_input: None,
         tool_result: None,
         prompt: Some("test prompt".to_string()),
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -132,6 +140,8 @@ async fn execute_hook_timeout() {
         tool_input: None,
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -160,6 +170,8 @@ async fn execute_hook_output_truncation() {
         tool_input: None,
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -186,6 +198,8 @@ async fn execute_hook_skill_env_vars() {
         tool_input: None,
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;
@@ -212,6 +226,8 @@ async fn execute_hook_no_skill_env_vars_for_directory_hook() {
         tool_input: None,
         tool_result: None,
         prompt: None,
+        compact_trigger: None,
+        compact_messages_removed: None,
     };
 
     let result = execute_hook(&hook, &context).await;

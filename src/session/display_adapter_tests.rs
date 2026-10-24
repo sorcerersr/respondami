@@ -1,17 +1,20 @@
 //! Tests for `SessionDisplayAdapter` — hook instruction box reconstruction (M3).
 
-use super::display_adapter::SessionDisplayAdapter;
 use super::SessionEntry;
+use super::display_adapter::SessionDisplayAdapter;
 use crate::session::AgentMessage;
 use crate::tui::messages::ChatMessage;
 
 fn user_entry(content: &str) -> SessionEntry {
-    SessionEntry::new_message(None, AgentMessage::User {
-        content: content.to_string(),
-    })
+    SessionEntry::new_message(
+        None,
+        AgentMessage::User {
+            content: content.to_string(),
+        },
+    )
 }
 
-/// The exact frame shape `agent::format_posttool_block` persists.
+/// The exact frame shape the legacy framer persisted (old sessions only).
 fn framed(name: &str, body: &str) -> String {
     format!("\n\n[Hook instruction — {name}]\n{body}")
 }
@@ -19,7 +22,10 @@ fn framed(name: &str, body: &str) -> String {
 #[test]
 fn single_hook_block_renders_as_hook_box() {
     let adapter = SessionDisplayAdapter::new(false);
-    let entries = vec![user_entry(&framed("guard.sh", "add your entry to progress.md"))];
+    let entries = vec![user_entry(&framed(
+        "guard.sh",
+        "add your entry to progress.md",
+    ))];
 
     let messages = adapter.build_messages(&entries);
 
