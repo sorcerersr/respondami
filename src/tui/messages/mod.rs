@@ -34,11 +34,15 @@ mod user_message;
 mod welcome_screen;
 
 #[cfg(test)]
+mod compaction_message_tests;
+#[cfg(test)]
 mod hook_message_tests;
 #[cfg(test)]
 mod system_message_tests;
 #[cfg(test)]
 mod thinking_message_tests;
+#[cfg(test)]
+mod user_message_tests;
 #[cfg(test)]
 mod welcome_screen_tests;
 
