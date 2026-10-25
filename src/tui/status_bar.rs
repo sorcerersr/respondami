@@ -4,6 +4,8 @@
 //! model name, context window percentage (gradient-colored), and cumulative
 //! token counts. Includes fallback token estimation during streaming.
 
+use std::time::{Duration, Instant};
+
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -17,12 +19,22 @@ use super::theme::Theme;
 use crate::agent::token_estimation::estimate_tokens_from_streamed_text;
 
 /// Git branch detection result.
-enum GitBranch {
+#[derive(Debug, Clone)]
+pub(crate) enum GitBranch {
     /// Successfully detected a branch name.
     Ok(String),
     /// Git command failed (not a repo, permission denied, etc.).
     Error,
 }
+
+/// How long a cached git branch result stays fresh.
+///
+/// One second keeps the status bar fresh enough that branch changes from any
+/// source (agent bash tool, another terminal, external tools) appear within a
+/// second, while capping the worst case at one `git` spawn per second instead
+/// of one per frame. Lower values trade spawn cost for freshness; the spawn
+/// is ~1-5ms, so 1s is far below any perceptible UI cost.
+pub(crate) const GIT_BRANCH_TTL: Duration = Duration::from_secs(1);
 
 /// Detect the current git branch name.
 ///
@@ -46,6 +58,28 @@ fn get_git_branch() -> Option<GitBranch> {
         Ok(_) => Some(GitBranch::Error), // git ran but failed
         Err(_) => None, // git not found
     }
+}
+
+/// Return the current git branch, re-detecting only when the cache is stale.
+///
+/// `cache` holds the last result with the `Instant` it was detected. A fresh
+/// entry (younger than [`GIT_BRANCH_TTL`]) is returned as a clone without
+/// spawning `git`; a missing or stale entry triggers a fresh detection via
+/// [`get_git_branch`] and updates the cache. All three outcomes (`Ok`,
+/// `Error`, `None`) are cached, so non-repo directories stop spawning `git`
+/// after the first second.
+pub(crate) fn git_branch_cached(
+    cache: &mut Option<(Option<GitBranch>, Instant)>,
+) -> Option<GitBranch> {
+    if let Some((branch, at)) = cache
+        && at.elapsed() < GIT_BRANCH_TTL
+    {
+        return branch.clone();
+    }
+    let fresh = get_git_branch();
+    let result = fresh.clone();
+    *cache = Some((fresh, Instant::now()));
+    result
 }
 
 /// Green stop: 0% usage — taken from theme.green.
@@ -235,8 +269,8 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
         theme.accent
     };
 
-    // Detect git branch
-    let git_branch = get_git_branch();
+    // Detect git branch (1s TTL cache; see `git_branch_cached`)
+    let git_branch = git_branch_cached(&mut app.ui.git_branch_cache);
 
     // Activity indicator: animated sweep for working states, static for idle
     let (activity_label, activity_color, is_active) = get_activity(&app.modal.state, theme);
