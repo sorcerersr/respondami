@@ -2,6 +2,8 @@
 
 > **v0.2.0** — privacy-first coding agent. One binary, no telemetry, skills-driven.
 
+Changelog: [CHANGELOG.md](CHANGELOG.md)
+
 Built with [Ratatui] and [Crossterm].
 
 [Ratatui]: https://ratatui.rs
