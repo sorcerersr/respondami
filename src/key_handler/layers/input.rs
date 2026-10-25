@@ -140,21 +140,19 @@ impl InputLayer {
             }
         } else if self.config.enable_at_trigger {
             // Extract show_hidden from current autocomplete mode
-            if let crate::tui::AutocompleteMode::File { matches, show_hidden, .. } = &app.editor.autocomplete_mode {
-                if !matches.is_empty() {
-                    // Update autocomplete matches as user types
-                    use crate::tui::autocomplete::get_query_after_char;
-                    let query = get_query_after_char(&app.editor.input_buffer, '@');
-                    let new_matches = app.fuzzy_match_files(&query, *show_hidden);
-                    app.editor.autocomplete_mode = crate::tui::AutocompleteMode::File {
-                        matches: new_matches,
-                        selected: 0,
-                        scroll_offset: 0,
-                        show_hidden: *show_hidden,
-                    };
-                }
-            } else if let crate::tui::AutocompleteMode::None = app.editor.autocomplete_mode {
-                // No file autocomplete active; do nothing here
+            if let crate::tui::AutocompleteMode::File { matches, show_hidden, .. } = &app.editor.autocomplete_mode
+                && !matches.is_empty()
+            {
+                // Update autocomplete matches as user types
+                use crate::tui::autocomplete::get_query_after_char;
+                let query = get_query_after_char(&app.editor.input_buffer, '@');
+                let new_matches = app.fuzzy_match_files(&query, *show_hidden);
+                app.editor.autocomplete_mode = crate::tui::AutocompleteMode::File {
+                    matches: new_matches,
+                    selected: 0,
+                    scroll_offset: 0,
+                    show_hidden: *show_hidden,
+                };
             }
         }
 

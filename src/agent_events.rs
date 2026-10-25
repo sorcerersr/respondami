@@ -8,14 +8,14 @@
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use std::fmt;
 
-use crate::agent::{build_provider, run_agent_with_snapshot};
+use crate::agent::build_provider;
 use crate::session::{CompactionEngine, CompactionPlan};
-use crate::tui::{AgentEvent, AbortReason, App, AppState, CompactionReason, Theme};
+use crate::tui::{AbortReason, AgentEvent, App, AppState, CompactionReason, Theme};
 
 /// Pending auto-compaction task and associated metadata.
 ///
@@ -31,7 +31,10 @@ impl fmt::Debug for PendingCompaction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PendingCompaction")
             .field("handle", &self.handle.is_finished())
-            .field("retry_user_message", &self.retry_user_message.as_ref().map(String::len))
+            .field(
+                "retry_user_message",
+                &self.retry_user_message.as_ref().map(String::len),
+            )
             .field("reason", &self.reason)
             .finish()
     }
@@ -49,12 +52,16 @@ pub async fn process_agent_events(
     mut cancel_tx: tokio::sync::watch::Sender<bool>,
     mut rx: tokio::sync::mpsc::Receiver<AgentEvent>,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-) -> bool {
+) {
     let mut done = false;
     let theme = Theme::gh_dark();
     // Pending auto-compaction task (spawn-and-poll pattern).
     // When Some, the event loop polls this task instead of blocking on .await.
     let mut pending_compaction: Option<PendingCompaction> = None;
+    // SSE debug capture guard for the current agent task (M1: restart_agent
+    // creates it; held until the event loop ends so the provider can write
+    // captures for every request of the turn).
+    let mut sse_guard: Option<crate::sse_debug::TurnCaptureGuard> = None;
     while !done {
         // Draw the frame
         if crate::event_loop::draw_frame(app, terminal, &theme).is_err() {
@@ -80,67 +87,25 @@ pub async fn process_agent_events(
                     // Restart agent after compaction (overflow recovery or threshold auto-continue).
                     if let Some(user_msg) = retry_user_message {
                         let system_msg = match reason {
-                            CompactionReason::Overflow => "Context overflow recovered. Retrying your message...",
+                            CompactionReason::Overflow => {
+                                "Context overflow recovered. Retrying your message..."
+                            }
                             CompactionReason::Threshold => "Context compacted. Continuing task...",
                         };
                         app.add_system_message(system_msg);
                         app.maybe_auto_scroll();
 
-                        app.start_streaming(&user_msg);
-                        app.agent.tracker.start();
+                        let new_agent = crate::turn::restart_agent(app, user_msg);
+                        sse_guard = new_agent.sse_guard;
 
-                        let (context_messages, agents_md_error) =
-                            crate::agent::build_context_with_system(&app.session.session_store, &app.config.cwd, &app.config.skills);
-
-                        if let Some(err) = agents_md_error {
-                            app.add_system_message(&format!("⚠ Could not load AGENTS.md: {err}"));
-                            app.maybe_auto_scroll();
-                        }
-
-                        // Save user message to session
-                        if app.session.session_store.has_active_session() {
-                            let parent_id = app.session.session_store.last_entry_id();
-                            if let Err(e) = app.session.session_store
-                                .append_message(parent_id, crate::session::AgentMessage::user(user_msg.clone()))
-                            {
-                                tracing::error!("Failed to save user message: {}", e);
-                            }
-                        }
-
-                        let (new_tx, new_rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
-                        let (new_cancel_tx, new_cancel_rx) = tokio::sync::watch::channel(false);
-                        let config = app.config.config.clone();
-                        let cwd = app.config.cwd.clone();
-                        let agent_tool_registry = app.tool_registry.clone();
-                        let rtk_state = app.config.rtk_state.clone();
-                        let hook_registry = app.config.hook_registry.clone();
-                        let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
-                        let skills = app.config.skills.clone();
-                        let history_guard = app.session.history_guard.clone();
-
-                        agent_handle = tokio::spawn(async move {
-                            run_agent_with_snapshot(
-                                context_messages,
-                                user_msg,
-                                config,
-                                cwd,
-                                agent_tool_registry,
-                                hook_registry,
-                                active_skills,
-                                skills,
-                                new_tx,
-                                new_cancel_rx,
-                                rtk_state,
-                                history_guard,
-                            ).await;
-                        });
+                        agent_handle = new_agent.handle;
 
                         // Cancel the old cancel channel
                         let _ = cancel_tx.send(true);
 
                         // Replace channels and continue event loop
-                        rx = new_rx;
-                        cancel_tx = new_cancel_tx;
+                        rx = new_agent.rx;
+                        cancel_tx = new_agent.cancel_tx;
                         // Fall through to continue the loop (don't set done = true)
                     }
                 }
@@ -182,21 +147,42 @@ pub async fn process_agent_events(
                 app.push_reasoning(&text);
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::ToolCallStart { tool_call_id, tool_name, tool_args })) => {
+            Ok(Some(AgentEvent::ToolCallStart {
+                tool_call_id,
+                tool_name,
+                tool_args,
+            })) => {
                 app.modal.state = AppState::ToolExec;
                 app.add_pending_tool_call(&tool_call_id, &tool_name, &tool_args);
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::ToolCallDone { tool_call_id, result, has_error, cancelled, rtk_original })) => {
+            Ok(Some(AgentEvent::ToolCallDone {
+                tool_call_id,
+                result,
+                has_error,
+                cancelled,
+                rtk_original,
+            })) => {
                 app.agent.tracker.pause_timing(); // Exclude tool exec time from streaming time
-                app.update_tool_call_result(&tool_call_id, &result, has_error, cancelled, rtk_original);
+                app.update_tool_call_result(
+                    &tool_call_id,
+                    &result,
+                    has_error,
+                    cancelled,
+                    rtk_original,
+                );
                 app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolOutput(text))) => {
                 app.append_tool_output(&text);
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::RetryStart { attempt, max_attempts, delay_ms, error })) => {
+            Ok(Some(AgentEvent::RetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error,
+            })) => {
                 app.add_system_message(&format!(
                     "Retrying... (attempt {}/{}, {}ms delay) — {}",
                     attempt + 1,
@@ -216,9 +202,14 @@ pub async fn process_agent_events(
             }
             Ok(Some(AgentEvent::Usage(usage))) => {
                 app.accumulate_token_usage(&usage);
-                app.agent.tracker.apply_provider_usage(usage.completion_tokens);
+                app.agent
+                    .tracker
+                    .apply_provider_usage(usage.completion_tokens);
             }
-            Ok(Some(AgentEvent::Compaction { tokens_saved, message_count })) => {
+            Ok(Some(AgentEvent::Compaction {
+                tokens_saved,
+                message_count,
+            })) => {
                 app.add_compaction_message(tokens_saved, message_count);
                 app.maybe_auto_scroll();
             }
@@ -226,8 +217,15 @@ pub async fn process_agent_events(
                 app.add_system_message(&message);
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::CompactionDone { tokens_before, tokens_after, messages_removed })) => {
-                app.add_compaction_message(tokens_before.saturating_sub(tokens_after), messages_removed);
+            Ok(Some(AgentEvent::CompactionDone {
+                tokens_before,
+                tokens_after,
+                messages_removed,
+            })) => {
+                app.add_compaction_message(
+                    tokens_before.saturating_sub(tokens_after),
+                    messages_removed,
+                );
                 app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::CompactionError { message })) => {
@@ -245,94 +243,108 @@ pub async fn process_agent_events(
                     }
                 }
             }
-            Ok(Some(AgentEvent::SaveToolResult { tool_call_id, tool_name, tool_args, result, images })) => {
+            Ok(Some(AgentEvent::SaveToolResult {
+                tool_call_id,
+                tool_name,
+                tool_args,
+                result,
+                images,
+            })) => {
                 if app.session.session_store.has_active_session() {
                     let parent_id = app.session.session_store.last_entry_id();
                     if let Err(e) = app.session.session_store.append_message(
                         parent_id,
-                        crate::session::AgentMessage::tool(tool_call_id, tool_name, tool_args, result, images),
+                        crate::session::AgentMessage::tool(
+                            tool_call_id,
+                            tool_name,
+                            tool_args,
+                            result,
+                            images,
+                        ),
                     ) {
                         tracing::error!("Failed to save tool result: {}", e);
                     }
                 }
             }
-            Ok(Some(AgentEvent::HookMessage { event, hook_name, success, stdout, stderr, tool_name })) => {
+            Ok(Some(AgentEvent::HookMessage {
+                event,
+                hook_name,
+                success,
+                stdout,
+                stderr,
+                tool_name,
+            })) => {
                 // Drop hook messages when display mode is Hidden
                 if app.config.hook_display != crate::tui::HookDisplay::Hidden {
-                    app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(crate::tui::messages::HookMessage {
-                        event,
-                        hook_name,
-                        success,
-                        stdout,
-                        stderr,
-                        tool_name,
-                    }));
+                    app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(
+                        crate::tui::messages::HookMessage {
+                            event,
+                            hook_name,
+                            success,
+                            stdout,
+                            stderr,
+                            tool_name,
+                        },
+                    ));
                     app.maybe_auto_scroll();
                 }
             }
             Ok(Some(AgentEvent::SkillActivation { skill_name })) => {
-                // Update active skills set
-                app.active_skills.insert(skill_name.clone());
+                // Update active skills set; register the skill's frontmatter
+                // hooks only on first activation (activation-scoped firing).
+                if app.active_skills.insert(skill_name.clone())
+                    && let Some(skill) = app.config.skills.iter().find(|s| s.name == skill_name)
+                {
+                    crate::hooks::register_skill_hooks(&mut app.config.hook_registry, skill);
+                }
                 // Persist to session
                 app.session.session_store.add_activated_skill(&skill_name);
                 // Display the skill activation message (only this, no system message)
-                app.chat.chat_messages.push(crate::tui::ChatMessage::SkillActivation(
-                    crate::tui::messages::SkillActivationMessage {
-                        skill_name,
-                    },
-                ));
+                app.chat
+                    .chat_messages
+                    .push(crate::tui::ChatMessage::SkillActivation(
+                        crate::tui::messages::SkillActivationMessage { skill_name },
+                    ));
                 app.maybe_auto_scroll();
             }
-            Ok(Some(AgentEvent::NeedsCompaction { reason, retry_user_message, .. })) => {
+            Ok(Some(AgentEvent::NeedsCompaction {
+                reason,
+                retry_user_message,
+                ..
+            })) => {
                 // Drain remaining events from the channel before compaction
                 app.drain_pending_events(&mut rx);
                 if let Some(snap) = app.agent.tracker.finalize_turn() {
                     app.session.session_store.save_token_rate(snap);
                 }
 
-                // Run PreCompact hooks before compaction
-                let pre_compact_hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::PreCompact);
-                let mut compaction_blocked = false;
-                let mut compaction_blocked_error = String::new();
-
-                for hook in pre_compact_hooks {
-                    let context = crate::hooks::HookContext {
-                        event: crate::hooks::HookEvent::PreCompact,
-                        hook_name: hook.name.clone(),
-                        cwd: app.config.cwd.clone(),
-                        tool_name: None,
-                        tool_input: None,
-                        tool_result: None,
-                        prompt: None,
-                    };
-                    let result = crate::hooks::execute_hook(hook, &context).await;
-
-                    // Send hook message to TUI (respects Hidden mode)
-                    if app.config.hook_display != crate::tui::HookDisplay::Hidden {
-                        app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(crate::tui::messages::HookMessage {
-                            event: crate::hooks::HookEvent::PreCompact,
-                            hook_name: hook.name.clone(),
-                            success: result.success(),
-                            stdout: result.stdout.clone(),
-                            stderr: result.stderr.clone(),
-                            tool_name: None,
-                        }));
-                        app.chat.auto_scroll = true;
-                    }
-
-                    if result.blocked() {
-                        compaction_blocked = true;
-                        compaction_blocked_error = result.stderr.clone();
-                        break;
-                    }
-                }
+                // Run PreCompact hooks before compaction. A blocked hook
+                // (exit 2) stops the turn; successful stdout is appended to
+                // the summary in `handle_compaction_result`.
+                let (compaction_blocked, compaction_blocked_error, precompact_outputs) =
+                    crate::hooks::run_tui_hooks(
+                        app,
+                        crate::hooks::HookEvent::PreCompact,
+                        None,
+                        None,
+                    )
+                    .await;
 
                 if compaction_blocked {
-                    app.add_system_message(&format!("Compaction blocked by hook: {compaction_blocked_error}"));
+                    app.add_system_message(&format!(
+                        "Compaction blocked by hook: {compaction_blocked_error}"
+                    ));
                     app.maybe_auto_scroll();
                     app.modal.state = AppState::Idle;
                     done = true;
                     continue;
+                }
+
+                // Capture PreCompact hook stdout for the summary (applied in
+                // `handle_compaction_result`).
+                let precompact_context = crate::hooks::format_hook_context(&precompact_outputs);
+                if !precompact_context.is_empty() {
+                    app.pending_precompact_context = Some(precompact_context);
                 }
 
                 // Spawn compaction LLM call as a background task (spawn-and-poll pattern).
@@ -342,7 +354,9 @@ pub async fn process_agent_events(
                 let provider = match build_provider(&app.config.config) {
                     Ok(p) => p,
                     Err(e) => {
-                        app.add_system_message(&format!("Compaction failed: Failed to build provider: {e}"));
+                        app.add_system_message(&format!(
+                            "Compaction failed: Failed to build provider: {e}"
+                        ));
                         app.maybe_auto_scroll();
                         app.modal.state = AppState::Idle;
                         done = true;
@@ -355,7 +369,9 @@ pub async fn process_agent_events(
                 let skills = app.config.skills.clone();
 
                 let handle = tokio::spawn(async move {
-                    engine.compute_compaction(provider, config, entries, cwd, skills).await
+                    engine
+                        .compute_compaction(provider, config, entries, cwd, skills, None)
+                        .await
                 });
 
                 pending_compaction = Some(PendingCompaction {
@@ -374,106 +390,34 @@ pub async fn process_agent_events(
                     app.session.session_store.save_token_rate(snap);
                 }
 
-                // Run Stop hooks before finishing
-                let stop_hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::Stop);
-                let mut stop_blocked = false;
-                let mut stop_blocked_error = String::new();
-
-                for hook in stop_hooks {
-                    let context = crate::hooks::HookContext {
-                        event: crate::hooks::HookEvent::Stop,
-                        hook_name: hook.name.clone(),
-                        cwd: app.config.cwd.clone(),
-                        tool_name: None,
-                        tool_input: None,
-                        tool_result: None,
-                        prompt: None,
-                    };
-                    let result = crate::hooks::execute_hook(hook, &context).await;
-
-                    // Send hook message to TUI (respects Hidden mode)
-                    if app.config.hook_display != crate::tui::HookDisplay::Hidden {
-                        app.chat.chat_messages.push(crate::tui::ChatMessage::Hook(crate::tui::messages::HookMessage {
-                            event: crate::hooks::HookEvent::Stop,
-                            hook_name: hook.name.clone(),
-                            success: result.success(),
-                            stdout: result.stdout.clone(),
-                            stderr: result.stderr.clone(),
-                            tool_name: None,
-                        }));
-                        app.chat.auto_scroll = true;
-                    }
-
-                    if result.blocked() {
-                        stop_blocked = true;
-                        stop_blocked_error = result.stderr.clone();
-                        break;
-                    }
-                }
+                // Run Stop hooks before finishing. A blocked hook (exit 2)
+                // restarts the agent with the stderr as its next instruction.
+                let (stop_blocked, stop_blocked_error, _stop_outputs) =
+                    crate::hooks::run_tui_hooks(app, crate::hooks::HookEvent::Stop, None, None)
+                        .await;
 
                 if stop_blocked {
                     // Feed stderr back to the model as its next instruction
-                    app.add_system_message(&format!("Agent blocked from stopping: {stop_blocked_error}"));
+                    app.add_system_message(&format!(
+                        "Agent blocked from stopping: {stop_blocked_error}"
+                    ));
                     app.maybe_auto_scroll();
                     // Restart the agent with the error as a user message
                     let wrapped_error = format!(
                         "Agent was blocked from stopping. Reason: {stop_blocked_error}\n\nContinue your current work.",
                     );
-                    app.start_streaming(&wrapped_error);
-                    app.agent.tracker.start();
 
-                    let (context_messages, agents_md_error) =
-                        crate::agent::build_context_with_system(&app.session.session_store, &app.config.cwd, &app.config.skills);
-                    if let Some(err) = agents_md_error {
-                        app.add_system_message(&format!("⚠ Could not load AGENTS.md: {err}"));
-                        app.maybe_auto_scroll();
-                    }
+                    let new_agent = crate::turn::restart_agent(app, wrapped_error);
+                    sse_guard = new_agent.sse_guard;
 
-                    // Save user message to session
-                    if app.session.session_store.has_active_session() {
-                        let parent_id = app.session.session_store.last_entry_id();
-                        if let Err(e) = app.session.session_store
-                            .append_message(parent_id, crate::session::AgentMessage::user(wrapped_error.clone()))
-                        {
-                            tracing::error!("Failed to save user message: {}", e);
-                        }
-                    }
-
-                    let (new_tx, new_rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
-                    let (new_cancel_tx, new_cancel_rx) = tokio::sync::watch::channel(false);
-                    let config = app.config.config.clone();
-                    let cwd = app.config.cwd.clone();
-                    let agent_tool_registry = app.tool_registry.clone();
-                    let rtk_state = app.config.rtk_state.clone();
-                    let hook_registry = app.config.hook_registry.clone();
-                    let active_skills: Vec<String> = app.active_skills.iter().cloned().collect();
-                    let skills = app.config.skills.clone();
-                    let history_guard = app.session.history_guard.clone();
-
-                    agent_handle = tokio::spawn(async move {
-                        crate::agent::run_agent_with_snapshot(
-                            context_messages,
-                            wrapped_error,
-                            config,
-                            cwd,
-                            agent_tool_registry,
-                            hook_registry,
-                            active_skills,
-                            skills,
-                            new_tx,
-                            new_cancel_rx,
-                            rtk_state,
-                            history_guard,
-                        )
-                        .await;
-                    });
+                    agent_handle = new_agent.handle;
 
                     // Cancel the old cancel channel
                     let _ = cancel_tx.send(true);
 
                     // Replace channels and continue event loop
-                    rx = new_rx;
-                    cancel_tx = new_cancel_tx;
+                    rx = new_agent.rx;
+                    cancel_tx = new_agent.cancel_tx;
                     continue;
                 }
 
@@ -542,31 +486,39 @@ pub async fn process_agent_events(
                             }
                             _ if pending_compaction.is_some()
                                 && ((key.code == crossterm::event::KeyCode::Char('c')
-                                    && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL))
-                                    || key.code == crossterm::event::KeyCode::Esc)
-                                => {
-                                    // Abort the background compaction task
-                                    if let Some(pending) = pending_compaction.take() {
-                                        pending.handle.abort();
-                                    }
-                                    app.add_system_message("Compaction cancelled.");
-                                    app.chat.auto_scroll = true;
-                                    app.modal.state = AppState::Idle;
-                                    done = true;
+                                    && key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL))
+                                    || key.code == crossterm::event::KeyCode::Esc) =>
+                            {
+                                // Abort the background compaction task
+                                if let Some(pending) = pending_compaction.take() {
+                                    pending.handle.abort();
+                                }
+                                app.add_system_message("Compaction cancelled.");
+                                app.chat.auto_scroll = true;
+                                app.modal.state = AppState::Idle;
+                                done = true;
                             }
                             _ if app.is_working()
                                 && ((key.code == crossterm::event::KeyCode::Char('c')
-                                    && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL))
-                                    || key.code == crossterm::event::KeyCode::Esc)
-                                => {
-                                    // Signal cooperative cancellation
-                                    let _ = cancel_tx.send(true);
-                                    app.add_system_message("Cancelling... (press again to force quit)");
-                                    app.chat.auto_scroll = true;
-                                    // Don't set done yet — wait for the agent to finish
-                                    // The Done event will be sent when the agent finishes
+                                    && key
+                                        .modifiers
+                                        .contains(crossterm::event::KeyModifiers::CONTROL))
+                                    || key.code == crossterm::event::KeyCode::Esc) =>
+                            {
+                                // Signal cooperative cancellation
+                                let _ = cancel_tx.send(true);
+                                app.add_system_message("Cancelling... (Ctrl+D to force quit)");
+                                app.chat.auto_scroll = true;
+                                // Don't set done yet — wait for the agent to finish
+                                // The Done event will be sent when the agent finishes
                             }
-                            _ if crate::key_handler::layers::streaming_ui::handle_ui_shortcuts(app, &key).unwrap_or(false) => {
+                            _ if crate::key_handler::layers::streaming_ui::handle_ui_shortcuts(
+                                app, &key,
+                            )
+                            .unwrap_or(false) =>
+                            {
                                 // UI shortcut handled (F1, Ctrl+O, Ctrl+T)
                             }
                             _ => {}
@@ -596,7 +548,9 @@ pub async fn process_agent_events(
     // Await the agent task with a timeout to ensure it's fully cleaned up.
     // This prevents task leaks and ensures all resources are freed.
     let _ = tokio::time::timeout(Duration::from_secs(5), agent_handle).await;
-    false
+    // The SSE capture guard lives until the very end of the turn (the
+    // provider writes captures during every request of the agent task).
+    drop(sse_guard);
 }
 
 /// Calculate the visible height of the chat area in lines.
@@ -605,7 +559,7 @@ pub async fn process_agent_events(
 pub fn get_chat_visible_height(app: &App) -> usize {
     let input_height = crate::tui::layout::LayoutRenderer::input_area_height(app);
     let status_height = 1;
-    app.ui.terminal_height.saturating_sub(input_height + status_height)
+    app.ui
+        .terminal_height
+        .saturating_sub(input_height + status_height)
 }
-
-

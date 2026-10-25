@@ -9,10 +9,13 @@ use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::config::Config;
+use crate::hooks::{Hook, HookEvent, HookSource, ToolMatcher};
 use crate::session::CompactionPlan;
 use crate::skills::{Skill, SkillSource};
-use crate::turn::{rollback_pending_turn, run_turn_with_input, start_turn, PendingTurn};
-use crate::tui::{App, AppState, ChatMessage};
+use crate::tui::{App, AppState, ChatMessage, HookDisplay};
+use crate::turn::{
+    PendingTurn, restart_agent, rollback_pending_turn, run_turn_with_input, start_turn,
+};
 use tempfile::TempDir;
 
 /// Build a terminal that never queries the real terminal size.
@@ -53,6 +56,20 @@ fn deferral_config() -> Config {
     config
 }
 
+/// A directory-style hook that runs a shell command for a given event.
+fn make_hook(event: HookEvent, name: &str, command: &str) -> Hook {
+    Hook {
+        event,
+        name: name.to_string(),
+        command: command.to_string(),
+        script: None,
+        source: HookSource::Project,
+        skill_name: None,
+        skill_dir: None,
+        matcher: ToolMatcher::All,
+    }
+}
+
 // ---- In-progress guards ----
 
 #[tokio::test]
@@ -62,7 +79,9 @@ async fn start_turn_blocked_while_compaction_in_progress() {
     app.editor.input_buffer = "hello world".to_string();
     let mut terminal = make_terminal();
 
-    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+    let quit = start_turn(&mut app, &mut terminal)
+        .await
+        .expect("start_turn");
 
     assert!(!quit);
     // Typed text stays in the editor — one more Enter re-sends once
@@ -85,9 +104,15 @@ async fn run_turn_with_input_blocked_while_compaction_in_progress() {
     let pre_len = app.chat.chat_messages.len();
     let mut terminal = make_terminal();
 
-    let quit = run_turn_with_input(&mut app, "hello".to_string(), None, HashSet::new(), &mut terminal)
-        .await
-        .expect("run_turn_with_input");
+    let quit = run_turn_with_input(
+        &mut app,
+        "hello".to_string(),
+        None,
+        HashSet::new(),
+        &mut terminal,
+    )
+    .await
+    .expect("run_turn_with_input");
 
     assert!(!quit);
     // Nothing added to chat and no turn captured.
@@ -109,9 +134,15 @@ async fn run_turn_defers_to_background_compaction_when_near_threshold() {
     let pre_len = app.chat.chat_messages.len();
     let mut terminal = make_terminal();
 
-    let quit = run_turn_with_input(&mut app, "hello".to_string(), None, HashSet::new(), &mut terminal)
-        .await
-        .expect("run_turn_with_input");
+    let quit = run_turn_with_input(
+        &mut app,
+        "hello".to_string(),
+        None,
+        HashSet::new(),
+        &mut terminal,
+    )
+    .await
+    .expect("run_turn_with_input");
 
     assert!(!quit);
     assert_eq!(app.modal.state, AppState::Compacting);
@@ -166,15 +197,238 @@ async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
     assert_eq!(pending.restore_input, display);
 
     // Chat shows the typed text, not the injected prompt.
-    assert!(app
-        .chat
-        .chat_messages
-        .iter()
-        .any(|m| matches!(m, ChatMessage::User(u) if u.content == display)));
+    assert!(
+        app.chat
+            .chat_messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::User(u) if u.content == display))
+    );
 
     if let Some(task) = app.compaction_task.take() {
         task.abort();
     }
+}
+
+// ---- UserPromptSubmit / PreCompact hook behavior ----
+
+#[tokio::test]
+async fn run_turn_ups_hook_stdout_not_injected_into_model_input() {
+    let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.config.hook_registry.add(make_hook(
+        HookEvent::UserPromptSubmit,
+        "ups.sh",
+        "echo injected-context",
+    ));
+    let mut terminal = make_terminal();
+
+    let quit = run_turn_with_input(
+        &mut app,
+        "hello".to_string(),
+        None,
+        HashSet::new(),
+        &mut terminal,
+    )
+    .await
+    .expect("run_turn_with_input");
+
+    assert!(!quit);
+    let pending = app.pending_turn.take().expect("pending turn captured");
+    // Model A: the UserPromptSubmit hook's stdout is a side effect and never
+    // reaches the model — the model input is exactly the user's text.
+    assert_eq!(pending.input, "hello", "input: {}", pending.input);
+    assert_eq!(pending.restore_input, "hello");
+
+    // The TUI user message stays clean (no hook context).
+    assert!(
+        app.chat
+            .chat_messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::User(u) if u.content == "hello"))
+    );
+
+    if let Some(task) = app.compaction_task.take() {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn run_turn_ups_hook_empty_stdout_not_injected() {
+    let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.config
+        .hook_registry
+        .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "true"));
+    let mut terminal = make_terminal();
+
+    let quit = run_turn_with_input(
+        &mut app,
+        "hello".to_string(),
+        None,
+        HashSet::new(),
+        &mut terminal,
+    )
+    .await
+    .expect("run_turn_with_input");
+
+    assert!(!quit);
+    let pending = app.pending_turn.take().expect("pending turn captured");
+    // No stdout → the model input is exactly the user text.
+    assert_eq!(pending.input, "hello");
+
+    if let Some(task) = app.compaction_task.take() {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn run_turn_precompact_blocked_undoes_turn_setup() {
+    let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.config.hook_registry.add(make_hook(
+        HookEvent::PreCompact,
+        "gate.sh",
+        "echo no; exit 2",
+    ));
+    let pre_len = app.chat.chat_messages.len();
+    let mut terminal = make_terminal();
+
+    let quit = run_turn_with_input(
+        &mut app,
+        "hello".to_string(),
+        None,
+        HashSet::new(),
+        &mut terminal,
+    )
+    .await
+    .expect("run_turn_with_input");
+
+    assert!(!quit);
+    // No compaction and no deferred turn — the turn was vetoed.
+    assert!(app.compaction_task.is_none());
+    assert!(app.pending_turn.is_none());
+    // The turn setup was undone: chat truncated back to pre-turn length plus
+    // the single block note, session discarded, editor restored to the typed
+    // text.
+    assert_eq!(app.chat.chat_messages.len(), pre_len + 1);
+    assert!(!app.session.session_store.has_active_session());
+    assert_eq!(app.editor.input_buffer, "hello");
+    assert_eq!(app.editor.cursor_pos, "hello".len());
+    // The block note is the only surviving message.
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::System(s)) if s.content.contains("Compaction blocked by hook")
+    ));
+}
+
+#[tokio::test]
+async fn run_turn_precompact_stdout_captured_for_summary() {
+    let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.config.hook_registry.add(make_hook(
+        HookEvent::PreCompact,
+        "pc.sh",
+        "echo preserve-me",
+    ));
+    let mut terminal = make_terminal();
+
+    let quit = run_turn_with_input(
+        &mut app,
+        "hello".to_string(),
+        None,
+        HashSet::new(),
+        &mut terminal,
+    )
+    .await
+    .expect("run_turn_with_input");
+
+    assert!(!quit);
+    // Compaction is deferred and the PreCompact stdout is captured for the
+    // summary (applied in `handle_compaction_result`).
+    assert!(app.compaction_task.is_some());
+    assert!(app.pending_turn.is_some());
+    let ctx = app
+        .pending_precompact_context
+        .take()
+        .expect("context captured");
+    assert!(ctx.contains("[hook: pc.sh]"), "ctx: {ctx}");
+    assert!(ctx.contains("preserve-me"), "ctx: {ctx}");
+
+    if let Some(task) = app.compaction_task.take() {
+        task.abort();
+    }
+}
+
+// ---- M1: restart_agent SSE guard ----
+
+#[tokio::test]
+async fn restart_agent_creates_sse_guard_when_enabled() {
+    let tmp = TempDir::new().unwrap();
+    let config = crate::sse_debug::SseDebugConfig::new(tmp.path().to_path_buf());
+    crate::logging::set_sse_debug_for_test(config);
+
+    let mut app = make_app();
+    let agent = restart_agent(&mut app, "hello".to_string());
+
+    // The restart path now carries the SSE capture guard (M1: it was only
+    // on the launch path before the extraction).
+    assert!(
+        agent.sse_guard.is_some(),
+        "SSE guard must be created when capture is enabled"
+    );
+    // Drop the guard to clear the global capture slot for other tests.
+    drop(agent);
+}
+
+// ---- M2: run_tui_hooks Hidden check uniformity ----
+
+#[tokio::test]
+async fn run_tui_hooks_hidden_suppresses_messages() {
+    let mut app = make_app();
+    app.config.hook_display = HookDisplay::Hidden;
+    app.config
+        .hook_registry
+        .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "echo hi"));
+    let pre_len = app.chat.chat_messages.len();
+
+    let (blocked, error, outputs) = crate::hooks::run_tui_hooks(
+        &mut app,
+        HookEvent::UserPromptSubmit,
+        Some("hello".to_string()),
+        None,
+    )
+    .await;
+
+    assert!(!blocked);
+    assert_eq!(error, "");
+    // The hook ran (stdout collected) but no chat message was pushed.
+    assert_eq!(outputs, vec![("ups.sh".to_string(), "hi\n".to_string())]);
+    assert_eq!(
+        app.chat.chat_messages.len(),
+        pre_len,
+        "Hidden mode must suppress hook messages"
+    );
+}
+
+#[tokio::test]
+async fn run_tui_hooks_visible_pushes_messages() {
+    let mut app = make_app();
+    // Default display mode is Minimal (visible).
+    app.config
+        .hook_registry
+        .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "echo hi"));
+    let pre_len = app.chat.chat_messages.len();
+
+    let (blocked, _error, _outputs) = crate::hooks::run_tui_hooks(
+        &mut app,
+        HookEvent::UserPromptSubmit,
+        Some("hello".to_string()),
+        None,
+    )
+    .await;
+
+    assert!(!blocked);
+    assert_eq!(app.chat.chat_messages.len(), pre_len + 1);
+    assert!(matches!(
+        app.chat.chat_messages.last(),
+        Some(ChatMessage::Hook(h)) if h.hook_name == "ups.sh" && h.success
+    ));
 }
 
 // ---- /skillname activation persistence ----
@@ -185,7 +439,11 @@ async fn skill_activation_persists_to_session_header() {
     let skill_dir = tmp.path().join("my-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     let skill_path = skill_dir.join("SKILL.md");
-    std::fs::write(&skill_path, "---\nname: my-skill\ndescription: test\n---\nSkill body.").unwrap();
+    std::fs::write(
+        &skill_path,
+        "---\nname: my-skill\ndescription: test\n---\nSkill body.",
+    )
+    .unwrap();
 
     let mut app = App::new(deferral_config(), PathBuf::from("."));
     app.config.skills = vec![Skill {
@@ -193,6 +451,7 @@ async fn skill_activation_persists_to_session_header() {
         description: "test".to_string(),
         license: None,
         metadata: std::collections::HashMap::new(),
+        hooks: Vec::new(),
         file_path: skill_path,
         base_dir: skill_dir,
         source: SkillSource::Global,
@@ -206,21 +465,49 @@ async fn skill_activation_persists_to_session_header() {
     app.editor.input_buffer = "/my-skill".to_string();
     let mut terminal = make_terminal();
 
-    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+    let quit = start_turn(&mut app, &mut terminal)
+        .await
+        .expect("start_turn");
 
     assert!(!quit);
     assert!(app.active_skills.contains("my-skill"));
-    assert!(app
-        .session
-        .session_store
-        .get_activated_skills()
-        .contains(&"my-skill".to_string()));
+    assert!(
+        app.session
+            .session_store
+            .get_activated_skills()
+            .contains(&"my-skill".to_string())
+    );
 
     // The tiny context window deferred the turn to background compaction;
     // the header-only session makes it a no-op. Abort to stay hermetic.
     if let Some(task) = app.compaction_task.take() {
         task.abort();
     }
+}
+
+// ---- L-6: unknown skill has no command fallback ----
+
+#[tokio::test]
+async fn unknown_skill_returns_not_found() {
+    // `/zzz` fuzzy-matches no command id, so `parse_slash_command` passes it
+    // to `handle_skill_activation`, which must stop the turn with a
+    // not-found system message (no fall-through to `run_turn_with_input`).
+    let mut app = App::new(Config::default(), PathBuf::from("."));
+    app.editor.input_buffer = "/zzz".to_string();
+    let mut terminal = make_terminal();
+
+    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+
+    assert!(!quit);
+    let not_found = app.chat
+        .chat_messages
+        .iter()
+        .any(|m| matches!(m, ChatMessage::System(s) if s.content.contains("not found")));
+    assert!(not_found, "expected a not-found system message");
+    assert!(
+        !app.chat.chat_messages.iter().any(|m| matches!(m, ChatMessage::User(_))),
+        "turn must not fall through to run_turn_with_input"
+    );
 }
 
 // ---- Rollback ----
@@ -237,7 +524,8 @@ fn rollback_pending_turn_restores_pre_turn_state() {
     app.add_system_message("Context approaching limit. Compacting before sending...");
     app.session
         .session_store
-        .create_session("model".to_string(), 32768, ".".to_string()).unwrap();
+        .create_session("model".to_string(), 32768, ".".to_string())
+        .unwrap();
     app.active_skills = HashSet::from(["refine".to_string()]);
     app.editor.input_buffer = "later typing".to_string();
     app.editor.cursor_pos = 0;
@@ -270,7 +558,8 @@ fn rollback_pending_turn_keeps_existing_session_when_not_created_by_turn() {
     // must NOT discard it.
     app.session
         .session_store
-        .create_session("model".to_string(), 32768, ".".to_string()).unwrap();
+        .create_session("model".to_string(), 32768, ".".to_string())
+        .unwrap();
     let session_id = app
         .session
         .session_store
@@ -290,7 +579,10 @@ fn rollback_pending_turn_keeps_existing_session_when_not_created_by_turn() {
     rollback_pending_turn(&mut app);
 
     assert!(app.session.session_store.has_active_session());
-    assert_eq!(app.session.session_store.session_id(), Some(session_id.as_str()));
+    assert_eq!(
+        app.session.session_store.session_id(),
+        Some(session_id.as_str())
+    );
     assert_eq!(app.chat.chat_messages.len(), pre_len);
     assert_eq!(app.editor.input_buffer, "typed question");
 }
@@ -320,7 +612,16 @@ fn pending_turn_derives_debug() {
         pre_turn_skills: HashSet::from(["skill".to_string()]),
     };
     let debug = format!("{pending:?}");
-    for field in ["input", "restore_input", "created_session", "pre_turn_chat_len", "pre_turn_skills"] {
-        assert!(debug.contains(field), "Debug output missing `{field}`: {debug}");
+    for field in [
+        "input",
+        "restore_input",
+        "created_session",
+        "pre_turn_chat_len",
+        "pre_turn_skills",
+    ] {
+        assert!(
+            debug.contains(field),
+            "Debug output missing `{field}`: {debug}"
+        );
     }
 }

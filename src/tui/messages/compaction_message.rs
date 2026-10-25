@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use ratatui_md::HeightAware;
 use crate::tui::theme::Theme;
@@ -25,7 +26,7 @@ impl HeightAware for CompactionMessage {
             return 2;
         }
         let text = format!("▸ Compacted {} messages (saved {} tokens)", self.message_count, self.tokens_saved);
-        text.chars().count().div_ceil(width).max(1) + 1
+        text.width().div_ceil(width).max(1) + 1
     }
 }
 

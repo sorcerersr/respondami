@@ -116,6 +116,24 @@ async fn read_offset_beyond_end() {
     assert!(err.contains("2 lines total"));
 }
 
+#[tokio::test]
+async fn read_offset_zero_on_empty_file_is_beyond_end() {
+    // Regression (L-22): offset=0 used to underflow `o - 1` and panic in
+    // debug builds. It must now be rejected like any out-of-range offset.
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("empty.txt").as_path(), "").unwrap();
+
+    let result = run_read(
+        dir.path(),
+        serde_json::json!({ "path": "empty.txt", "offset": 0 }),
+    )
+    .await;
+
+    assert!(result.is_err(), "offset=0 must be rejected, got: {result:?}");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("beyond end of file"));
+}
+
 // ============ Offset 1-indexed ============
 
 #[tokio::test]

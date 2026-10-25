@@ -1,6 +1,6 @@
 [package]
 name = "ratatui-md"
-version = "0.1.0"
+version = "0.2.0"
 description = "Markdown parsing and rendering for ratatui TUI applications"
 edition = "2024"
 license = "MIT"
@@ -12,3 +12,4 @@ categories = ["command-line-utilities"]
 [dependencies]
 ratatui = "0.30.0"
 pulldown-cmark = "0.13"
+unicode-width = "0.2"

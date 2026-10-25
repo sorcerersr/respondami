@@ -50,24 +50,36 @@ impl MessageDigest {
 ///
 /// `usage` is token bookkeeping only — it is never sent to the LLM — so it
 /// must not influence the digest: a usage drift is not a cache break.
-fn message_wire_value(msg: &AgentMessage) -> serde_json::Value {
-    let mut value = serde_json::to_value(msg).unwrap_or(serde_json::Value::Null);
+///
+/// Returns `Err` if the message fails to serialize; the caller must not fall
+/// back to a constant (that would mask real drift by digesting distinct
+/// unserializable messages identically).
+fn message_wire_value(msg: &AgentMessage) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(msg)?;
     if let serde_json::Value::Object(map) = &mut value
         && map.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
     {
         map.remove("usage");
     }
-    value
+    Ok(value)
 }
 
 /// Compute the digest for one outgoing message.
 ///
 /// The digest is stable for a message: two messages that serialize
-/// identically (ignoring `usage`) produce the same digest.
+/// identically (ignoring `usage`) produce the same digest. A message that
+/// fails to serialize is digested from a raw debug representation (with a
+/// warning) so distinct messages still differ instead of collapsing to a
+/// shared `"null"` digest.
 #[must_use]
 pub fn message_digest(msg: &AgentMessage) -> MessageDigest {
-    let json = message_wire_value(msg).to_string();
-    MessageDigest::from_bytes(json.as_bytes())
+    match message_wire_value(msg) {
+        Ok(value) => MessageDigest::from_bytes(value.to_string().as_bytes()),
+        Err(e) => {
+            tracing::warn!("history guard: failed to serialize message for digest: {e}");
+            MessageDigest::from_bytes(format!("unserializable:{msg:?}").as_bytes())
+        }
+    }
 }
 
 /// A detected prefix divergence between two consecutive outgoing requests.
@@ -109,14 +121,9 @@ impl std::fmt::Display for HistoryViolation {
 }
 
 /// Per-message digests of the most recent outgoing request.
-///
-/// Entries are `Option` so callers can mark ephemeral messages — messages that
-/// exist only in the live context and are never persisted, such as the
-/// synthetic `hook_instruction` assistant/tool pair. Ephemeral entries are
-/// skipped when comparing prefixes, so they cannot false-positive.
 #[derive(Debug, Default)]
 pub struct HistoryGuard {
-    previous: Vec<Option<MessageDigest>>,
+    previous: Vec<MessageDigest>,
 }
 
 impl HistoryGuard {
@@ -129,11 +136,10 @@ impl HistoryGuard {
     /// Check this request's digests against the previous outgoing list.
     ///
     /// Stores `current` as the new baseline, then returns a [`HistoryViolation`]
-    /// when the previous list — with ephemeral entries removed — is not a prefix
-    /// of `current` — with ephemeral entries removed. An identical list is
+    /// when the previous list is not a prefix of `current`. An identical list is
     /// accepted: it is a retry of the same request (transient provider errors
     /// are retried with unchanged context).
-    pub fn check_and_update(&mut self, current: &[Option<MessageDigest>]) -> Option<HistoryViolation> {
+    pub fn check_and_update(&mut self, current: &[MessageDigest]) -> Option<HistoryViolation> {
         let violation = self.violation(current);
         self.previous = current.to_vec();
         violation
@@ -145,46 +151,29 @@ impl HistoryGuard {
         self.previous.clear();
     }
 
-    fn violation(&self, current: &[Option<MessageDigest>]) -> Option<HistoryViolation> {
-        // Two-pointer walk over the raw lists, skipping ephemeral (None)
-        // entries on both sides. The previous projection must be a prefix of
-        // the current projection; pure appends are fine, so the walk stops
-        // early when the previous list is exhausted.
-        let mut prev_idx = 0;
-        let mut curr_idx = 0;
-        loop {
-            while prev_idx < self.previous.len() && self.previous[prev_idx].is_none() {
-                prev_idx += 1;
+    fn violation(&self, current: &[MessageDigest]) -> Option<HistoryViolation> {
+        // The previous projection must be a prefix of the current one; pure
+        // appends are fine, so the walk stops early when the previous list is
+        // exhausted.
+        for (i, (prev_digest, curr_digest)) in self.previous.iter().zip(current.iter()).enumerate() {
+            if prev_digest != curr_digest {
+                return Some(HistoryViolation {
+                    index: i,
+                    shrank: false,
+                    previous: Some(*prev_digest),
+                    current: Some(*curr_digest),
+                });
             }
-            while curr_idx < current.len() && current[curr_idx].is_none() {
-                curr_idx += 1;
-            }
-            match (prev_idx < self.previous.len(), curr_idx < current.len()) {
-                (false, _) => return None, // Previous exhausted — pure append or retry.
-                (true, false) => {
-                    // Current list is shorter: history shrank without a reset.
-                    return Some(HistoryViolation {
-                        index: curr_idx,
-                        shrank: true,
-                        previous: self.previous[prev_idx],
-                        current: None,
-                    });
-                }
-                (true, true) => {
-                    let prev_digest = self.previous[prev_idx].expect("checked non-None above");
-                    let curr_digest = current[curr_idx].expect("checked non-None above");
-                    if prev_digest != curr_digest {
-                        return Some(HistoryViolation {
-                            index: curr_idx,
-                            shrank: false,
-                            previous: Some(prev_digest),
-                            current: Some(curr_digest),
-                        });
-                    }
-                }
-            }
-            prev_idx += 1;
-            curr_idx += 1;
         }
+        if current.len() < self.previous.len() {
+            // Current list is shorter: history shrank without a reset.
+            return Some(HistoryViolation {
+                index: current.len(),
+                shrank: true,
+                previous: Some(self.previous[current.len()]),
+                current: None,
+            });
+        }
+        None
     }
 }

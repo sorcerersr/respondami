@@ -3,8 +3,8 @@
 //! Maps palette command IDs to their handlers: session management (new, compact,
 //! resume), display toggles (thinking, reasoning), model switching, and quit.
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::config::Config;
 use crate::session::SessionStore;
@@ -37,6 +37,13 @@ pub async fn execute_palette_command(
                 app.session.session_store = SessionStore::new(&app.config.cwd);
                 app.chat.chat_messages.clear();
                 app.active_skills.clear();
+                // No skills active — the registry is directory hooks only.
+                app.config.hook_registry = crate::hooks::rebuild_hook_registry(
+                    &app.config.skills,
+                    &app.active_skills,
+                    &Config::config_dir(),
+                    &app.config.cwd,
+                );
                 app.session.reset_for_new_session();
             }
         }
@@ -60,30 +67,7 @@ pub async fn execute_palette_command(
             return Ok(true);
         }
         "compact" => {
-            if app.compaction_task.is_some() {
-                app.notify_compaction_in_progress();
-            } else if app.session.session_store.has_active_session() {
-                // Close command palette, show "Compacting..." message.
-                // Spawn LLM summarization as background task — UI redraws with sweep animation.
-                app.modal.state = AppState::Compacting;
-                app.add_system_message("Compacting session context...");
-                app.chat.auto_scroll = true;
-
-                let entries = app.session.session_store.entries().to_vec();
-                let engine = crate::session::CompactionEngine::from_config(&app.config.config);
-                let provider = crate::agent::build_provider(&app.config.config)?;
-                let config = app.config.config.clone();
-                let cwd = app.config.cwd.clone();
-                let skills = app.config.skills.clone();
-
-                app.compaction_task = Some(tokio::spawn(async move {
-                    engine.compute_compaction(provider, config, entries, cwd, skills).await
-                }));
-                return Ok(false); // Return immediately — main loop redraws with animation
-            } else {
-                app.add_system_message("No active session to compact.");
-                app.chat.auto_scroll = true;
-            }
+            return execute_compact(app, None).await;
         }
         "help" | "h" => {
             app.modal.state = AppState::HelpPopup;
@@ -115,7 +99,8 @@ pub async fn execute_palette_command(
             } else {
                 app.add_user_message(crate::agents_md::GENERATE_CHAT_MESSAGE);
                 let prompt = crate::agents_md::GENERATE_PROMPT.to_string();
-                return run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal).await;
+                return run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal)
+                    .await;
             }
         }
         // Toggle commands — act directly and persist
@@ -133,7 +118,14 @@ pub async fn execute_palette_command(
             app.save_config()?;
         }
         "reload_hooks" => {
-            app.config.hook_registry = crate::hooks::load_all_hooks(&Config::config_dir(), &app.config.cwd);
+            // Rebuild from directory hooks plus the currently active skills so
+            // skill hooks survive a reload (activation-scoped firing).
+            app.config.hook_registry = crate::hooks::rebuild_hook_registry(
+                &app.config.skills,
+                &app.active_skills,
+                &Config::config_dir(),
+                &app.config.cwd,
+            );
             app.add_system_message(&format!(
                 "Hooks reloaded: {} active",
                 app.config.hook_registry.total_count()
@@ -143,7 +135,7 @@ pub async fn execute_palette_command(
         "token_stats" => {
             let cwd = app.config.cwd.clone();
             app.token_stats_task = Some(tokio::task::spawn_blocking(move || {
-                super::tui::token_stats::compute_project_stats(&cwd).unwrap_or_default()
+                super::tui::token_stats::compute_project_stats(&cwd)
             }));
             app.modal.state = AppState::TokenStatsDialog;
         }
@@ -155,6 +147,48 @@ pub async fn execute_palette_command(
     Ok(false)
 }
 
+/// Execute a manual compaction with an optional `keep` (number of user turns
+/// to keep). `None` uses the strategy's default (smart-keep for VCC, ignored
+/// by LLM). `Some(0)` compacts everything. Spawns the task in the background
+/// and returns immediately so the main loop can redraw with the sweep animation.
+///
+/// # Errors
+///
+/// - Provider build errors.
+pub async fn execute_compact(app: &mut App, keep: Option<usize>) -> anyhow::Result<bool> {
+    if app.compaction_task.is_some() {
+        app.notify_compaction_in_progress();
+        return Ok(false);
+    }
+    if !app.session.session_store.has_active_session() {
+        app.add_system_message("No active session to compact.");
+        app.chat.auto_scroll = true;
+        return Ok(false);
+    }
+
+    // Close the prompt/palette, show "Compacting..." message, and spawn the
+    // strategy's compute task in the background.
+    app.modal.state = AppState::Compacting;
+    app.add_system_message("Compacting session context...");
+    app.chat.auto_scroll = true;
+
+    let entries = app.session.session_store.entries().to_vec();
+    let engine = crate::session::CompactionEngine::from_config(&app.config.config);
+    let provider = crate::agent::build_provider(&app.config.config)?;
+    let config = app.config.config.clone();
+    let cwd = app.config.cwd.clone();
+    let skills = app.config.skills.clone();
+
+    // Manual compaction — the PostCompact hook reports trigger = "manual".
+    app.compaction_trigger = "manual";
+    app.compaction_task = Some(tokio::spawn(async move {
+        engine
+            .compute_compaction(provider, config, entries, cwd, skills, keep)
+            .await
+    }));
+    Ok(false)
+}
+
 /// Get the description for a palette command, including dynamic state info for toggles.
 ///
 /// For toggle commands, appends `[current → next]` to the description.
@@ -162,15 +196,29 @@ pub async fn execute_palette_command(
 pub fn get_palette_command_description(id: &str, app: &App) -> String {
     match id {
         "toggle_thinking" => {
-            format!("Toggle thinking display {}", app.config.thinking_display.palette_mode_display())
+            format!(
+                "Toggle thinking display {}",
+                app.config.thinking_display.palette_mode_display()
+            )
         }
         "toggle_tool_output" => {
-            let current = if app.config.tool_output_expanded { "expanded" } else { "collapsed" };
-            let next = if app.config.tool_output_expanded { "collapsed" } else { "expanded" };
+            let current = if app.config.tool_output_expanded {
+                "expanded"
+            } else {
+                "collapsed"
+            };
+            let next = if app.config.tool_output_expanded {
+                "collapsed"
+            } else {
+                "expanded"
+            };
             format!("Toggle tool output [{current} → {next}]")
         }
         "toggle_hook_mode" => {
-            format!("Toggle hook display {}", app.config.hook_display.palette_mode_display())
+            format!(
+                "Toggle hook display {}",
+                app.config.hook_display.palette_mode_display()
+            )
         }
         _ => {
             // Static description from PaletteCommand
@@ -182,4 +230,3 @@ pub fn get_palette_command_description(id: &str, app: &App) -> String {
         }
     }
 }
-

@@ -19,7 +19,11 @@ mod session_select;
 mod command_palette;
 mod help_popup;
 mod token_stats;
+mod compact_keep_prompt;
 pub mod layers;
+
+#[cfg(test)]
+mod command_palette_tests;
 
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
@@ -63,6 +67,7 @@ pub enum StateHandler {
     CommandPalette,
     HelpPopup,
     TokenStats,
+    CompactKeepPrompt,
 }
 
 impl StateHandler {
@@ -85,6 +90,9 @@ impl StateHandler {
             StateHandler::CommandPalette => command_palette::CommandPaletteHandler.handle(app, key, terminal).await,
             StateHandler::HelpPopup => help_popup::HelpPopupHandler.handle(app, key, terminal).await,
             StateHandler::TokenStats => token_stats::TokenStatsHandler.handle(app, key, terminal).await,
+            StateHandler::CompactKeepPrompt => {
+                compact_keep_prompt::CompactKeepPromptHandler.handle(app, key, terminal).await
+            }
         }
     }
 }

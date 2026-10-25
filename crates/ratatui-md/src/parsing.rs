@@ -94,11 +94,6 @@ impl<'a> MarkdownRenderer<'a> {
         let mut list_stack: Vec<ListContext> = Vec::new();
         let mut in_list = false;
 
-        // Task list state
-        let mut in_task_list = false;
-        let mut task_items: Vec<TaskListItem> = Vec::new();
-        let mut task_checked: bool = false;
-
         // Helper: flush current spans to current_lines
         let flush_spans = |spans: &mut Vec<Span<'static>>, lines: &mut Vec<Line<'static>>| {
             if !spans.is_empty() {
@@ -205,7 +200,13 @@ impl<'a> MarkdownRenderer<'a> {
                                 in_list = false;
                                 continue;
                             }
-                            if is_ordered {
+                            if items.iter().any(Self::item_is_task) {
+                                // Any item carries a checkbox → whole list is a task list
+                                // (unmarked items render as unchecked, GitHub-style).
+                                blocks.push(ContentBlock::TaskList {
+                                    items: Self::to_task_items(&items),
+                                });
+                            } else if is_ordered {
                                 blocks.push(ContentBlock::List {
                                     ordered: true,
                                     start: ctx.start,
@@ -234,6 +235,7 @@ impl<'a> MarkdownRenderer<'a> {
                         ctx.items.push(ListItem {
                             text: Text::from(Vec::new()),
                             children: Vec::new(),
+                            checked: None,
                         });
                     }
                 }
@@ -252,13 +254,9 @@ impl<'a> MarkdownRenderer<'a> {
 
                 // ─── Task list markers ───
                 Event::TaskListMarker(checked) => {
-                    task_checked = checked;
-                    if !in_task_list {
-                        // Switch to task list mode
-                        flush_spans(&mut current_spans, &mut current_lines);
-                        flush_paragraph(&mut blocks, &mut current_lines, false, 0, self.theme);
-                        in_task_list = true;
-                        task_items.clear();
+                    // Mark the current item of the innermost list as a task item.
+                    if let Some(last_item) = list_stack.last_mut().and_then(|ctx| ctx.items.last_mut()) {
+                        last_item.checked = Some(checked);
                     }
                 }
 
@@ -351,14 +349,6 @@ impl<'a> MarkdownRenderer<'a> {
                     if in_list {
                         // Inside a list item — text goes to the item, not a separate block
                         // (flushed on End(Item))
-                    } else if in_task_list {
-                        // Task list item text
-                        flush_spans(&mut current_spans, &mut current_lines);
-                        let text = Text::from(std::mem::take(&mut current_lines));
-                        task_items.push(TaskListItem {
-                            checked: task_checked,
-                            text,
-                        });
                     } else if in_block_quote {
                         // Inside a block quote — text stays in current_lines
                         // for End(BlockQuote) to collect into a BlockQuote block
@@ -427,16 +417,29 @@ impl<'a> MarkdownRenderer<'a> {
 
         // Flush any remaining state
         flush_spans(&mut current_spans, &mut current_lines);
-        if !current_lines.is_empty() && !in_list && !in_task_list {
+        if !current_lines.is_empty() && !in_list {
             flush_paragraph(&mut blocks, &mut current_lines, false, 0, self.theme);
-        }
-        if in_task_list && !task_items.is_empty() {
-            blocks.push(ContentBlock::TaskList {
-                items: std::mem::take(&mut task_items),
-            });
         }
 
         blocks
+    }
+
+    /// True if the item or any descendant carries a task-list checkbox.
+    fn item_is_task(item: &ListItem) -> bool {
+        item.checked.is_some() || item.children.iter().any(Self::item_is_task)
+    }
+
+    /// Flatten a (possibly nested) list into task items; unmarked items are unchecked.
+    fn to_task_items(items: &[ListItem]) -> Vec<TaskListItem> {
+        let mut out = Vec::new();
+        for item in items {
+            out.push(TaskListItem {
+                checked: item.checked.unwrap_or(false),
+                text: item.text.clone(),
+            });
+            out.extend(Self::to_task_items(&item.children));
+        }
+        out
     }
 }
 
@@ -819,5 +822,63 @@ mod tests {
         let input = "•item";
         let out = MarkdownRenderer::normalize_list_markers(input);
         assert_eq!(out, "- item");
+    }
+
+    // ─── Task lists (M-6) ───
+
+    #[test]
+    fn task_list_repro_following_paragraph_not_absorbed() {
+        // M-6 repro: the review's exact input. Old code produced a plain
+        // List + a bogus TaskList containing the following paragraph.
+        let blocks = render("- [ ] task one\n- [x] task two\n\nA paragraph after the list.");
+        let types: Vec<_> = blocks.iter().map(block_type).collect();
+        assert_eq!(types, vec!["TaskList", "Paragraph"], "got {types:?}");
+
+        if let ContentBlock::TaskList { items } = &blocks[0] {
+            assert_eq!(items.len(), 2);
+            assert!(!items[0].checked, "task one should be unchecked");
+            assert!(items[1].checked, "task two should be checked");
+            assert_eq!(text_str(&items[0].text), "task one");
+            assert_eq!(text_str(&items[1].text), "task two");
+        } else {
+            panic!("Expected TaskList, got {:?}", block_type(&blocks[0]));
+        }
+
+        if let ContentBlock::Paragraph { text } = &blocks[1] {
+            assert_eq!(text_str(text), "A paragraph after the list.");
+        } else {
+            panic!("Expected Paragraph, got {:?}", block_type(&blocks[1]));
+        }
+    }
+
+    #[test]
+    fn plain_list_not_task_list() {
+        // A list without any checkbox markers stays a plain List.
+        let blocks = render("- item one\n- item two");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(block_type(&blocks[0]), "List");
+        if let ContentBlock::List { items, .. } = &blocks[0] {
+            assert_eq!(items.len(), 2);
+            assert!(items.iter().all(|i| i.checked.is_none()));
+        } else {
+            panic!("Expected List");
+        }
+    }
+
+    #[test]
+    fn mixed_list_whole_list_is_task_list() {
+        // GitHub-style: any checkbox marker makes the whole list a task list;
+        // unmarked items render as unchecked.
+        let blocks = render("- [x] done\n- plain item");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(block_type(&blocks[0]), "TaskList");
+        if let ContentBlock::TaskList { items } = &blocks[0] {
+            assert_eq!(items.len(), 2);
+            assert!(items[0].checked);
+            assert!(!items[1].checked, "unmarked item should be unchecked");
+            assert_eq!(text_str(&items[1].text), "plain item");
+        } else {
+            panic!("Expected TaskList");
+        }
     }
 }

@@ -17,28 +17,32 @@ fn temp_dir() -> PathBuf {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn returns_none_when_no_sessions_dir() {
+fn returns_empty_when_no_sessions_dir() {
     let dir = temp_dir();
     let result = compute_project_stats(&dir);
-    assert!(result.is_none());
+    // No sessions dir is an empty result, not an error.
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().session_count, 0);
 }
 
 #[test]
-fn returns_none_when_empty_sessions_dir() {
+fn returns_empty_when_empty_sessions_dir() {
     let dir = temp_dir();
     fs::create_dir_all(dir.join(".respondami").join("sessions")).unwrap();
     let result = compute_project_stats(&dir);
-    assert!(result.is_none());
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().session_count, 0);
 }
 
 #[test]
-fn returns_none_when_no_jsonl_files() {
+fn returns_empty_when_no_jsonl_files() {
     let dir = temp_dir();
     let sessions_dir = dir.join(".respondami").join("sessions");
     fs::create_dir_all(&sessions_dir).unwrap();
     fs::write(sessions_dir.join("notes.txt"), "not a session").unwrap();
     let result = compute_project_stats(&dir);
-    assert!(result.is_none());
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().session_count, 0);
 }
 
 #[test]

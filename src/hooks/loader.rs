@@ -6,13 +6,15 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
 
-/// The five hook events.
+/// The six hook events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookEvent {
     UserPromptSubmit,
@@ -20,6 +22,7 @@ pub enum HookEvent {
     PostToolUse,
     Stop,
     PreCompact,
+    PostCompact,
 }
 
 impl std::fmt::Display for HookEvent {
@@ -30,6 +33,7 @@ impl std::fmt::Display for HookEvent {
             HookEvent::PostToolUse => write!(f, "PostToolUse"),
             HookEvent::Stop => write!(f, "Stop"),
             HookEvent::PreCompact => write!(f, "PreCompact"),
+            HookEvent::PostCompact => write!(f, "PostCompact"),
         }
     }
 }
@@ -44,6 +48,7 @@ impl HookEvent {
             HookEvent::PostToolUse => "PostToolUse",
             HookEvent::Stop => "Stop",
             HookEvent::PreCompact => "PreCompact",
+            HookEvent::PostCompact => "PostCompact",
         }
     }
 
@@ -56,7 +61,25 @@ impl HookEvent {
             HookEvent::PostToolUse,
             HookEvent::Stop,
             HookEvent::PreCompact,
+            HookEvent::PostCompact,
         ]
+    }
+
+    /// Parse an event name (e.g. from skill frontmatter) into a `HookEvent`.
+    ///
+    /// Returns `None` for unknown names — callers should warn and skip the
+    /// entry rather than fail the whole load.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "UserPromptSubmit" => Some(Self::UserPromptSubmit),
+            "PreToolUse" => Some(Self::PreToolUse),
+            "PostToolUse" => Some(Self::PostToolUse),
+            "Stop" => Some(Self::Stop),
+            "PreCompact" => Some(Self::PreCompact),
+            "PostCompact" => Some(Self::PostCompact),
+            _ => None,
+        }
     }
 }
 
@@ -78,17 +101,54 @@ impl std::fmt::Display for HookSource {
     }
 }
 
+/// Tool-name matcher for skill hooks (`PreToolUse`/`PostToolUse` only).
+///
+/// A non-matching tool skips the hook entirely (no shell spawn, no TUI
+/// entry). Directory-based hooks always use [`ToolMatcher::All`].
+#[derive(Debug, Clone)]
+pub enum ToolMatcher {
+    /// No matcher (or `*`/empty) — fires for every tool.
+    All,
+    /// The matcher regex failed to compile at registration — never fires.
+    /// Safer than firing for the wrong tools.
+    Never,
+    /// Compiled case-insensitive regex over the tool name.
+    Match(Regex),
+}
+
+impl ToolMatcher {
+    /// Returns `true` if the hook should fire for the given tool name.
+    #[must_use]
+    pub fn matches(&self, tool_name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Never => false,
+            Self::Match(re) => re.is_match(tool_name),
+        }
+    }
+}
+
 /// A hook definition.
 #[derive(Debug, Clone)]
 pub struct Hook {
     /// The event this hook fires on.
     pub event: HookEvent,
-    /// The hook name (script filename).
+    /// The hook name (script filename; skill hooks are tagged `<skill>:<name>`).
     pub name: String,
-    /// The shell command to execute.
+    /// The shell command to execute (config/skill hooks; `bash -c` form).
     pub command: String,
+    /// Script path to spawn directly as `bash <script>` without a shell
+    /// (directory hooks only). The path is passed as a single argument, so
+    /// it may contain spaces or quotes without breaking the spawn.
+    pub script: Option<PathBuf>,
     /// Where this hook was loaded from.
     pub source: HookSource,
+    /// Name of the skill defining this hook (skill hooks only).
+    pub skill_name: Option<String>,
+    /// Directory containing the skill's `SKILL.md` (skill hooks only).
+    pub skill_dir: Option<PathBuf>,
+    /// Tool-name filter (skill hooks only; `All` for directory hooks).
+    pub matcher: ToolMatcher,
 }
 
 /// Registry of all active hooks, indexed by event.
@@ -110,7 +170,10 @@ impl HookRegistry {
     /// Get hooks for a given event.
     #[must_use]
     pub fn hooks(&self, event: HookEvent) -> &[Hook] {
-        self.hooks.get(&event).map(std::vec::Vec::as_slice).unwrap_or(&[])
+        self.hooks
+            .get(&event)
+            .map(std::vec::Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Add a hook to the registry.
@@ -197,7 +260,11 @@ pub fn load_directory_hooks(base_dir: &Path, source: HookSource) -> Vec<Hook> {
                 event: *event,
                 name: name.clone(),
                 command: format!("bash {}", path.display()),
+                script: Some(path),
                 source: source.clone(),
+                skill_name: None,
+                skill_dir: None,
+                matcher: ToolMatcher::All,
             });
         }
     }

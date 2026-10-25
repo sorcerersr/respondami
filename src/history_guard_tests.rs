@@ -38,8 +38,8 @@ fn tool_result(id: &str, result: &str) -> AgentMessage {
     AgentMessage::tool(id.to_string(), "read".to_string(), serde_json::json!({}), result.to_string(), Vec::new())
 }
 
-fn digests(msgs: &[AgentMessage]) -> Vec<Option<MessageDigest>> {
-    msgs.iter().map(|m| Some(message_digest(m))).collect()
+fn digests(msgs: &[AgentMessage]) -> Vec<MessageDigest> {
+    msgs.iter().map(message_digest).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -127,8 +127,8 @@ fn guard_pure_append_is_ok() {
 
     // Next request appends more — same prefix, so no violation.
     let mut req2 = req1.clone();
-    req2.push(Some(message_digest(&assistant_with("a2", false))));
-    req2.push(Some(message_digest(&user("q2"))));
+    req2.push(message_digest(&assistant_with("a2", false)));
+    req2.push(message_digest(&user("q2")));
     assert!(guard.check_and_update(&req2).is_none());
 }
 
@@ -198,70 +198,6 @@ fn guard_reset_clears_baseline() {
 }
 
 // ---------------------------------------------------------------------------
-// Ephemeral (None) entries
-// ---------------------------------------------------------------------------
-
-#[test]
-fn guard_ephemeral_entries_are_skipped() {
-    let mut guard = HistoryGuard::new();
-    // Previous: a persisted message, then an ephemeral hook pair.
-    let persisted = Some(message_digest(&user("q1")));
-    let ephemeral1 = None;
-    let ephemeral2 = None;
-    let prev: Vec<Option<MessageDigest>> = vec![persisted, ephemeral1, ephemeral2];
-    assert!(guard.check_and_update(&prev).is_none());
-
-    // Current: same persisted message, new ephemeral content in between,
-    // plus a fresh persisted append. Ephemeral entries must be ignored, so
-    // no violation.
-    let current: Vec<Option<MessageDigest>> = vec![
-        persisted,
-        None, // different ephemeral, still skipped
-        Some(message_digest(&user("q2"))),
-    ];
-    assert!(
-        guard.check_and_update(&current).is_none(),
-        "ephemeral (None) entries must not cause false positives"
-    );
-}
-
-#[test]
-fn guard_ephemeral_replacement_is_not_a_violation() {
-    // The synthetic hook_instruction pair is appended live-only and never
-    // persisted. Two consecutive turns that both end in a hook pair must not
-    // warn even though the hook content differs.
-    let mut guard = HistoryGuard::new();
-    let base = Some(message_digest(&assistant_with("a1", false)));
-    let hook_turn_1: Vec<Option<MessageDigest>> = vec![base, None, None];
-    assert!(guard.check_and_update(&hook_turn_1).is_none());
-
-    let hook_turn_2: Vec<Option<MessageDigest>> = vec![base, None, None];
-    assert!(guard.check_and_update(&hook_turn_2).is_none());
-}
-
-#[test]
-fn guard_divergence_among_persisted_still_detected_with_ephemeral_present() {
-    let mut guard = HistoryGuard::new();
-    let req1: Vec<Option<MessageDigest>> = vec![
-        Some(message_digest(&user("q1"))),
-        None,
-        Some(message_digest(&assistant_with("a1", false))),
-    ];
-    assert!(guard.check_and_update(&req1).is_none());
-
-    // The persisted assistant message changed (the real bug) — must still be
-    // reported even with ephemeral entries around it.
-    let req2: Vec<Option<MessageDigest>> = vec![
-        Some(message_digest(&user("q1"))),
-        None,
-        Some(message_digest(&assistant_with("a1-CHANGED", false))),
-    ];
-    let v = guard.check_and_update(&req2).unwrap();
-    assert!(!v.shrank);
-    assert_eq!(v.index, 2, "reported at the raw index of the changed message");
-}
-
-// ---------------------------------------------------------------------------
 // Simulated live-vs-resume scenario (the reported C_N/C_N+1 case)
 // ---------------------------------------------------------------------------
 
@@ -269,11 +205,11 @@ fn guard_divergence_among_persisted_still_detected_with_ephemeral_present() {
 fn guard_live_vs_resume_divergence() {
     // Live context builds a reduced assistant message for a tool turn:
     //   [system, user, assistant(tool-only)]
-    let live: Vec<Option<MessageDigest>> = vec![
-        Some(message_digest(&system("sys"))),
-        Some(message_digest(&user("q1"))),
+    let live: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
         // Reduced: just the tool call, no text/thinking.
-        Some(message_digest(&AgentMessage::assistant_with_blocks(
+        message_digest(&AgentMessage::assistant_with_blocks(
             vec![ContentBlock::ToolCall {
                 tool_call: ToolCall {
                     id: "t1".to_string(),
@@ -282,8 +218,8 @@ fn guard_live_vs_resume_divergence() {
                 },
             }],
             None,
-        ))),
-        Some(message_digest(&tool_result("t1", "file contents"))),
+        )),
+        message_digest(&tool_result("t1", "file contents")),
     ];
     let mut guard = HistoryGuard::new();
     assert!(guard.check_and_update(&live).is_none());
@@ -292,10 +228,10 @@ fn guard_live_vs_resume_divergence() {
     // where the assistant message is the FULL form (text + thinking + tool
     // call). The prefix at the assistant position no longer matches → the
     // reported red cell.
-    let resumed: Vec<Option<MessageDigest>> = vec![
-        Some(message_digest(&system("sys"))),
-        Some(message_digest(&user("q1"))),
-        Some(message_digest(&AgentMessage::assistant_with_blocks(
+    let resumed: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
+        message_digest(&AgentMessage::assistant_with_blocks(
             vec![
                 ContentBlock::Thinking { thinking: "thinking...".to_string() },
                 ContentBlock::Text { text: "reading the file".to_string() },
@@ -312,8 +248,8 @@ fn guard_live_vs_resume_divergence() {
                 completion_tokens: 20,
                 total_tokens: 120,
             }),
-        ))),
-        Some(message_digest(&tool_result("t1", "file contents"))),
+        )),
+        message_digest(&tool_result("t1", "file contents")),
     ];
     let v = guard.check_and_update(&resumed).unwrap();
     assert_eq!(v.index, 2, "divergence at the assistant message position");
@@ -363,17 +299,90 @@ fn guard_canonical_shape_is_silent() {
     assert_eq!(message_digest(&canonical_assistant), message_digest(&same));
 
     let mut guard = HistoryGuard::new();
-    let first: Vec<Option<MessageDigest>> = vec![
-        Some(message_digest(&system("sys"))),
-        Some(message_digest(&user("q1"))),
-        Some(message_digest(&canonical_assistant)),
+    let first: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
+        message_digest(&canonical_assistant),
     ];
     assert!(guard.check_and_update(&first).is_none());
-    let second: Vec<Option<MessageDigest>> = vec![
-        Some(message_digest(&system("sys"))),
-        Some(message_digest(&user("q1"))),
-        Some(message_digest(&same)),
-        Some(message_digest(&tool_result("t1", "file contents"))),
+    let second: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
+        message_digest(&same),
+        message_digest(&tool_result("t1", "file contents")),
     ];
     assert!(guard.check_and_update(&second).is_none(), "byte-identical prefix must be silent");
+}
+
+// ---- Skill-hook context injection (G2) ----
+
+/// Skill-hook injections (`UserPromptSubmit` → user message, `PreToolUse` → tool
+/// result) are persisted consistently: the model-bound form is what is both
+/// sent and saved, so the guard must stay silent across consecutive requests.
+#[test]
+fn guard_hook_injected_prefix_is_stable() {
+    // The model-bound forms: hook stdout appended before send and save.
+    let injected_user = user("hello\n\n[hook: ups.sh]\ninjected-context");
+    let injected_tool = tool_result("t1", "file written\n\n[hook: planning:inject-plan.sh]\nkeep the plan");
+
+    // Simulate JSONL persistence + context rebuild: the rebuilt messages must
+    // be byte-identical on the wire, so digests match.
+    let rebuilt_user: AgentMessage =
+        serde_json::from_value(serde_json::to_value(&injected_user).unwrap()).unwrap();
+    let rebuilt_tool: AgentMessage =
+        serde_json::from_value(serde_json::to_value(&injected_tool).unwrap()).unwrap();
+    assert_eq!(
+        message_digest(&rebuilt_user),
+        message_digest(&injected_user),
+        "persisted user message must digest identically"
+    );
+    assert_eq!(
+        message_digest(&rebuilt_tool),
+        message_digest(&injected_tool),
+        "persisted tool result must digest identically"
+    );
+
+    let mut guard = HistoryGuard::new();
+    // Request 1: system + hook-injected user message.
+    let req1: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&injected_user),
+    ];
+    assert!(guard.check_and_update(&req1).is_none());
+    // Request 2: rebuilt prefix + assistant + hook-injected tool result.
+    let req2: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&rebuilt_user),
+        message_digest(&assistant_with("a1", false)),
+        message_digest(&rebuilt_tool),
+    ];
+    assert!(
+        guard.check_and_update(&req2).is_none(),
+        "hook-injected, consistently persisted prefix must be silent"
+    );
+}
+
+/// The counter-case: if the live context carried the clean user message while
+/// the session stored the hook-injected one (or vice versa), the guard must
+/// flag the drift — proving the previous test exercises the invariant.
+#[test]
+fn guard_detects_hook_injection_divergence() {
+    let clean_user = user("hello");
+    let injected_user = user("hello\n\n[hook: ups.sh]\ninjected-context");
+
+    let mut guard = HistoryGuard::new();
+    let req1: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&injected_user),
+    ];
+    assert!(guard.check_and_update(&req1).is_none());
+    let req2: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&clean_user),
+        message_digest(&assistant_with("a1", false)),
+    ];
+    assert!(
+        guard.check_and_update(&req2).is_some(),
+        "live/persisted divergence at the injected message must be detected"
+    );
 }

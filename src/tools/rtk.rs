@@ -122,7 +122,12 @@ pub async fn rewrite_command(
         return None;
     }
 
-    // Ensure the RTK database directory exists
+    // Ensure the RTK database directory exists.
+    //
+    // Blocking `std::fs::create_dir_all` in an async fn: accepted bounded cost.
+    // It's a single metadata syscall on a path we own, bounded by the 3s timeout
+    // below, and runs once per rewrite. `spawn_blocking` would add a thread-hop
+    // for no measurable gain here.
     if let Err(e) = std::fs::create_dir_all(rtk_db_dir) {
         tracing::warn!("Failed to create rtk db dir {}: {}", rtk_db_dir.display(), e);
         return None;

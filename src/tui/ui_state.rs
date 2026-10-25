@@ -3,6 +3,7 @@ use std::time::Instant;
 use tachyonfx::EffectManager;
 
 use super::activity_indicator::ActivityIndicator;
+use super::status_bar::GitBranch;
 
 /// UI animation and display state.
 #[derive(Debug)]
@@ -16,6 +17,10 @@ pub struct UIState {
     pub should_quit: bool,
     /// Width of the editor input area in display columns. Set during layout pass.
     pub input_area_width: usize,
+    /// Cached git branch for the status bar, with the time it was detected.
+    /// `None` inner value means "not a git repo / git not found". Re-detected
+    /// when older than `status_bar::GIT_BRANCH_TTL`.
+    pub(crate) git_branch_cache: Option<(Option<GitBranch>, Instant)>,
 }
 
 impl UIState {
@@ -30,6 +35,7 @@ impl UIState {
             status_bar_message: None,
             should_quit: false,
             input_area_width: 80,
+            git_branch_cache: None,
         }
     }
 }

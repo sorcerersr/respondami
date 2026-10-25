@@ -34,6 +34,10 @@ pub struct HookContext {
     pub tool_result: Option<serde_json::Value>,
     /// User's prompt text (`UserPromptSubmit` only).
     pub prompt: Option<String>,
+    /// Compaction trigger, `"manual"` or `"auto"` (`PostCompact` only).
+    pub compact_trigger: Option<String>,
+    /// Number of messages removed by the compaction (`PostCompact` only).
+    pub compact_messages_removed: Option<u32>,
 }
 
 /// Result of executing a hook.
@@ -45,10 +49,6 @@ pub struct HookResult {
     pub stdout: String,
     /// Standard error (capped at `MAX_OUTPUT_BYTES`).
     pub stderr: String,
-    /// If stdout exceeded `MAX_OUTPUT_BYTES`, this is the path to the temp file.
-    pub stdout_file: Option<PathBuf>,
-    /// If stderr exceeded `MAX_OUTPUT_BYTES`, this is the path to the temp file.
-    pub stderr_file: Option<PathBuf>,
 }
 
 impl HookResult {
@@ -75,7 +75,7 @@ impl HookResult {
 pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
     // Build environment variables
     let mut env_vars = HashMap::new();
-    env_vars.insert("HOOK_EVENT".to_string(), format!("{:?}", hook.event));
+    env_vars.insert("HOOK_EVENT".to_string(), hook.event.to_string());
     env_vars.insert("HOOK_NAME".to_string(), hook.name.clone());
     env_vars.insert("CWD".to_string(), context.cwd.to_string_lossy().to_string());
 
@@ -91,12 +91,38 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
     if let Some(prompt) = &context.prompt {
         env_vars.insert("PROMPT".to_string(), prompt.clone());
     }
+    if let Some(compact_trigger) = &context.compact_trigger {
+        env_vars.insert("COMPACT_TRIGGER".to_string(), compact_trigger.clone());
+    }
+    if let Some(compact_messages_removed) = &context.compact_messages_removed {
+        env_vars.insert(
+            "COMPACT_MESSAGES_REMOVED".to_string(),
+            compact_messages_removed.to_string(),
+        );
+    }
+    if let Some(skill_name) = &hook.skill_name {
+        env_vars.insert("SKILL_NAME".to_string(), skill_name.clone());
+    }
+    if let Some(skill_dir) = &hook.skill_dir {
+        env_vars.insert(
+            "SKILL_DIR".to_string(),
+            skill_dir.to_string_lossy().to_string(),
+        );
+    }
 
-    // Spawn the shell command
-    let mut cmd = Command::new("bash");
+    // Spawn the hook. Directory hooks carry a `script` path: spawn it
+    // directly as `bash <script>` (no `-c`), so paths with spaces or quotes
+    // survive as a single argument. Everything else runs via `bash -c`.
+    let mut cmd = if let Some(script) = &hook.script {
+        let mut cmd = Command::new("bash");
+        cmd.arg(script);
+        cmd
+    } else {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&hook.command);
+        cmd
+    };
     cmd.kill_on_drop(true)
-        .arg("-c")
-        .arg(&hook.command)
         .current_dir(&context.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -117,8 +143,6 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
                 exit_code: 1,
                 stdout: String::new(),
                 stderr: format!("Failed to spawn hook: {e}"),
-                stdout_file: None,
-                stderr_file: None,
             };
         }
     };
@@ -136,8 +160,6 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
                 exit_code: 1,
                 stdout: String::new(),
                 stderr: format!("Hook execution error: {e}"),
-                stdout_file: None,
-                stderr_file: None,
             };
         }
         Err(_) => {
@@ -149,8 +171,6 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
                     "Hook '{}' timed out after {} seconds",
                     hook.name, HOOK_TIMEOUT_SECS
                 ),
-                stdout_file: None,
-                stderr_file: None,
             };
         }
     };
@@ -163,13 +183,11 @@ pub async fn execute_hook(hook: &Hook, context: &HookContext) -> HookResult {
         exit_code: output.status.code().unwrap_or(-1),
         stdout,
         stderr,
-        stdout_file: None,
-        stderr_file: None,
     }
 }
 
-/// Process raw output bytes, capping at `MAX_OUTPUT_BYTES`.
-/// Returns the capped string (no temp file for now — that's a future enhancement).
+/// Process raw output bytes, capping at `MAX_OUTPUT_BYTES` with a
+/// truncation note when the cap is hit.
 pub(crate) fn process_output(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw).to_string();
     if text.len() <= MAX_OUTPUT_BYTES {

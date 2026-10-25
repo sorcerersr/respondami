@@ -129,7 +129,7 @@ impl ToolHandler for ReadTool {
         // Convert 1-indexed offset to 0-indexed start
         let start = if let Some(o) = offset {
             let o = o as usize;
-            if o > total_lines {
+            if o == 0 || o > total_lines {
                 return Err(anyhow::anyhow!(
                     "Offset {o} is beyond end of file ({total_lines} lines total)"
                 ));

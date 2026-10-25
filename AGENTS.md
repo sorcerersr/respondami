@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **168 `.rs` files**, ~34.1K lines total (24.4K production, 9.7K tests)
+- **187 `.rs` files**, ~39.1K lines total
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -21,7 +21,7 @@ Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 wi
 - **Pinned scroll**: During streaming, user scroll-up sets `pinned_scroll = true`, blocking auto-scroll. Resumes when user scrolls within 3 rows of bottom.
 - **Providers**: `src/provider/mod.rs` defines `ChatChunk` enum; implementations in `provider/llamacpp.rs`, SSE parsing in `provider/sse.rs`
 - **Tools**: Registry pattern in `src/tools/mod.rs` with `ToolHandler` trait. Tools: bash, read, write, edit, rtk, activate_skill
-- **Session**: JSONL persistence in `src/session/manager.rs` with fsync. Compaction via LLM summarization.
+- **Session**: JSONL persistence in `src/session/manager.rs` with fsync. Compaction via `CompactionStrategy` trait — VCC (algorithmic, LLM-free) is the default, LLM summarization is optional.
 - **Project dir**: `.respondami/` is auto-created at startup (`src/project_dir.rs`) with a `.gitignore` (`*` + negations for `skills/`, `hooks/`, `AGENTS.md`, `config.json`) so runtime artifacts stay out of `git status`. The app never overwrites an existing `.gitignore` there.
 - **Hooks**: Shell scripts at lifecycle points (`src/hooks/`). Discovered from `~/.config/respondami/hooks/` and `.respondami/hooks/`. Execute synchronously in agent loop — can inject context (exit 0), block actions (exit 2), or log errors (other codes).
 - **State modules**: UI state split into focused modules under `src/tui/` — `chat_state.rs` (messages + scroll), `editor_state.rs` (input buffer, history navigation), `agent_state.rs` (streaming + tool calls), `session_state.rs` (persistence), `modal_state.rs` (popups), `config_state.rs` (thinking/hook display), `ui_state.rs` (animation/effects).
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1018 total)
+cargo test --workspace                         # all tests (1289 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1066 tests** (848 root + 43 ratatui-widgets + 175 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1289 tests** (1064 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -90,9 +90,18 @@ cargo test --workspace                       # all tests pass
 
 - The conversation prefix sent in each request must be byte-identical and append-only; any mid-history change invalidates the provider's prefix cache from that point on.
 - Tool-call assistant messages use one canonical block shape for both session save and live context push: first call = response's non-tool blocks + its own tool call; later calls = its own tool call only (`canonical_turn_blocks`). Never diverge the save form from the live form — `HistoryGuard` (`src/history_guard.rs`) checks per-message digests at each request and logs a `warn!` on drift (log-only, never blocks).
-- The synthetic `hook_instruction` message pair is sent to the LLM but never persisted; it gets `None` digests so the guard skips it.
+- PostToolUse hook instructions are injected as a separate, persisted `user` message after the tool result (a normal digest, not an ephemeral `None`-digest synthetic pair) — the same string is pushed to the live context and saved to the session, so the prefix stays stable and the instruction survives resume.
 - Reset the guard baseline after legitimate rewrites: new session, session resume, and compaction (`SessionState::reset_history_guard`).
 - Streaming `ContentBlock`s are filtered by `finalize_tool_calls` (provider/mod.rs) before use — empty id/name placeholders and unparseable `arguments` JSON are dropped so they can't leak into persisted or resent content.
+
+### Skill Hooks (frontmatter `hooks:`)
+
+- Skill frontmatter `hooks:` load into `Skill.hooks` (`src/skills.rs`). Malformed entries → `SkillDiagnostic` warning, entry skipped; a bad hook never fails skill loading.
+- Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
+- `ToolMatcher` (loader.rs) filters `PreToolUse`/`PostToolUse` skill hooks by tool name (case-insensitive regex). `None`/`*`/empty → `All`; a regex that fails to compile → `Never` (logged). A non-matching tool skips the hook entirely (no shell spawn, no TUI entry). Directory hooks are always `All`.
+- `execute_hook` sets `SKILL_NAME`/`SKILL_DIR` env vars for skill hooks only.
+- Model-context injection (G2): `UserPromptSubmit` and `PreToolUse` stdout are tail-appended to the user message / tool result the model sees (TUI stays clean; the augmented form is what's saved to the session and pushed to live context, so the byte-identical invariant holds). `PreCompact` stdout is captured into `App.pending_precompact_context` and appended to the compaction summary in `handle_compaction_result` (taken once, cleared on every outcome). `PostToolUse` stdout is injected as a separate, salient `user` message after the tool result (framed `[Hook instruction — <name>]`, persisted via `SaveHookInstruction`) — a blocked hook (exit 2) uses its stderr as the body, and a failed hook (other exit) injects nothing and logs a `warn!`. `format_hook_context` builds the `[hook: <name>]` blocks and skips empty stdout.
+- The pre-prompt `PreCompact` path (turn.rs) runs before deferring; a blocked hook calls `undo_turn_setup` (shared with `rollback_pending_turn`) and does not launch the agent.
 
 ### Image / Vision Support
 
@@ -130,6 +139,10 @@ cargo test --workspace                       # all tests pass
 
 ### Compaction Pattern
 
+- `CompactionEngine` holds a `Box<dyn CompactionStrategy>` selected by `config.compaction.mode` (`vcc` default, `llm`). `CompactionPlan` is mode-agnostic.
+- VCC (`src/session/compaction/vcc/`) is deterministic and LLM-free: `normalize` → `cut` → `sections` (5 extractors) → `rank`/`brief` → `merge` (folds into previous summary). No provider call.
+- LLM (`src/session/compaction/llm.rs`) sends the conversation to the model for a summary. Uses the `len/4` heuristic, not the calibrated estimator (byte-stable behavior).
+- Active skills are re-injected into the summary in both modes (`format_active_skills` re-reads SKILL.md). VCC strips any stale `<active-skills>` block from the previous summary before merging (`strip_active_skills`).
 - Uses spawn-and-poll: `tokio::spawn` the compaction task, poll `is_finished()` in event loop.
 - Keeps UI responsive during compaction (draws, animates, processes terminal events).
 - Auto-compaction restarts the agent with a retry message after success.
@@ -139,6 +152,7 @@ cargo test --workspace                       # all tests pass
 - Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests.
 - `reset_request_usage()` is turn-level (preserves `input_tokens` for within-turn delta accounting); session boundaries (new session, resume) must use `SessionState::reset_for_new_session()` which zeroes everything — reusing the turn-level reset leaks stale context percentages into a fresh session (the `max()` never corrects it).
 - `estimate_context_tokens()` prefers actual LLM `prompt_tokens` from last Assistant message, falls back to char estimates + system overhead.
+- The calibrated `TokenEstimator` (`src/agent/token_estimation.rs`) is the single source of truth for all token estimation (status bar, streaming fallback, tok/s tracker, VCC compaction). It calibrates `chars_per_token` from the last assistant `prompt_tokens` (clamped [2.0, 8.0]). The LLM compaction path is the one exception — it keeps the `len/4` heuristic for byte-stable behavior.
 
 ### Provider Abstraction
 
@@ -167,7 +181,7 @@ cargo test --workspace                       # all tests pass
 | `src/agent/streaming.rs` | SSE streaming from provider, `AgentResponse` builder                   |
 | `src/agent_events.rs`    | Agent event processing, bridges async agent loop with TUI              |
 | `src/event_loop.rs`      | Shared helpers: draw frame, animation tick, compaction result handling |
-| `src/config.rs`          | Config loading from `~/.config/respondami/config.yaml`                 |
+| `src/config.rs`          | Config loading from `~/.config/respondami/config.json`                 |
 | `src/commands.rs`        | Command palette commands and descriptions                              |
 | `src/history_guard.rs`   | Per-message digests + append-only prefix guard (vLLM cache stability)  |
 | `src/image.rs`           | Image normalization: `ImageContent`, `process_image`, MIME sniff, token estimate |
@@ -201,7 +215,10 @@ cargo test --workspace                       # all tests pass
 | `src/session/mod.rs`             | Module declarations and re-exports                                |
 | `src/session/manager.rs`         | SessionStore, JSONL I/O, context building, compaction application |
 | `src/session/entry.rs`           | SessionEntry types (Session, Message, Compaction, Custom)         |
-| `src/session/compaction.rs`      | CompactionEngine, LLM-based summarization                         |
+| `src/session/compaction.rs`      | CompactionEngine, CompactionStrategy trait, CompactionPlan, format_active_skills |
+| `src/session/compaction/llm.rs`  | LlmCompaction strategy (LLM-based summarization)                  |
+| `src/session/compaction/vcc.rs`  | VccCompaction strategy entry point (deterministic, LLM-free)      |
+| `src/session/compaction/vcc/`    | VCC modules: normalize, cut, sections, rank, brief, bash, merge   |
 | `src/session/display_adapter.rs` | Adapts session data for display                                   |
 
 ### TUI
@@ -280,10 +297,10 @@ cargo test --workspace                       # all tests pass
 | File                           | Purpose                                         |
 | ------------------------------ | ----------------------------------------------- |
 | `src/agents_md.rs`             | AGENTS.md loading from project root             |
-| `src/skills.rs`                | Skill discovery and loading (global + project)  |
-| `src/turn.rs`                  | Turn tracking and management                    |
-| `src/hooks/mod.rs`             | Hook module declarations                        |
-| `src/hooks/loader.rs`          | Hook discovery from config and project dirs     |
+| `src/skills.rs`                | Skill discovery, loading, frontmatter `hooks:` parsing (global + project)  |
+| `src/turn.rs`                  | Turn tracking, UserPromptSubmit/PreCompact injection, pending-turn rollback                    |
+| `src/hooks/mod.rs`             | Hook module declarations, `register_skill_hooks`, `rebuild_hook_registry`, `format_hook_context`                        |
+| `src/hooks/loader.rs`          | Hook discovery, `ToolMatcher`, `Hook`/`HookRegistry` types     |
 | `src/hooks/executor.rs`        | Hook execution with context                     |
 | `src/context/mod.rs`           | Context module declarations                     |
 | `src/context/token_tracker.rs` | TokenRateTracker with EMA + provider correction |
@@ -300,18 +317,17 @@ cargo test --workspace                       # all tests pass
 | `crates/ratatui-widgets/src/panel_overlay.rs`           | Centered panel overlay widget          |
 | `crates/ratatui-widgets/src/autocomplete_popup.rs`      | Autocomplete dropdown widget           |
 | `crates/ratatui-widgets/src/command_palette_overlay.rs` | Command palette widget                 |
-| `crates/ratatui-widgets/src/prompt_editor_overlay.rs`   | Prompt editor widget                   |
 | `crates/ratatui-md/src/lib.rs`                          | Markdown rendering entry point         |
 | `crates/ratatui-md/src/parsing.rs`                      | Markdown parsing with pulldown-cmark   |
 | `crates/ratatui-md/src/height.rs`                       | Height calculation for markdown blocks |
 
 ## Test Files
 
-### Root Crate Tests (848 tests)
+### Root Crate Tests (1060 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
-| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks        |
+| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing        |
 | `src/agent/token_estimation_tests.rs`         | Token estimation from messages                          |
 | `src/agent_events_tests.rs`                   | Agent event processing edge cases                       |
 | `src/agents_md_tests.rs`                      | AGENTS.md loading and parsing                           |
@@ -323,6 +339,7 @@ cargo test --workspace                       # all tests pass
 | `src/image_tests.rs`                          | MIME sniff, process_image (png/jpeg/gif/webp), animated-GIF reject, resize, token estimate |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
+| `src/key_handler/command_palette_tests.rs`  | Command palette navigation and scroll clamping  |
 | `src/key_handler/layers/input_tests.rs`       | Input layer key handling                                |
 | `src/key_handler/layers/modal_tests.rs`       | Modal layer shortcuts                                   |
 | `src/key_handler/layers/navigation_tests.rs`  | Navigation layer (j/k/Up/Down)                          |
@@ -332,7 +349,15 @@ cargo test --workspace                       # all tests pass
 | `src/provider/llamacpp_tests.rs`              | LlamaCpp provider, request building                     |
 | `src/provider/mod_tests.rs`                   | Provider trait, error classification, tool call parsing |
 | `src/provider/sse_tests.rs`                   | SSE parsing, cancellation                               |
-| `src/session/compaction_tests.rs`             | Compaction engine, summarization, active-skill re-injection (`format_active_skills` + end-to-end) |
+| `src/session/compaction_tests.rs`             | Compaction engine, LlmCompaction helpers, active-skill re-injection (`format_active_skills`) |
+| `src/session/compaction/vcc_tests.rs`         | VccCompaction end-to-end compute (NoopProvider)        |
+| `src/session/compaction/vcc/normalize_tests.rs` | VCC sanitize/clip/collapse, normalize_entries, exit-code parse |
+| `src/session/compaction/vcc/cut_tests.rs`       | VCC find_live_start, build_own_cut, apply_tail_budget, resolve_smart_keep |
+| `src/session/compaction/vcc/sections_tests.rs`  | VCC 5 section extractors + path extraction             |
+| `src/session/compaction/vcc/bash_tests.rs`      | VCC compress_bash (heredoc, cd, pipe, trivial, cap)    |
+| `src/session/compaction/vcc/brief_tests.rs`     | VCC compile_brief, cap_brief                           |
+| `src/session/compaction/vcc/rank_tests.rs`      | VCC block scoring + ranked selection                   |
+| `src/session/compaction/vcc/merge_tests.rs`     | VCC merge_previous, strip_active_skills                |
 | `src/session/entry_tests.rs`                  | Session entry serialization                             |
 | `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage      |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
@@ -355,9 +380,11 @@ cargo test --workspace                       # all tests pass
 | `src/tui/hook_display_tests.rs`               | Hook display modes                                      |
 | `src/tui/layout_tests.rs`                     | Layout calculations, input area height                  |
 | `src/tui/messages/hook_message_tests.rs`      | Hook message rendering                                  |
+| `src/tui/messages/compaction_message_tests.rs`| Compaction message rendering, display-width height      |
 | `src/tui/messages/system_message_tests.rs`    | System message rendering                                |
 | `src/tui/messages/thinking_message_tests.rs`  | Thinking block rendering                                |
 | `src/tui/messages/tool_call/mod_tests.rs`     | Tool call variant building                              |
+| `src/tui/messages/user_message_tests.rs`      | User message rendering, display-width height            |
 | `src/tui/messages/welcome_screen_tests.rs`    | Welcome screen rendering                                |
 | `src/tui/status_bar_tests.rs`                 | Status bar rendering                                    |
 | `src/tui/thinking_display_tests.rs`           | Thinking display toggle                                 |
@@ -368,5 +395,5 @@ cargo test --workspace                       # all tests pass
 
 | Test File                 | Coverage                                                                                                                    | Tests |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, prompt editor, header bar                                               | 43    |
-| `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 175   |
+| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, header bar                                               | 41    |
+| `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 184   |

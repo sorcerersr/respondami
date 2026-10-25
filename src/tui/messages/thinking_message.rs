@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 
+use crate::agent::token_estimation::TokenEstimator;
 use crate::tui::theme::Theme;
 use crate::tui::thinking_display::ThinkingDisplay;
 
@@ -51,6 +52,7 @@ impl ThinkingMessage {
         max_lines: usize,
         buf: &mut Buffer,
         theme: &Theme,
+        est: &TokenEstimator,
     ) {
         if area.width == 0 || area.height == 0 {
             return;
@@ -61,10 +63,10 @@ impl ThinkingMessage {
                 self.render_hidden(area, buf, theme);
             }
             ThinkingDisplay::Collapsed => {
-                self.render_collapsed(area, buf, theme);
+                self.render_collapsed(area, buf, theme, est);
             }
             ThinkingDisplay::Expanded => {
-                self.render_expanded(area, max_lines, buf, theme);
+                self.render_expanded(area, max_lines, buf, theme, est);
             }
         }
     }
@@ -85,12 +87,12 @@ impl ThinkingMessage {
         para.render(area, buf);
     }
 
-    fn render_collapsed(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    fn render_collapsed(&self, area: Rect, buf: &mut Buffer, theme: &Theme, est: &TokenEstimator) {
         let bg = Block::new().style(Style::default().bg(theme.bg));
         bg.render(area, buf);
 
         let icon = ThinkingDisplay::Collapsed.icon();
-        let token_count = self.reasoning.split_whitespace().count();
+        let token_count = est.estimate_tokens(&self.reasoning);
         let text = if icon.is_empty() {
             format!("Thinking... ({token_count} tokens)")
         } else {
@@ -114,15 +116,16 @@ impl ThinkingMessage {
         max_lines: usize,
         buf: &mut Buffer,
         theme: &Theme,
+        est: &TokenEstimator,
     ) {
         if self.reasoning.is_empty() {
-            self.render_collapsed(area, buf, theme);
+            self.render_collapsed(area, buf, theme, est);
             return;
         }
 
         let total_lines = self.reasoning.lines().count();
         let visible_lines = total_lines.min(max_lines);
-        let token_count = self.reasoning.split_whitespace().count();
+        let token_count = est.estimate_tokens(&self.reasoning);
         let icon = ThinkingDisplay::Expanded.icon();
 
         let mut lines: Vec<Line<'static>> = Vec::new();

@@ -33,7 +33,7 @@ impl EditToolCall {
                 edits: Vec::new(),
                 has_error: true,
                 error_message: Some(result.to_string()),
-                cancelled: false,
+                cancelled,
                 expanded,
             };
         }

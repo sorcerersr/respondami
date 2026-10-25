@@ -19,7 +19,10 @@ pub struct ModalState {
     pub command_palette_scroll_offset: usize,
     pub command_palette_preserved_input: String,
     pub command_palette_preserved_cursor: usize,
-    pub token_stats: Option<ProjectTokenStats>,
+    pub compact_keep_input: String,
+    /// Token stats result. `None` = loading; `Some(Ok(stats))` = stats (possibly
+    /// empty when there are no sessions); `Some(Err(msg))` = a read error to show.
+    pub token_stats: Option<Result<ProjectTokenStats, String>>,
 }
 
 impl ModalState {
@@ -37,6 +40,7 @@ impl ModalState {
             command_palette_scroll_offset: 0,
             command_palette_preserved_input: String::new(),
             command_palette_preserved_cursor: 0,
+            compact_keep_input: String::new(),
             token_stats: None,
         }
     }

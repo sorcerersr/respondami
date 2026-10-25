@@ -141,7 +141,10 @@ pub trait ProviderTrait: Send + Sync {
     async fn complete(&self, req: &ChatRequest) -> Result<CompletionResponse, ProviderError>;
 
     /// Health check / endpoint reachability.
-    async fn ping(&self) -> Result<(), ProviderError>;
+    ///
+    /// `model` — the configured model name to probe with (some endpoints
+    /// reject unknown model names, so the literal `"dummy"` was unreliable).
+    async fn ping(&self, model: &str) -> Result<(), ProviderError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,8 +235,8 @@ impl Provider {
     /// # Errors
     ///
     /// Returns an error if the provider endpoint is unreachable.
-    pub async fn ping(&self) -> Result<(), ProviderError> {
-        self.inner.ping().await
+    pub async fn ping(&self, model: &str) -> Result<(), ProviderError> {
+        self.inner.ping(model).await
     }
 }
 

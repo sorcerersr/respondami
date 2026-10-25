@@ -156,6 +156,34 @@ fn turn_capture_global_set_and_get() {
     assert!(current_turn().is_none(), "should be None after guard dropped");
 }
 
+#[test]
+fn turn_capture_second_guard_survives_first_drop() {
+    // Regression (M-2): match-on-drop. Installing a second capture and then
+    // dropping the first guard must not clear the second one — the old
+    // unconditional `*guard = None` would clobber the newer capture.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = SseDebugConfig::new(temp_dir.path().to_path_buf());
+
+    let capture1: TurnCaptureRef = config.start_turn(Some("first")).expect("turn file 1");
+    let guard1 = set_current_turn(capture1.clone());
+
+    let capture2: TurnCaptureRef = config.start_turn(Some("second")).expect("turn file 2");
+    let guard2 = set_current_turn(capture2.clone());
+
+    // Dropping the first guard must leave the second capture registered.
+    drop(guard1);
+    let retrieved = current_turn();
+    assert!(retrieved.is_some(), "second capture should still be registered");
+    assert_eq!(
+        retrieved.unwrap().path(),
+        capture2.path(),
+        "should be the second capture, not cleared"
+    );
+
+    drop(guard2);
+    assert!(current_turn().is_none(), "should be None after second guard dropped");
+}
+
 #[serial_test::serial]
 #[test]
 fn sse_debug_init_creates_nested_directory() {

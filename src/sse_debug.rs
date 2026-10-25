@@ -162,12 +162,18 @@ static CURRENT_TURN: Mutex<Option<TurnCaptureRef>> = Mutex::new(None);
 /// modifying the `ProviderTrait` interface.
 pub fn set_current_turn(capture: TurnCaptureRef) -> TurnCaptureGuard {
     let mut guard = CURRENT_TURN.lock().expect("CURRENT_TURN lock");
-    *guard = Some(capture);
-    TurnCaptureGuard
+    *guard = Some(capture.clone());
+    TurnCaptureGuard { capture }
 }
 
-/// Guard that clears the current turn capture on drop.
-pub struct TurnCaptureGuard;
+/// Guard that clears the current turn capture on drop — but only if the
+/// global still points at this guard's capture. Match-on-drop makes the
+/// drop order irrelevant: if a newer capture was installed (e.g. an agent
+/// restart) before this guard drops, dropping the old guard must not clear
+/// the new one.
+pub struct TurnCaptureGuard {
+    capture: TurnCaptureRef,
+}
 
 impl std::fmt::Debug for TurnCaptureGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,7 +184,9 @@ impl std::fmt::Debug for TurnCaptureGuard {
 impl Drop for TurnCaptureGuard {
     fn drop(&mut self) {
         let mut guard = CURRENT_TURN.lock().expect("CURRENT_TURN lock");
-        *guard = None;
+        if guard.as_ref().is_some_and(|c| std::sync::Arc::ptr_eq(c, &self.capture)) {
+            *guard = None;
+        }
     }
 }
 

@@ -23,7 +23,7 @@ const FILE_POPUP_PAGE_SIZE: usize = 10;
 const SKILL_POPUP_PAGE_SIZE: usize = 10;
 
 /// Clamp `scroll_offset` so the selected item is always visible within the page.
-pub(crate) fn clamp_scroll(selected: usize, offset: usize, _total: usize, page_size: usize) -> usize {
+pub(crate) fn clamp_scroll(selected: usize, offset: usize, page_size: usize) -> usize {
     if selected >= offset + page_size {
         selected - page_size + 1
     } else if selected < offset {
@@ -108,7 +108,7 @@ pub fn handle_file_autocomplete(
         }
         crossterm::event::KeyCode::Up => {
             let new_sel = if selected > 0 { selected - 1 } else { matches.len().saturating_sub(1) };
-            let new_scroll = clamp_scroll(new_sel, scroll_offset, matches.len(), FILE_POPUP_PAGE_SIZE);
+            let new_scroll = clamp_scroll(new_sel, scroll_offset, FILE_POPUP_PAGE_SIZE);
             app.editor.autocomplete_mode = AutocompleteMode::File {
                 matches: matches.to_vec(),
                 selected: new_sel,
@@ -119,7 +119,7 @@ pub fn handle_file_autocomplete(
         }
         crossterm::event::KeyCode::Down => {
             let new_sel = if selected < matches.len().saturating_sub(1) { selected + 1 } else { 0 };
-            let new_scroll = clamp_scroll(new_sel, scroll_offset, matches.len(), FILE_POPUP_PAGE_SIZE);
+            let new_scroll = clamp_scroll(new_sel, scroll_offset, FILE_POPUP_PAGE_SIZE);
             app.editor.autocomplete_mode = AutocompleteMode::File {
                 matches: matches.to_vec(),
                 selected: new_sel,
@@ -243,7 +243,7 @@ pub fn handle_skill_autocomplete(
         }
         crossterm::event::KeyCode::Up => {
             let new_sel = if selected > 0 { selected - 1 } else { matches.len().saturating_sub(1) };
-            let new_scroll = clamp_scroll(new_sel, scroll_offset, matches.len(), SKILL_POPUP_PAGE_SIZE);
+            let new_scroll = clamp_scroll(new_sel, scroll_offset, SKILL_POPUP_PAGE_SIZE);
             app.editor.autocomplete_mode = AutocompleteMode::Skill {
                 matches: matches.to_vec(),
                 selected: new_sel,
@@ -253,7 +253,7 @@ pub fn handle_skill_autocomplete(
         }
         crossterm::event::KeyCode::Down => {
             let new_sel = if selected < matches.len().saturating_sub(1) { selected + 1 } else { 0 };
-            let new_scroll = clamp_scroll(new_sel, scroll_offset, matches.len(), SKILL_POPUP_PAGE_SIZE);
+            let new_scroll = clamp_scroll(new_sel, scroll_offset, SKILL_POPUP_PAGE_SIZE);
             app.editor.autocomplete_mode = AutocompleteMode::Skill {
                 matches: matches.to_vec(),
                 selected: new_sel,

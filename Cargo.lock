@@ -311,7 +311,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -1782,6 +1781,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "noyalib"
+version = "0.0.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fad8f1a552070f6ba5f60f25e880f7b6daeda8fe138f589345141d31a21a3bb"
+dependencies = [
+ "hashbrown 0.17.1",
+ "indexmap",
+ "itoa",
+ "libm",
+ "memchr",
+ "rustc-hash",
+ "ryu",
+ "serde_core",
+ "serde_ignored",
+ "smallvec",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2331,10 +2348,11 @@ dependencies = [
 
 [[package]]
 name = "ratatui-md"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pulldown-cmark",
  "ratatui",
+ "unicode-width",
 ]
 
 [[package]]
@@ -2360,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "ratatui-widgets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ratatui",
  "unicode-width",
@@ -2478,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "respondami"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2494,15 +2512,15 @@ dependencies = [
  "image",
  "libc",
  "mimalloc",
+ "noyalib",
  "partial-json-fixer",
  "ratatui",
  "ratatui-md",
- "ratatui-widgets 0.1.0",
+ "ratatui-widgets 0.2.0",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
- "serde_yaml",
  "serial_test",
  "similar",
  "tachyonfx",
@@ -2741,6 +2759,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2763,19 +2791,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -3243,7 +3258,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -3484,12 +3498,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

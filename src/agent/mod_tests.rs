@@ -6,6 +6,7 @@ use tempfile::TempDir;
 use crate::image::ImageContent;
 use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
 use crate::skills::{Skill, SkillSource};
+use crate::tui::AgentEvent;
 
 fn img() -> ImageContent {
     ImageContent {
@@ -26,9 +27,18 @@ fn vision_gate_enabled_keeps_images() {
 #[test]
 fn vision_gate_disabled_drops_images_with_note() {
     let (content, images) = super::apply_vision_gate(false, "Image: x".to_string(), vec![img()]);
-    assert!(images.is_empty(), "images must be dropped when vision is off");
-    assert!(content.contains("Vision disabled"), "note must explain the drop: {content}");
-    assert!(content.contains("1 image"), "note must state the count: {content}");
+    assert!(
+        images.is_empty(),
+        "images must be dropped when vision is off"
+    );
+    assert!(
+        content.contains("Vision disabled"),
+        "note must explain the drop: {content}"
+    );
+    assert!(
+        content.contains("1 image"),
+        "note must state the count: {content}"
+    );
     assert!(
         content.contains("provider.vision: true"),
         "note must point at the provider-level config key: {content}"
@@ -78,13 +88,17 @@ fn build_system_prompt_agents_md_error_includes_skills() {
         description: "A test skill".to_string(),
         license: None,
         metadata: HashMap::new(),
+        hooks: Vec::new(),
         file_path: PathBuf::from("/test/SKILL.md"),
         base_dir: PathBuf::from("/test"),
         source: SkillSource::Global,
     }];
 
     let (prompt, err) = super::build_system_prompt_with_agents_md(dir.path(), &skills);
-    assert!(err.is_some(), "AGENTS.md as directory should cause load error");
+    assert!(
+        err.is_some(),
+        "AGENTS.md as directory should cause load error"
+    );
     assert!(
         prompt.contains("<available_skills>"),
         "skills block must be included even when AGENTS.md load fails"
@@ -115,7 +129,10 @@ async fn agent_loop_rejects_empty_response() {
     let content = String::new();
     let has_tool_calls = false;
     let should_reject = content.trim().is_empty() && !has_tool_calls;
-    assert!(should_reject, "empty response with no tool calls should be rejected");
+    assert!(
+        should_reject,
+        "empty response with no tool calls should be rejected"
+    );
 
     // Also test with whitespace-only content
     let content = "   \n\t  ".to_string();
@@ -125,7 +142,10 @@ async fn agent_loop_rejects_empty_response() {
     // But a response with tool calls should NOT be rejected even if content is empty
     let has_tool_calls = true;
     let should_reject = content.trim().is_empty() && !has_tool_calls;
-    assert!(!should_reject, "empty content with tool calls should not be rejected");
+    assert!(
+        !should_reject,
+        "empty content with tool calls should not be rejected"
+    );
 }
 
 /// Regression: `scroll_to_bottom` must be set on all agent exit paths.
@@ -138,11 +158,17 @@ fn scroll_to_bottom_on_all_exit_paths_logic() {
     // When pinned_scroll is true, auto_scroll is NOT set (user is pinned).
     let pinned_scroll = false;
     let should_auto_scroll = !pinned_scroll;
-    assert!(should_auto_scroll, "auto_scroll should be set when not pinned");
+    assert!(
+        should_auto_scroll,
+        "auto_scroll should be set when not pinned"
+    );
 
     let pinned_scroll = true;
     let should_auto_scroll = !pinned_scroll;
-    assert!(!should_auto_scroll, "auto_scroll should NOT be set when pinned");
+    assert!(
+        !should_auto_scroll,
+        "auto_scroll should NOT be set when pinned"
+    );
 }
 
 fn test_tool_call(id: &str) -> ToolCall {
@@ -161,8 +187,12 @@ fn canonical_turn_blocks_first_call_shape() {
     let tc0 = test_tool_call("call_0");
     let tc1 = test_tool_call("call_1");
     let content = vec![
-        ContentBlock::Thinking { thinking: "hmm".into() },
-        ContentBlock::Text { text: "let me check".into() },
+        ContentBlock::Thinking {
+            thinking: "hmm".into(),
+        },
+        ContentBlock::Text {
+            text: "let me check".into(),
+        },
         ContentBlock::ToolCall {
             tool_call: tc0.clone(),
         },
@@ -229,7 +259,9 @@ fn canonical_turn_blocks_first_call_no_prose() {
 #[test]
 fn live_and_session_assistant_forms_identical() {
     let blocks = vec![
-        ContentBlock::Thinking { thinking: "t".into() },
+        ContentBlock::Thinking {
+            thinking: "t".into(),
+        },
         ContentBlock::Text { text: "x".into() },
         ContentBlock::ToolCall {
             tool_call: test_tool_call("call_0"),
@@ -258,22 +290,100 @@ fn live_and_session_assistant_forms_identical() {
     );
 }
 
-/// Ephemeral messages (synthetic hook pair) get `None` digests; persisted
-/// messages get digests matching `message_digest` — kept in lockstep.
+/// Every pushed message gets a digest matching `message_digest`, kept in
+/// lockstep with the context list.
 #[test]
 fn push_context_message_lockstep_digests() {
     let mut context: Vec<AgentMessage> = Vec::new();
-    let mut digests: Vec<Option<crate::history_guard::MessageDigest>> = Vec::new();
+    let mut digests: Vec<crate::history_guard::MessageDigest> = Vec::new();
 
-    let persisted = AgentMessage::user("persisted".to_string());
-    let persisted_digest = crate::history_guard::message_digest(&persisted);
-    super::push_context_message(&mut context, &mut digests, persisted.clone(), false);
+    let first = AgentMessage::user("first".to_string());
+    let first_digest = crate::history_guard::message_digest(&first);
+    super::push_context_message(&mut context, &mut digests, first);
 
-    let ephemeral = AgentMessage::user("ephemeral".to_string());
-    super::push_context_message(&mut context, &mut digests, ephemeral, true);
+    let second = AgentMessage::user("second".to_string());
+    let second_digest = crate::history_guard::message_digest(&second);
+    super::push_context_message(&mut context, &mut digests, second);
 
     assert_eq!(context.len(), 2);
     assert_eq!(digests.len(), 2);
-    assert_eq!(digests[0], Some(persisted_digest));
-    assert_eq!(digests[1], None, "ephemeral messages must not join the prefix comparison");
+    assert_eq!(digests[0], first_digest);
+    assert_eq!(digests[1], second_digest);
+}
+
+/// L-14 regression: `activate_skill` with an empty name must not emit a
+/// `SkillActivation` event (the old code emitted `skill_name: "unknown"`,
+/// which polluted the TUI's `active_skills` set and the saved session header).
+/// It still returns an error tool result so the model can correct itself.
+#[tokio::test]
+async fn activate_skill_empty_name_emits_no_activation_event() {
+    use crate::agent::streaming::AgentResponse;
+    use crate::config::Config;
+    use crate::history_guard::MessageDigest;
+    use crate::hooks::HookRegistry;
+    use crate::tools::rtk::RtkState;
+    use crate::tools::ToolRegistry;
+    use tokio::sync::{mpsc, watch};
+
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let config = Config::default();
+    let rtk_state = RtkState {
+        path: None,
+        version_ok: false,
+    };
+    let tool_registry = ToolRegistry::new();
+    let mut hook_registry = HookRegistry::new();
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let _ = cancel_tx;
+    let skills: &[Skill] = &[];
+    let response = AgentResponse {
+        content: Vec::new(),
+        usage: None,
+    };
+    let mut current_context: Vec<AgentMessage> = Vec::new();
+    let mut context_digests: Vec<MessageDigest> = Vec::new();
+
+    let mut ctx = super::ToolCallCtx {
+        tx: &tx,
+        config: &config,
+        cwd: std::path::Path::new("."),
+        rtk_state: &rtk_state,
+        tool_registry: &tool_registry,
+        hook_registry: &mut hook_registry,
+        cancel_rx: &cancel_rx,
+        skills,
+        response: &response,
+        current_context: &mut current_context,
+        context_digests: &mut context_digests,
+        first_tool_call: true,
+    };
+
+    let tc = ToolCall {
+        id: "call_empty".to_string(),
+        name: "activate_skill".to_string(),
+        arguments: serde_json::json!({ "name": "" }),
+    };
+
+    let outcome = super::execute_tool_call(&mut ctx, &tc).await;
+    assert!(
+        matches!(outcome, super::ToolCallOutcome::Continue),
+        "empty skill name should continue the loop, got: {outcome:?}"
+    );
+
+    // No SkillActivation event must be emitted for an empty name.
+    let mut saw_activation = false;
+    let mut saw_error_result = false;
+    while let Ok(event) = rx.try_recv() {
+        match &event {
+            AgentEvent::SkillActivation { .. } => saw_activation = true,
+            AgentEvent::SaveToolResult { result, .. }
+                if result.contains("skill name is required") =>
+            {
+                saw_error_result = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(!saw_activation, "no SkillActivation event for empty name");
+    assert!(saw_error_result, "error tool result must be saved");
 }

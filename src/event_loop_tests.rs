@@ -132,8 +132,9 @@ fn make_poll_terminal() -> Terminal<CrosstermBackend<std::io::Stdout>> {
     .expect("test terminal")
 }
 
-/// A finished plan with an out-of-range cut index — `apply_compaction`
-/// treats it as a no-op, so no session rewrite happens.
+/// A finished plan whose cut index is past the end — `apply_compaction`
+/// treats it as a compact-all (empty kept tail), so the rewrite keeps only the
+/// summary. Used to exercise the success path without a live LLM.
 fn noop_plan() -> CompactionPlan {
     CompactionPlan {
         summary: "summary".to_string(),
@@ -305,9 +306,11 @@ async fn handle_compaction_result_success_resets_request_usage() {
 
     let result = handle_compaction_result(&mut app, handle, false).await;
 
-    assert!(matches!(result, CompactionResult::Success { .. }));
-    // `noop_plan` is a no-op apply → tokens_after == tokens_before (1000).
-    assert_eq!(app.session.current_request_usage.input_tokens, 1000);
+    let CompactionResult::Success { tokens_after, .. } = result else {
+        panic!("expected success");
+    };
+    // On success the status-bar usage is reset to the post-compaction estimate.
+    assert_eq!(app.session.current_request_usage.input_tokens, tokens_after);
     assert_eq!(app.session.current_request_usage.output_tokens, 0);
     assert!(!app.session.current_request_usage.estimated);
 }
@@ -379,4 +382,84 @@ async fn poll_launches_pending_turn_when_compaction_finishes() {
     assert_eq!(app.modal.state, AppState::Idle);
     assert!(app.compaction_task.is_none());
     assert!(app.pending_turn.is_none());
+}
+
+// ---- handle_compaction_result PreCompact context tests ----
+
+#[tokio::test]
+async fn handle_compaction_result_appends_pending_precompact_context() {
+    let mut app = make_poll_app();
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, ".".to_string())
+        .unwrap();
+    app.pending_precompact_context = Some("\n\n[hook: precompact]\nkeep this".to_string());
+    let handle = tokio::spawn(async move {
+        Ok::<_, anyhow::Error>(noop_plan())
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Success { .. }));
+    // The context is cleared after a single application.
+    assert!(app.pending_precompact_context.is_none());
+    // The persisted summary carries the appended hook context.
+    let summary = app
+        .session
+        .session_store
+        .entries()
+        .iter()
+        .find_map(|e| match e {
+            crate::session::SessionEntry::Compaction { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("compaction entry persisted");
+    assert!(
+        summary.starts_with("summary"),
+        "summary should start with the base: {summary}"
+    );
+    assert!(summary.contains("[hook: precompact]"), "summary: {summary}");
+    assert!(summary.contains("keep this"), "summary: {summary}");
+}
+
+#[tokio::test]
+async fn handle_compaction_result_no_pending_context_is_noop() {
+    let mut app = make_poll_app();
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, ".".to_string())
+        .unwrap();
+    let handle = tokio::spawn(async move {
+        Ok::<_, anyhow::Error>(noop_plan())
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Success { .. }));
+    let summary = app
+        .session
+        .session_store
+        .entries()
+        .iter()
+        .find_map(|e| match e {
+            crate::session::SessionEntry::Compaction { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("compaction entry persisted");
+    assert_eq!(summary, "summary");
+}
+
+#[tokio::test]
+async fn handle_compaction_result_clears_pending_context_on_failure() {
+    let mut app = make_poll_app();
+    app.pending_precompact_context = Some("\n\n[hook: precompact]\nx".to_string());
+    let handle = tokio::spawn(async move {
+        Err::<CompactionPlan, anyhow::Error>(anyhow::anyhow!("provider down"))
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Failed(_)));
+    // Cleared even on failure so stale context never leaks to the next run.
+    assert!(app.pending_precompact_context.is_none());
 }

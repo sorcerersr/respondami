@@ -135,18 +135,101 @@ fn re_encode(img: &image::DynamicImage, mime: &str) -> Result<Vec<u8>, ImageErro
 
 /// Returns `true` if the GIF has more than one frame (animated).
 ///
-/// A GIF has exactly one image-descriptor byte (`0x2C`) per frame, and that
-/// byte is not used by any other GIF block type (extension `0x21`, palette
-/// `0x00`, trailer `0x3B`).
-fn is_animated_gif(bytes: &[u8]) -> Result<bool, ImageError> {
-    let mut frames = 0;
-    for &b in bytes {
-        if b == 0x2C {
-            frames += 1;
-            if frames > 1 {
-                return Ok(true);
-            }
+/// Walks the GIF structure instead of counting `0x2C` bytes (which appear in
+/// LZW image data and cause false positives on valid static GIFs): header →
+/// logical screen descriptor (+ global color table) → a loop over blocks. Each
+/// image descriptor (`0x2C`) is one frame; its local color table and LZW
+/// sub-blocks are skipped. Extension blocks (`0x21` + label) and the trailer
+/// (`0x3B`) are skipped. A malformed structure returns `Ok(false)` — the
+/// `image` crate decoder remains the authority (it returns `ImageError::Io`
+/// on garbage); the walk only gates the animated-reject.
+pub(crate) fn is_animated_gif(bytes: &[u8]) -> Result<bool, ImageError> {
+    // Header "GIF87a"/"GIF89a" (6 bytes) + logical screen descriptor (7).
+    if bytes.len() < 13 {
+        return Ok(false);
+    }
+    let mut i = 13usize;
+
+    // Global color table, if the packed byte's high bit is set.
+    let packed = bytes[10];
+    if packed & 0x80 != 0 {
+        let gct = 3 * (1usize << ((packed & 0x07) + 1));
+        match i.checked_add(gct) {
+            Some(n) if n <= bytes.len() => i = n,
+            _ => return Ok(false),
         }
     }
-    Ok(false)
+
+    let mut frames = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x3B => return Ok(frames > 1),
+            0x2C => {
+                // Image descriptor: marker + left(2) top(2) width(2) height(2) packed(1).
+                if i + 10 > bytes.len() {
+                    return Ok(false);
+                }
+                frames += 1;
+                if frames > 1 {
+                    return Ok(true);
+                }
+                let lct_packed = bytes[i + 9];
+                i += 10;
+                if lct_packed & 0x80 != 0 {
+                    let lct = 3 * (1usize << ((lct_packed & 0x07) + 1));
+                    match i.checked_add(lct) {
+                        Some(n) if n <= bytes.len() => i = n,
+                        _ => return Ok(false),
+                    }
+                }
+                // LZW minimum code size (1 byte), then the image data sub-blocks.
+                if i >= bytes.len() {
+                    return Ok(false);
+                }
+                i += 1;
+                match skip_sub_blocks(bytes, i) {
+                    Some(n) => i = n,
+                    None => return Ok(false),
+                }
+            }
+            0x21 => {
+                // Extension: marker + label, then fixed data, then sub-blocks.
+                if i + 2 > bytes.len() {
+                    return Ok(false);
+                }
+                let fixed = match bytes[i + 1] {
+                    0xF9 => 5,  // graphic control: block size + 4 data bytes
+                    0xFF => 12, // application: block size + 11 data bytes
+                    _ => 0,     // comment (0xFE) or plain extension
+                };
+                match i.checked_add(2 + fixed) {
+                    Some(n) if n <= bytes.len() => i = n,
+                    _ => return Ok(false),
+                }
+                match skip_sub_blocks(bytes, i) {
+                    Some(n) => i = n,
+                    None => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+    Ok(frames > 1)
+}
+
+/// Skip a run of GIF sub-blocks: a sequence of (1-byte length, `length` bytes
+/// of data), terminated by a zero-length block. Returns the index past the
+/// terminator, or `None` if the run is truncated.
+fn skip_sub_blocks(bytes: &[u8], mut i: usize) -> Option<usize> {
+    loop {
+        let len = *bytes.get(i)? as usize;
+        i = i.checked_add(1)?;
+        if len == 0 {
+            return Some(i);
+        }
+        i = i.checked_add(len)?;
+        if i > bytes.len() {
+            return None;
+        }
+    }
 }

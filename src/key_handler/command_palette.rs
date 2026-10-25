@@ -21,7 +21,7 @@ use super::KeyHandler;
 const PALETTE_PAGE_SIZE: usize = 15;
 
 /// Update scroll offset to keep the selected item visible.
-fn update_scroll(app: &mut App, total: usize) {
+pub(crate) fn update_scroll(app: &mut App, total: usize) {
     let selected = app.modal.command_palette_selected;
     let mut offset = app.modal.command_palette_scroll_offset;
     if selected >= offset + PALETTE_PAGE_SIZE {
@@ -81,6 +81,12 @@ impl KeyHandler for CommandPaletteHandler {
             match action {
                 TransitionAction::Send => {
                     if let Some((_, cmd)) = app.modal.command_palette_matches.get(app.modal.command_palette_selected) {
+                        // `compact` opens the keep-N prompt instead of running immediately.
+                        if cmd.id == "compact" {
+                            app.modal.compact_keep_input = "1".to_string();
+                            app.modal.state = AppState::CompactKeepPrompt;
+                            return Ok(false);
+                        }
                         return crate::commands::execute_palette_command(app, cmd.id, terminal).await;
                     }
                     return Ok(false);
@@ -101,9 +107,9 @@ impl KeyHandler for CommandPaletteHandler {
         );
 
         if navigation.handle(app, key)? {
-            update_scroll(app, matches_len);
             return Ok(false);
         }
+        update_scroll(app, matches_len);
 
         // 3. Input (filter text)
         match key.code {

@@ -14,6 +14,7 @@ pub enum PopupType {
     CommandPalette,
     Help,
     TokenStats,
+    CompactKeepPrompt,
 }
 
 /// Application states.
@@ -32,6 +33,8 @@ pub enum AppState {
     HelpPopup,
     /// Token statistics dialog overlay.
     TokenStatsDialog,
+    /// Keep-N prompt for manual compaction (from the command palette).
+    CompactKeepPrompt,
 }
 
 use super::editor::FileMatch;

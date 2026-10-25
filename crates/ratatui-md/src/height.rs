@@ -1,6 +1,7 @@
 //! Height calculation for ContentBlock variants.
 
 use ratatui::text::Text;
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::MdTheme;
 use crate::types::{ContentBlock, ListItem};
@@ -42,7 +43,7 @@ fn word_wrap_height(text: &str, width: usize) -> usize {
     let mut current_len = 0;
 
     for word in text.split_whitespace() {
-        let word_len = word.chars().count();
+        let word_len = word.width();
 
         // Words longer than width are broken (trim: true)
         if word_len > width {
@@ -95,11 +96,11 @@ pub fn compute_col_widths(
     // Compute minimum widths from content
     let mut min_widths: Vec<usize> = vec![0; num_cols];
     for (i, header) in headers.iter().enumerate().take(num_cols) {
-        min_widths[i] = min_widths[i].max(header.chars().count());
+        min_widths[i] = min_widths[i].max(header.width());
     }
     for row in rows {
         for (i, cell) in row.iter().enumerate().take(num_cols) {
-            min_widths[i] = min_widths[i].max(cell.chars().count());
+            min_widths[i] = min_widths[i].max(cell.width());
         }
     }
 
@@ -272,8 +273,43 @@ mod tests {
 
     #[test]
     fn word_wrap_unicode_chars() {
-        // "日本" = 2 chars, width = 1 → 2 lines
-        assert_eq!(super::word_wrap_height("日本", 1), 2);
+        // "日本" = 4 display cells (2 CJK chars × 2), width = 1 → 4 lines.
+        // Measured by display width, not char count (M-1). Overestimating is the
+        // safe direction: it never under-allocates rows and clips the render.
+        assert_eq!(super::word_wrap_height("日本", 1), 4);
+    }
+
+    // ─── M-1: display-width wrapping (CJK) ───
+
+    #[test]
+    fn m1_cjk_paragraph_wraps_by_display_width() {
+        // 10 CJK chars = 20 display cells. At width 10 → 2 lines (was 1 by char
+        // count: 10/10). This is the clipping bug M-1 fixes.
+        let ten_cjk = "日本語の文字は広いよ"; // 10 CJK ideographs, each width 2
+        assert_eq!(ten_cjk.width(), 20);
+        assert_eq!(wrapped_line_count(ten_cjk, 10), 2);
+    }
+
+    #[test]
+    fn m1_mixed_cjk_ascii_wraps_by_display_width() {
+        // "abc日本" = 3 ASCII + 4 CJK cells = 7 display cells, 5 chars.
+        // At width 5: char count says 1 line (5/5), display width says 2 (7/5).
+        assert_eq!(wrapped_line_count("abc日本", 5), 2);
+        // Exactly fitting display width stays 1 line.
+        assert_eq!(wrapped_line_count("abc日本", 7), 1);
+    }
+
+    #[test]
+    fn m1_col_widths_cjk_header_uses_display_width() {
+        // "日本語" = 6 display cells (3 chars). The CJK column must get at least
+        // 6, not the 3 a char count would give.
+        let widths = compute_col_widths(
+            &["日本語".into(), "A".into()],
+            &[],
+            10,
+            2,
+        );
+        assert_eq!(widths, vec![6, 3]);
     }
 
     // ─── wrapped_height ───
@@ -476,7 +512,7 @@ mod tests {
     fn height_list_empty_item() {
         let block = ContentBlock::List {
             ordered: false, start: 1,
-            items: vec![ListItem { text: Text::from(vec![]), children: vec![] }],
+            items: vec![ListItem { text: Text::from(vec![]), children: vec![], checked: None }],
         };
         assert_eq!(content_block_height(&block, 80, &TestTheme), 1); // bullet only
     }
@@ -489,8 +525,10 @@ mod tests {
                 text: Text::from("parent"),
                 children: vec![ListItem {
                     text: Text::from("child"),
-                    children: vec![ListItem { text: Text::from("grandchild"), children: vec![] }],
+                    children: vec![ListItem { text: Text::from("grandchild"), children: vec![], checked: None }],
+                    checked: None,
                 }],
+                checked: None,
             }],
         };
         // parent: 2, child: 2, grandchild: 1 = 5
@@ -502,7 +540,7 @@ mod tests {
     fn height_list_zero_width() {
         let block = ContentBlock::List {
             ordered: false, start: 1,
-            items: vec![ListItem { text: Text::from("item"), children: vec![] }],
+            items: vec![ListItem { text: Text::from("item"), children: vec![], checked: None }],
         };
         // width=0 → text_width=0 → wrapped_height returns lines.len() = 1, +1 = 2
         assert_eq!(content_block_height(&block, 0, &TestTheme), 2);

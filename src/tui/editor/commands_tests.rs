@@ -61,7 +61,8 @@ use super::{fuzzy_match_case_insensitive, get_palette_commands, fuzzy_match_pale
 
     #[test]
     fn fuzzy_empty_needle() {
-        assert!(fuzzy_match_case_insensitive("", "anything").is_some());
+        // Pins the L-3 doc fix: an empty needle returns Some(0), never panics.
+        assert_eq!(fuzzy_match_case_insensitive("", "anything"), Some(0));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 target/
 .respondami/sessions/
 .respondami/logs/
+.planning/
 docs/plans/
 docs/reviews/
 findings.md

@@ -1,5 +1,5 @@
 use super::image::{
-    ImageError, estimate_image_tokens, process_image, sniff_mime,
+    ImageError, estimate_image_tokens, is_animated_gif, process_image, sniff_mime,
 };
 use base64::Engine;
 use image::RgbaImage;
@@ -27,6 +27,51 @@ fn write_animated_gif(path: &Path, w: u32, h: u32) {
     encoder.encode_frame(frame2).expect("frame 2");
     drop(encoder);
     std::fs::write(path, buf.into_inner()).expect("write animated gif");
+}
+
+/// Build a minimal static GIF whose LZW image data contains a `0x2C` byte.
+/// This is the M-1 regression: the old byte-counting detector saw the `0x2C` in
+/// the LZW stream and rejected a perfectly good static GIF. The structural walk
+/// must count only image descriptors.
+///
+/// The LZW sub-block structure is valid (length + data + terminator) so the
+/// walk skips it correctly; the LZW payload is arbitrary (the `image` decoder is
+/// not involved in the `is_animated_gif` unit test).
+fn static_gif_with_0x2c_lzw() -> Vec<u8> {
+    let mut b: Vec<u8> = Vec::new();
+    b.extend_from_slice(b"GIF89a");
+    // Logical screen descriptor: 1x1, GCT flag + 2 colors (size field 0).
+    b.extend_from_slice(&[0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00]);
+    // Global color table: 2 entries x 3 bytes.
+    b.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    // Image descriptor: 0x2C, left=0, top=0, 1x1, no local color table.
+    b.extend_from_slice(&[0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]);
+    // LZW minimum code size = 2, then a sub-block whose data contains 0x2C.
+    b.push(0x02);
+    b.push(0x02); // sub-block length
+    b.extend_from_slice(&[0x2C, 0x00]);
+    b.push(0x00); // sub-block terminator
+    b.push(0x3B); // trailer
+    b
+}
+
+/// Build a *decodable* static GIF (via the `image` encoder) whose LZW data
+/// contains a `0x2C` byte, for the end-to-end `process_image` test. A 32x32
+/// patterned image compresses to a LZW stream that includes `0x2C`.
+fn encoded_static_gif_with_0x2c_lzw() -> Vec<u8> {
+    let w = 32u32;
+    let h = 32u32;
+    let img = image::RgbaImage::from_fn(w, h, |x, y| {
+        image::Rgba([
+            ((x * 7) % 256) as u8,
+            ((y * 13) % 256) as u8,
+            ((x ^ y) % 256) as u8,
+            255,
+        ])
+    });
+    let mut buf = Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Gif).expect("encode gif");
+    buf.into_inner()
 }
 
 // ============ sniff_mime ============
@@ -131,6 +176,54 @@ fn process_animated_gif_rejected() {
     write_animated_gif(&path, 100, 50);
 
     assert_eq!(process_image(&path), Err(ImageError::Unsupported));
+}
+
+// ============ M-1: GIF block walk ============
+
+#[test]
+fn process_static_gif_with_0x2c_lzw_accepted() {
+    // M-1 regression: a valid static GIF whose LZW data contains a `0x2C`
+    // byte must be accepted (the old byte counter rejected it).
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("static_0x2c.gif");
+    let bytes = encoded_static_gif_with_0x2c_lzw();
+    // Sanity: the LZW data really does contain a 0x2C byte beyond the single
+    // image-descriptor marker (the first 0x2C is the descriptor).
+    let first = bytes.iter().position(|&x| x == 0x2C).expect("image descriptor");
+    assert!(
+        bytes[first + 1..].contains(&0x2C),
+        "expected a 0x2C byte in the LZW data"
+    );
+    std::fs::write(&path, &bytes).unwrap();
+
+    let img = process_image(&path).unwrap();
+    assert_eq!(img.mime_type, "image/gif");
+    assert_eq!(img.width, 32);
+    assert_eq!(img.height, 32);
+}
+
+#[test]
+fn is_animated_gif_static_with_0x2c_lzw_is_false() {
+    let bytes = static_gif_with_0x2c_lzw();
+    assert_eq!(is_animated_gif(&bytes), Ok(false));
+}
+
+#[test]
+fn is_animated_gif_two_frames_is_true() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("two_frames.gif");
+    write_animated_gif(&path, 10, 10);
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(is_animated_gif(&bytes), Ok(true));
+}
+
+#[test]
+fn is_animated_gif_malformed_is_false() {
+    // Truncated header, a bare 0x2C, and empty input all return Ok(false) —
+    // the walk never panics and the `image` decoder is the real authority.
+    assert_eq!(is_animated_gif(b"GIF8"), Ok(false));
+    assert_eq!(is_animated_gif(&[0x2C, 0x2C, 0x2C]), Ok(false));
+    assert_eq!(is_animated_gif(b""), Ok(false));
 }
 
 #[test]

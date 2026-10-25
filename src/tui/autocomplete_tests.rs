@@ -48,39 +48,39 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifi
 
     #[test]
     fn clamp_scroll_selected_in_view() {
-        assert_eq!(clamp_scroll(3, 0, 50, 10), 0);
+        assert_eq!(clamp_scroll(3, 0, 10), 0);
     }
 
     #[test]
     fn clamp_scroll_selected_below_view() {
-        assert_eq!(clamp_scroll(12, 0, 50, 10), 3);
+        assert_eq!(clamp_scroll(12, 0, 10), 3);
     }
 
     #[test]
     fn clamp_scroll_selected_above_view() {
-        assert_eq!(clamp_scroll(2, 5, 50, 10), 2);
+        assert_eq!(clamp_scroll(2, 5, 10), 2);
     }
 
     #[test]
     fn clamp_scroll_at_bottom() {
         // 50 items, page size 10, selected at 49
-        assert_eq!(clamp_scroll(49, 40, 50, 10), 40);
+        assert_eq!(clamp_scroll(49, 40, 10), 40);
     }
 
     #[test]
     fn clamp_scroll_selected_moves_window_past_end() {
         // 50 items, page size 10, selected at 49, offset at 35
-        assert_eq!(clamp_scroll(49, 35, 50, 10), 40);
+        assert_eq!(clamp_scroll(49, 35, 10), 40);
     }
 
     #[test]
     fn clamp_scroll_single_item() {
-        assert_eq!(clamp_scroll(0, 0, 1, 10), 0);
+        assert_eq!(clamp_scroll(0, 0, 10), 0);
     }
 
     #[test]
     fn clamp_scroll_fewer_items_than_page() {
-        assert_eq!(clamp_scroll(3, 0, 5, 10), 0);
+        assert_eq!(clamp_scroll(3, 0, 10), 0);
     }
 
     #[test]

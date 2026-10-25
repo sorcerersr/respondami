@@ -77,20 +77,6 @@ mod mod_tests;
 #[cfg(test)]
 mod rtk_tests;
 
-/// Result of executing a tool.
-///
-/// Tools return `anyhow::Result<ToolOutput>` directly. `content` is the text
-/// the model and TUI see; `images` carries normalized image payloads (only the
-/// `read` tool populates this). This struct is kept for the
-/// `AgentEvent::SaveToolResult` session persistence, which needs to store both
-/// content and error as a single unit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
 /// The output of a tool execution.
 ///
 /// `content` is the text result (model + TUI). `images` carries normalized
@@ -142,10 +128,6 @@ pub trait ToolHandler: Send + Sync {
     ) -> anyhow::Result<ToolOutput>;
 }
 
-/// Name of the internal `hook_instruction` tool — never callable by the LLM.
-/// Used to inject `PostToolUse` hook output as a synthetic tool call/result.
-pub const HOOK_INSTRUCTION_TOOL: &str = "hook_instruction";
-
 /// Registry of available tools.
 ///
 /// `Arc` is used instead of `Box` so that `ToolRegistry` can be cloned cheaply.
@@ -183,16 +165,6 @@ impl ToolRegistry {
         registry.register(edit::EditTool);
         registry.register(bash::BashTool);
         registry.register(activate_skill::ActivateSkillTool);
-        // Register the internal hook_instruction tool definition (not callable by LLM).
-        // It is used to inject PostToolUse hook output as a synthetic tool call/result.
-        registry.definitions.push(ToolDef {
-            name: HOOK_INSTRUCTION_TOOL.to_string(),
-            description: "Internal tool for receiving instructions from hooks. You will never call this tool yourself.".to_string(),
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {},
-            }),
-        });
         registry
     }
 

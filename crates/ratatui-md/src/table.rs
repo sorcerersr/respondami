@@ -5,6 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::height::compute_col_widths;
 use crate::theme::MdTheme;
@@ -14,14 +15,14 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![String::new()];
     }
-    if text.chars().count() <= max_width {
+    if text.width() <= max_width {
         return vec![text.to_string()];
     }
 
     let mut lines = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
-        let word_len = word.chars().count();
+        let word_len = word.width();
         if current.is_empty() {
             // Word longer than max_width — break it
             if word_len > max_width {
@@ -37,7 +38,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
                 continue;
             }
             current = word.to_string();
-        } else if current.chars().count() + 1 + word_len <= max_width {
+        } else if current.width() + 1 + word_len <= max_width {
             current.push(' ');
             current.push_str(word);
         } else {
@@ -121,7 +122,7 @@ pub fn render(
     for line_idx in 0..header_height {
         let cells: Vec<String> = (0..num_cols).map(|ci| {
             let text = header_wrapped[ci].get(line_idx).cloned().unwrap_or_default();
-            let pad = col_widths[ci].saturating_sub(text.chars().count());
+            let pad = col_widths[ci].saturating_sub(text.width());
             format!("{}{}", text, " ".repeat(pad))
         }).collect();
         table_lines.push(build_content_line(cells, theme.heading_style()));
@@ -142,7 +143,7 @@ pub fn render(
         for line_idx in 0..row_height {
             let cells: Vec<String> = (0..num_cols).map(|ci| {
                 let text = cell_wrapped[ci].get(line_idx).cloned().unwrap_or_default();
-                let pad = col_widths[ci].saturating_sub(text.chars().count());
+                let pad = col_widths[ci].saturating_sub(text.width());
                 format!("{}{}", text, " ".repeat(pad))
             }).collect();
             table_lines.push(build_content_line(cells, theme.text_style()));
@@ -234,6 +235,15 @@ mod tests {
     fn wrap_text_unicode() {
         let lines = wrap_text("日本语", 2);
         assert_eq!(lines.len(), 2); // 3 chars / 2 = 2 lines
+    }
+
+    #[test]
+    fn m1_wrap_text_cjk_uses_display_width() {
+        // "ab 日本語" = 2 + 6 = 8 display cells, 5 chars. At width 5, a char
+        // count (5) says the whole thing fits on one line; display width (8)
+        // forces the CJK word onto its own line. M-1.
+        let lines = wrap_text("ab 日本語", 5);
+        assert_eq!(lines, vec!["ab".to_string(), "日本語".to_string()]);
     }
 
     // ─── render ───

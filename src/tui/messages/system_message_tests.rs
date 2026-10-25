@@ -56,3 +56,13 @@ use super::*;
         let msg = SystemMessage { content: "a\nb\nc".to_string() };
         assert_eq!(msg.height(80, &make_theme()), 4);
     }
+
+    #[test]
+    fn m1_height_cjk_uses_display_width() {
+        // 10 CJK chars = 20 display cells. At width 10 → 2 rows (a char count of
+        // 10 would give 1 row and clip the render). M-1. +1 blank = 3.
+        let msg = SystemMessage { content: "日本語の文字は広いよ".to_string() };
+        assert_eq!(msg.height(10, &make_theme()), 3);
+        // Exactly fitting display width stays 1 row + 1 blank = 2.
+        assert_eq!(msg.height(20, &make_theme()), 2);
+    }

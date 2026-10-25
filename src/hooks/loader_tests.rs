@@ -5,154 +5,248 @@ use super::*;
 use std::fs;
 use tempfile::TempDir;
 
-    // ---------------------------------------------------------------------------
-    // HookEvent tests
-    // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// HookEvent tests
+// ---------------------------------------------------------------------------
 
-    #[test]
-    fn hook_event_display() {
-        assert_eq!(format!("{}", HookEvent::PreToolUse), "PreToolUse");
-        assert_eq!(format!("{}", HookEvent::UserPromptSubmit), "UserPromptSubmit");
-        assert_eq!(format!("{}", HookEvent::PostToolUse), "PostToolUse");
-        assert_eq!(format!("{}", HookEvent::Stop), "Stop");
-        assert_eq!(format!("{}", HookEvent::PreCompact), "PreCompact");
+#[test]
+fn hook_event_display() {
+    assert_eq!(format!("{}", HookEvent::PreToolUse), "PreToolUse");
+    assert_eq!(
+        format!("{}", HookEvent::UserPromptSubmit),
+        "UserPromptSubmit"
+    );
+    assert_eq!(format!("{}", HookEvent::PostToolUse), "PostToolUse");
+    assert_eq!(format!("{}", HookEvent::Stop), "Stop");
+    assert_eq!(format!("{}", HookEvent::PreCompact), "PreCompact");
+    assert_eq!(format!("{}", HookEvent::PostCompact), "PostCompact");
+}
+
+#[test]
+fn hook_event_as_dir_name() {
+    assert_eq!(HookEvent::PreToolUse.as_dir_name(), "PreToolUse");
+    assert_eq!(
+        HookEvent::UserPromptSubmit.as_dir_name(),
+        "UserPromptSubmit"
+    );
+}
+
+#[test]
+fn hook_event_all() {
+    let events = HookEvent::all();
+    assert_eq!(events.len(), 6);
+    assert!(events.contains(&HookEvent::PreToolUse));
+    assert!(events.contains(&HookEvent::Stop));
+    assert!(events.contains(&HookEvent::PostCompact));
+}
+
+#[test]
+fn hook_event_from_name_roundtrip() {
+    for event in HookEvent::all() {
+        assert_eq!(HookEvent::from_name(event.as_dir_name()), Some(*event));
+    }
+}
+
+#[test]
+fn hook_event_from_name_unknown() {
+    assert_eq!(HookEvent::from_name("Bogus"), None);
+    assert_eq!(HookEvent::from_name(""), None);
+}
+
+// ---------------------------------------------------------------------------
+// ToolMatcher tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tool_matcher_all_matches_everything() {
+    let m = ToolMatcher::All;
+    assert!(m.matches("Write"));
+    assert!(m.matches("Bash"));
+    assert!(m.matches("anything"));
+}
+
+#[test]
+fn tool_matcher_never_matches_nothing() {
+    let m = ToolMatcher::Never;
+    assert!(!m.matches("Write"));
+    assert!(!m.matches(""));
+}
+
+#[test]
+fn tool_matcher_regex_case_insensitive() {
+    let m = ToolMatcher::Match(
+        regex::RegexBuilder::new("write|edit")
+            .case_insensitive(true)
+            .build()
+            .unwrap(),
+    );
+    assert!(m.matches("Write"));
+    assert!(m.matches("EDIT"));
+    assert!(m.matches("Edit"));
+    assert!(!m.matches("Read"));
+    assert!(!m.matches("Bash"));
+}
+
+#[test]
+fn tool_matcher_regex_substring() {
+    let m = ToolMatcher::Match(
+        regex::RegexBuilder::new("bash")
+            .case_insensitive(true)
+            .build()
+            .unwrap(),
+    );
+    assert!(m.matches("Bash"));
+    assert!(m.matches("Bashish")); // is_match is a substring search
+    assert!(!m.matches("Read"));
+}
+
+// ---------------------------------------------------------------------------
+// HookRegistry tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hook_registry_empty() {
+    let registry = HookRegistry::new();
+    assert!(registry.hooks(HookEvent::PreToolUse).is_empty());
+    assert!(!registry.has_hooks(HookEvent::Stop));
+    assert_eq!(registry.total_count(), 0);
+}
+
+#[test]
+fn hook_registry_add_and_get() {
+    let mut registry = HookRegistry::new();
+    registry.add(Hook {
+        event: HookEvent::PreToolUse,
+        name: "test.sh".to_string(),
+        command: "echo test".to_string(),
+        script: None,
+        source: HookSource::Global,
+        skill_name: None,
+        skill_dir: None,
+        matcher: ToolMatcher::All,
+    });
+    assert!(registry.has_hooks(HookEvent::PreToolUse));
+    assert_eq!(registry.hooks(HookEvent::PreToolUse).len(), 1);
+    assert_eq!(registry.total_count(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Directory-based hooks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn load_directory_hooks_empty_dir() {
+    let dir = TempDir::new().unwrap();
+    let hooks = load_directory_hooks(dir.path(), HookSource::Project);
+    assert!(hooks.is_empty());
+}
+
+#[test]
+fn load_directory_hooks_finds_scripts() {
+    let dir = TempDir::new().unwrap();
+    let hooks_dir = dir.path().join("hooks");
+    let pre_tool_use_dir = hooks_dir.join("PreToolUse");
+    fs::create_dir_all(&pre_tool_use_dir).unwrap();
+
+    // Create a .sh file
+    fs::write(
+        pre_tool_use_dir.join("security-check.sh"),
+        "#!/bin/bash\necho ok",
+    )
+    .unwrap();
+
+    // Create a non-shell file (should be ignored)
+    fs::write(pre_tool_use_dir.join("readme.txt"), "not a script").unwrap();
+
+    let hooks = load_directory_hooks(dir.path(), HookSource::Project);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].event, HookEvent::PreToolUse);
+    assert_eq!(hooks[0].name, "security-check.sh");
+    assert!(hooks[0].command.contains("security-check.sh"));
+}
+
+#[test]
+fn load_directory_hooks_multiple_events() {
+    let dir = TempDir::new().unwrap();
+    let hooks_dir = dir.path().join("hooks");
+    for event in HookEvent::all() {
+        let event_dir = hooks_dir.join(event.as_dir_name());
+        fs::create_dir_all(&event_dir).unwrap();
+        fs::write(event_dir.join("test.sh"), "#!/bin/bash").unwrap();
     }
 
-    #[test]
-    fn hook_event_as_dir_name() {
-        assert_eq!(HookEvent::PreToolUse.as_dir_name(), "PreToolUse");
-        assert_eq!(HookEvent::UserPromptSubmit.as_dir_name(), "UserPromptSubmit");
+    let hooks = load_directory_hooks(dir.path(), HookSource::Global);
+    assert_eq!(hooks.len(), 6);
+    for event in HookEvent::all() {
+        assert!(hooks.iter().any(|h| h.event == *event));
     }
+}
 
-    #[test]
-    fn hook_event_all() {
-        let events = HookEvent::all();
-        assert_eq!(events.len(), 5);
-        assert!(events.contains(&HookEvent::PreToolUse));
-        assert!(events.contains(&HookEvent::Stop));
-    }
+#[test]
+fn load_directory_hooks_sorted_by_name() {
+    let dir = TempDir::new().unwrap();
+    let hooks_dir = dir.path().join("hooks");
+    let stop_dir = hooks_dir.join("Stop");
+    fs::create_dir_all(&stop_dir).unwrap();
 
-    // ---------------------------------------------------------------------------
-    // HookRegistry tests
-    // ---------------------------------------------------------------------------
+    fs::write(stop_dir.join("b-zap.sh"), "").unwrap();
+    fs::write(stop_dir.join("a-first.sh"), "").unwrap();
 
-    #[test]
-    fn hook_registry_empty() {
-        let registry = HookRegistry::new();
-        assert!(registry.hooks(HookEvent::PreToolUse).is_empty());
-        assert!(!registry.has_hooks(HookEvent::Stop));
-        assert_eq!(registry.total_count(), 0);
-    }
+    let hooks = load_directory_hooks(dir.path(), HookSource::Global);
+    assert_eq!(hooks.len(), 2);
+    assert_eq!(hooks[0].name, "a-first.sh");
+    assert_eq!(hooks[1].name, "b-zap.sh");
+}
 
-    #[test]
-    fn hook_registry_add_and_get() {
-        let mut registry = HookRegistry::new();
-        registry.add(Hook {
-            event: HookEvent::PreToolUse,
-            name: "test.sh".to_string(),
-            command: "echo test".to_string(),
-            source: HookSource::Global,
-        });
-        assert!(registry.has_hooks(HookEvent::PreToolUse));
-        assert_eq!(registry.hooks(HookEvent::PreToolUse).len(), 1);
-        assert_eq!(registry.total_count(), 1);
-    }
+#[test]
+fn load_directory_hooks_path_with_space_and_quote_has_script() {
+    // M-4: a path with a space and a single quote must load with `script`
+    // set so the executor spawns `bash <path>` (no `-c`, no quoting).
+    let dir = TempDir::new().unwrap();
+    let hooks_dir = dir.path().join("hooks");
+    let event_dir = hooks_dir.join("PreToolUse");
+    fs::create_dir_all(&event_dir).unwrap();
 
-    // ---------------------------------------------------------------------------
-    // Directory-based hooks
-    // ---------------------------------------------------------------------------
+    let script_name = "my 'hook'.sh";
+    let script_path = event_dir.join(script_name);
+    fs::write(&script_path, "#!/bin/bash\necho ok").unwrap();
 
-    #[test]
-    fn load_directory_hooks_empty_dir() {
-        let dir = TempDir::new().unwrap();
-        let hooks = load_directory_hooks(dir.path(), HookSource::Project);
-        assert!(hooks.is_empty());
-    }
+    let hooks = load_directory_hooks(dir.path(), HookSource::Project);
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].name, script_name);
+    assert_eq!(hooks[0].script.as_deref(), Some(script_path.as_path()));
+}
 
-    #[test]
-    fn load_directory_hooks_finds_scripts() {
-        let dir = TempDir::new().unwrap();
-        let hooks_dir = dir.path().join("hooks");
-        let pre_tool_use_dir = hooks_dir.join("PreToolUse");
-        fs::create_dir_all(&pre_tool_use_dir).unwrap();
+// ---------------------------------------------------------------------------
+// Combined loading
+// ---------------------------------------------------------------------------
 
-        // Create a .sh file
-        fs::write(pre_tool_use_dir.join("security-check.sh"), "#!/bin/bash\necho ok")
-            .unwrap();
+#[test]
+fn load_all_hooks_empty() {
+    let dir = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    let registry = load_all_hooks(dir.path(), cwd.path());
+    assert_eq!(registry.total_count(), 0);
+}
 
-        // Create a non-shell file (should be ignored)
-        fs::write(pre_tool_use_dir.join("readme.txt"), "not a script").unwrap();
+#[test]
+fn load_all_hooks_with_project_hooks() {
+    let config_dir = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
 
-        let hooks = load_directory_hooks(dir.path(), HookSource::Project);
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(hooks[0].event, HookEvent::PreToolUse);
-        assert_eq!(hooks[0].name, "security-check.sh");
-        assert!(hooks[0].command.contains("security-check.sh"));
-    }
+    // Create project hook
+    let project_hooks = cwd
+        .path()
+        .join(".respondami")
+        .join("hooks")
+        .join("PreToolUse");
+    fs::create_dir_all(&project_hooks).unwrap();
+    fs::write(project_hooks.join("project-hook.sh"), "#!/bin/bash").unwrap();
 
-    #[test]
-    fn load_directory_hooks_multiple_events() {
-        let dir = TempDir::new().unwrap();
-        let hooks_dir = dir.path().join("hooks");
-        for event in HookEvent::all() {
-            let event_dir = hooks_dir.join(event.as_dir_name());
-            fs::create_dir_all(&event_dir).unwrap();
-            fs::write(event_dir.join("test.sh"), "#!/bin/bash").unwrap();
-        }
-
-        let hooks = load_directory_hooks(dir.path(), HookSource::Global);
-        assert_eq!(hooks.len(), 5);
-        for event in HookEvent::all() {
-            assert!(hooks.iter().any(|h| h.event == *event));
-        }
-    }
-
-    #[test]
-    fn load_directory_hooks_sorted_by_name() {
-        let dir = TempDir::new().unwrap();
-        let hooks_dir = dir.path().join("hooks");
-        let stop_dir = hooks_dir.join("Stop");
-        fs::create_dir_all(&stop_dir).unwrap();
-
-        fs::write(stop_dir.join("b-zap.sh"), "").unwrap();
-        fs::write(stop_dir.join("a-first.sh"), "").unwrap();
-
-        let hooks = load_directory_hooks(dir.path(), HookSource::Global);
-        assert_eq!(hooks.len(), 2);
-        assert_eq!(hooks[0].name, "a-first.sh");
-        assert_eq!(hooks[1].name, "b-zap.sh");
-    }
-
-    // ---------------------------------------------------------------------------
-    // Combined loading
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn load_all_hooks_empty() {
-        let dir = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-        let registry = load_all_hooks(dir.path(), cwd.path());
-        assert_eq!(registry.total_count(), 0);
-    }
-
-    #[test]
-    fn load_all_hooks_with_project_hooks() {
-        let config_dir = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-
-        // Create project hook
-        let project_hooks = cwd
-            .path()
-            .join(".respondami")
-            .join("hooks")
-            .join("PreToolUse");
-        fs::create_dir_all(&project_hooks).unwrap();
-        fs::write(project_hooks.join("project-hook.sh"), "#!/bin/bash").unwrap();
-
-        let registry = load_all_hooks(config_dir.path(), cwd.path());
-        assert_eq!(registry.total_count(), 1);
-        assert!(matches!(
-            registry.hooks(HookEvent::PreToolUse)[0].source,
-            HookSource::Project
-        ));
-    }
+    let registry = load_all_hooks(config_dir.path(), cwd.path());
+    assert_eq!(registry.total_count(), 1);
+    assert!(matches!(
+        registry.hooks(HookEvent::PreToolUse)[0].source,
+        HookSource::Project
+    ));
+}

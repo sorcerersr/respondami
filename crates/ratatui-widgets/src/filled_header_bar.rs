@@ -174,6 +174,14 @@ impl<'a> FilledHeaderBar<'a> {
 
         paragraph.render(area, buf);
 
+        // Guard: the manual header fill below writes to the absolute row `area.y`,
+        // which may be at/beyond the buffer bottom for clipped layouts (e.g. the
+        // welcome screen on a short terminal). `Paragraph::render` above clips
+        // safely; these manual writes do not, so bail out early.
+        if area.y >= buf.area().y + buf.area().height {
+            return;
+        }
+
         // Overwrite the top row with the filled header bar
         let header_style = Style::default()
             .fg(ratatui::style::Color::White)
@@ -460,5 +468,39 @@ mod tests {
         let widget = FilledHeaderBar::new("T").content(vec![Line::from("a😀b")]);
         let h = widget.height(4); // effective_width = 4 - 2 = 2
         assert_eq!(h, 5); // 2 (header) + 3 (actual wrapped lines)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Regression: H-2 — header fill at/above the buffer bottom must not panic
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn render_at_buffer_bottom_does_not_panic() {
+        // The area's top row sits exactly on the buffer's last row. The manual
+        // header fill writes to `area.y`; pre-fix this indexed the buffer fine,
+        // but a row one past the bottom would panic. Render at the bottom row.
+        let widget = FilledHeaderBar::new("Test").content(vec![Line::from("x")]);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        widget.render_into(Rect::new(0, 2, 20, 1), &mut buf);
+        // Header row (row 2) is filled and readable.
+        assert_eq!(buf[(1, 2)].symbol(), "T");
+    }
+
+    #[test]
+    fn render_above_buffer_bottom_does_not_panic() {
+        // The area's top row is beyond the buffer bottom (clipped layout). The
+        // guard must bail out before the manual header fill writes out of bounds.
+        let widget = FilledHeaderBar::new("Test").content(vec![Line::from("x")]);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        // area.y = 5 > buffer bottom (3). Must not panic.
+        widget.render_into(Rect::new(0, 5, 20, 1), &mut buf);
+    }
+
+    #[test]
+    fn render_zero_height_does_not_panic() {
+        // A zero-height panel (fully clipped) is a no-op.
+        let widget = FilledHeaderBar::new("Test").content(vec![Line::from("x")]);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+        widget.render_into(Rect::new(0, 0, 20, 0), &mut buf);
     }
 }

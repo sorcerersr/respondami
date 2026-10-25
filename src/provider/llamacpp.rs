@@ -7,6 +7,7 @@ use async_openai::types::chat::{
     ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage,
     ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestToolMessageArgs,
     ChatCompletionRequestUserMessageArgs,
@@ -18,6 +19,7 @@ use async_openai::types::chat::{
     ChatCompletionTools,
     CreateChatCompletionRequest,
     CreateChatCompletionRequestArgs,
+    CreateChatCompletionResponse,
     FunctionCall,
     FunctionObject,
     ImageUrl,
@@ -36,6 +38,11 @@ use tokio::sync::watch;
 const USER_AGENT: &str = concat!("Respondami/", env!("CARGO_PKG_VERSION"));
 
 /// Provider for OpenAI-compatible endpoints (llama.cpp, Ollama, vLLM, `OpenAI`).
+///
+/// `url`/`api_key` duplicate data held inside `client`'s `OpenAIConfig`, but
+/// async-openai 0.42.2 exposes no public getters for them, and the raw
+/// reqwest streaming path needs both — the duplication is unavoidable until
+/// the dependency grows accessors.
 pub struct LlamaCppProvider {
     url: String,
     api_key: String,
@@ -178,13 +185,7 @@ impl LlamaCppProvider {
         &self,
         req: &ChatRequest,
     ) -> Result<CompletionResponse, ProviderError> {
-        let openai_req = build_openai_request(req, false);
-
-        // Strip stream flag for non-streaming
-        let request: CreateChatCompletionRequest = serde_json::from_value(
-            serde_json::to_value(&openai_req).map_err(ProviderError::Serialization)?,
-        )
-        .map_err(ProviderError::Serialization)?;
+        let request = build_openai_request(req, false);
 
         let response = self
             .client
@@ -193,29 +194,18 @@ impl LlamaCppProvider {
             .await
             .map_err(|e| ProviderError::Network(std::io::Error::other(e)))?;
 
-        let content = response
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .unwrap_or_default();
-
-        let usage = response.usage.map(|u| Usage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-        });
-
-        Ok(CompletionResponse { content, usage })
+        parse_completion_response(response)
     }
 
     // -----------------------------------------------------------------------
     // Health check
     // -----------------------------------------------------------------------
 
-    pub(super) async fn ping_inner(&self) -> Result<(), ProviderError> {
-        // Simple HEAD-style check: try a minimal chat completion
+    pub(super) async fn ping_inner(&self, model: &str) -> Result<(), ProviderError> {
+        // Simple HEAD-style check: try a minimal chat completion with the
+        // configured model (some endpoints reject unknown model names).
         let request = CreateChatCompletionRequestArgs::default()
-            .model("dummy")
+            .model(model)
             .messages(vec![
                 ChatCompletionRequestMessage::User(
                     ChatCompletionRequestUserMessageArgs::default()
@@ -236,6 +226,35 @@ impl LlamaCppProvider {
             ))),
         }
     }
+}
+
+/// Map a non-streaming completion response to the normalized form.
+///
+/// Empty `choices` is an error, not a silent empty string: the LLM compaction
+/// path handles `Err` with a no-summary fallback, so a malformed response must
+/// not masquerade as an empty summary.
+///
+/// # Errors
+///
+/// - [`ProviderError::EmptyResponse`] when the response carries no choices.
+pub(crate) fn parse_completion_response(
+    response: CreateChatCompletionResponse,
+) -> Result<CompletionResponse, ProviderError> {
+    let content = response
+        .choices
+        .first()
+        .and_then(|c| c.message.content.clone())
+        .ok_or_else(|| ProviderError::EmptyResponse {
+            detail: "non-streaming completion returned no choices".to_string(),
+        })?;
+
+    let usage = response.usage.map(|u| Usage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+    });
+
+    Ok(CompletionResponse { content, usage })
 }
 
 // ---------------------------------------------------------------------------
@@ -261,8 +280,8 @@ impl ProviderTrait for LlamaCppProvider {
         self.complete_inner(req).await
     }
 
-    async fn ping(&self) -> Result<(), ProviderError> {
-        self.ping_inner().await
+    async fn ping(&self, model: &str) -> Result<(), ProviderError> {
+        self.ping_inner(model).await
     }
 }
 
@@ -338,10 +357,11 @@ fn inject_reasoning_content(
     if let Some(messages) = request.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut msg_idx = 0;
         for (_orig_idx, orig_msg) in msg_pairs {
-            // to_openai_message skips empty assistant messages, so we need to
-            // align original messages with the filtered list.
-            if matches!(orig_msg, Message::Assistant { content, tool_calls, .. }
-                if content.is_empty() && tool_calls.is_empty())
+            // to_openai_message skips assistant messages with no content, no
+            // reasoning, and no tool calls, so we need to align original
+            // messages with the filtered list using the same three-way guard.
+            if matches!(orig_msg, Message::Assistant { content, tool_calls, reasoning, .. }
+                if content.is_empty() && tool_calls.is_empty() && reasoning.is_empty())
             {
                 continue;
             }
@@ -381,9 +401,22 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
             let content_value = if images.is_empty() {
                 ChatCompletionRequestUserMessageContent::Text(content.clone())
             } else {
-                let parts: Vec<ChatCompletionRequestUserMessageContentPart> = images
-                    .iter()
-                    .map(|img| {
+                // A text part must accompany the image parts: an image-only
+                // content array leaves the user turn without any text, which
+                // local models (llama.cpp + qwen3) interpret as a user turn
+                // that said nothing, increasing the probability of empty
+                // responses. The tool result's own text note already describes
+                // the image; this part just makes the turn non-empty.
+                let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
+                    ChatCompletionRequestUserMessageContentPart::Text(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: "Image attached.".to_string(),
+                            prompt_cache_breakpoint: None,
+                        },
+                    ),
+                ];
+                parts.extend(
+                    images.iter().map(|img| {
                         ChatCompletionRequestUserMessageContentPart::ImageUrl(
                             ChatCompletionRequestMessageContentPartImage {
                                 image_url: ImageUrl {
@@ -393,8 +426,8 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
                                 prompt_cache_breakpoint: None,
                             },
                         )
-                    })
-                    .collect();
+                    }),
+                );
                 ChatCompletionRequestUserMessageContent::Array(parts)
             };
             Some(ChatCompletionRequestMessage::User(
@@ -407,14 +440,15 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
         Message::Assistant {
             content,
             tool_calls,
-            ..
+            reasoning,
         } => {
-            // Guard: skip assistant messages with no content, no reasoning, and no tool calls.
-            // OpenAI API requires "either content or tool_calls, but not none".
+            // Guard: skip assistant messages with no content, no reasoning, and
+            // no tool calls. OpenAI API requires "either content or tool_calls,
+            // but not none". Reasoning-only messages are kept: the reasoning is
+            // injected post-hoc as `reasoning_content` in `inject_reasoning_content`.
             // Some providers silently drop or error on empty assistant messages.
             // Modeled on pi-coding-agent's convertMessages() guard.
-            let has_reasoning = false; // reasoning handled separately via JSON injection
-            if content.is_empty() && tool_calls.is_empty() && !has_reasoning {
+            if content.is_empty() && tool_calls.is_empty() && reasoning.is_empty() {
                 return None;
             }
             let mut builder = ChatCompletionRequestAssistantMessageArgs::default();

@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use super::compaction::CompactionSettings;
 use super::entry::{AgentMessage, SessionEntry, TokenRateEntry};
+use crate::agent::token_estimation::{estimate_tokens_from_messages, TokenEstimator};
 
 /// Metadata about a session for listing purposes.
 #[derive(Debug, Clone)]
@@ -28,12 +28,94 @@ pub struct SessionMeta {
 }
 
 /// Stores session data and handles JSONL I/O.
+///
+/// Caches the calibrated estimator and context token count (H2): the cache is
+/// recomputed eagerly at the three context-mutation points —
+/// [`Self::append_message`], [`Self::apply_compaction`], and session
+/// load/new/resume — so per-frame readers (status bar, tracker) never walk
+/// the entries or clone the context.
 #[derive(Debug)]
 pub struct SessionStore {
     sessions_dir: PathBuf,
-    current_session_path: Option<PathBuf>,
+    /// `pub(crate)` so tests can point the store at an unwritable path to
+    /// exercise the rewrite-failure propagation (L-28).
+    pub(crate) current_session_path: Option<PathBuf>,
     current_session_id: Option<String>,
     entries: Vec<SessionEntry>,
+    /// Calibrated estimator for the current entries (see
+    /// [`Self::recompute_context_cache`]).
+    cached_estimator: TokenEstimator,
+    /// `estimate_tokens_from_messages` of the built context.
+    cached_context_tokens: u32,
+    /// Last system prompt built by `build_context_with_system` (empty until
+    /// the first turn). Display/estimation only — never part of the context.
+    cached_system_prompt: String,
+    /// Token estimate of [`Self::cached_system_prompt`] (incl. the `system`
+    /// role label, mirroring `estimate_tokens_from_messages`).
+    cached_system_tokens: u32,
+}
+
+/// Build context messages by walking a flat list of session entries.
+///
+/// Shared by [`SessionStore::build_context`] and the calibrated
+/// [`crate::agent::token_estimation::TokenEstimator`]. Injects compaction
+/// summaries as user messages and skips entries before each cut point. System
+/// messages are skipped (the system prompt is injected separately by
+/// `build_context_with_system` to avoid duplicates that break templates).
+#[must_use]
+pub fn build_context_from_entries(entries: &[SessionEntry]) -> Vec<AgentMessage> {
+    let mut messages = Vec::new();
+    let mut skip_until: Option<String> = None;
+
+    for entry in entries {
+        // Any entry that is the first-kept target ends the skip, whatever its
+        // type (a ModelChange/Custom target must not drop the whole tail).
+        if let Some(ref skip_id) = skip_until {
+            if entry.id() == *skip_id {
+                skip_until = None;
+            } else {
+                continue;
+            }
+        }
+        match entry {
+            SessionEntry::Session { .. } => continue,
+            SessionEntry::Message { message, .. } => {
+                // Skip system messages from session history — the system
+                // prompt is injected by build_context_with_system() to
+                // avoid duplicate system messages that break templates
+                // requiring system at position 0.
+                if matches!(message, AgentMessage::System { .. }) {
+                    continue;
+                }
+                messages.push(message.clone());
+            }
+            SessionEntry::Compaction {
+                summary,
+                first_kept_entry_id,
+                ..
+            } => {
+                // Inject summary as user message (not system) to avoid
+                // breaking Jinja templates that require system messages
+                // at the beginning only.
+                messages.push(AgentMessage::user(format!(
+                    "[Previous conversation summary]\n{summary}"
+                )));
+                skip_until = if first_kept_entry_id.is_empty() {
+                    None // CompactAll: everything before the summary is dropped; keep the tail
+                } else {
+                    Some(first_kept_entry_id.clone())
+                };
+            }
+            SessionEntry::ModelChange { .. } => {
+                // Model changes are tracked but don't add messages
+            }
+            SessionEntry::Custom { .. } => {
+                // Custom entries (token-rate, etc.) are metadata only
+            }
+        }
+    }
+
+    messages
 }
 
 impl SessionStore {
@@ -47,6 +129,10 @@ impl SessionStore {
             current_session_path: None,
             current_session_id: None,
             entries: Vec::new(),
+            cached_estimator: TokenEstimator::heuristic(),
+            cached_context_tokens: 0,
+            cached_system_prompt: String::new(),
+            cached_system_tokens: 0,
         }
     }
 
@@ -88,6 +174,7 @@ impl SessionStore {
 
         self.entries.clear();
         self.entries.push(header.clone());
+        self.recompute_context_cache();
         self.append_entry_to_disk(&header, &path)
             .with_context(|| format!("Failed to write session header to {}", path.display()))?;
 
@@ -157,6 +244,7 @@ impl SessionStore {
         if let Some(SessionEntry::Session { id, .. }) = self.entries.first() {
             self.current_session_id = Some(id.clone());
         }
+        self.recompute_context_cache();
 
         Ok(self.entries.clone())
     }
@@ -170,9 +258,19 @@ impl SessionStore {
         let entry = SessionEntry::new_message(parent_id, message);
         let id = entry.id();
         self.entries.push(entry.clone());
+        self.recompute_context_cache();
         if let Some(ref path) = self.current_session_path {
             self.append_entry_to_disk(&entry, path)?;
         }
+        #[cfg(debug_assertions)]
+        {
+            let fresh = build_context_from_entries(&self.entries);
+            debug_assert_eq!(
+                estimate_tokens_from_messages(&fresh, &self.cached_estimator),
+                self.cached_context_tokens,
+                "context cache must be recomputed on append_message"
+            );
+        };
         Ok(id)
     }
 
@@ -184,9 +282,19 @@ impl SessionStore {
     pub fn append_entry(&mut self, entry: SessionEntry) -> anyhow::Result<String> {
         let id = entry.id();
         self.entries.push(entry.clone());
+        self.recompute_context_cache();
         if let Some(ref path) = self.current_session_path {
             self.append_entry_to_disk(&entry, path)?;
         }
+        #[cfg(debug_assertions)]
+        {
+            let fresh = build_context_from_entries(&self.entries);
+            debug_assert_eq!(
+                estimate_tokens_from_messages(&fresh, &self.cached_estimator),
+                self.cached_context_tokens,
+                "context cache must be recomputed on append_entry"
+            );
+        };
         Ok(id)
     }
 
@@ -200,52 +308,81 @@ impl SessionStore {
     /// Injects compaction summaries and skips entries before the cut point.
     #[must_use]
     pub fn build_context(&self) -> Vec<AgentMessage> {
-        let mut messages = Vec::new();
-        let mut skip_until: Option<String> = None;
+        build_context_from_entries(&self.entries)
+    }
 
-        for entry in &self.entries {
-            match entry {
-                SessionEntry::Session { .. } => continue,
-                SessionEntry::Message { message, .. } => {
-                    if let Some(ref skip_id) = skip_until {
-                        if entry.id() == *skip_id {
-                            skip_until = None;
-                        } else {
-                            continue;
-                        }
-                    }
-                    // Skip system messages from session history — the system
-                    // prompt is injected by build_context_with_system() to
-                    // avoid duplicate system messages that break templates
-                    // requiring system at position 0.
-                    if matches!(message, AgentMessage::System { .. }) {
-                        continue;
-                    }
-                    messages.push(message.clone());
-                }
-                SessionEntry::Compaction {
-                    summary,
-                    first_kept_entry_id,
-                    ..
-                } => {
-                    // Inject summary as user message (not system) to avoid
-                    // breaking Jinja templates that require system messages
-                    // at the beginning only.
-                    messages.push(AgentMessage::user(format!(
-                        "[Previous conversation summary]\n{summary}"
-                    )));
-                    skip_until = Some(first_kept_entry_id.clone());
-                }
-                SessionEntry::ModelChange { .. } => {
-                    // Model changes are tracked but don't add messages
-                }
-                SessionEntry::Custom { .. } => {
-                    // Custom entries (token-rate, etc.) are metadata only
-                }
-            }
+    /// Cached calibrated estimator for the current session.
+    ///
+    /// Recomputed eagerly at every context mutation (see the struct docs),
+    /// so this is a copy, not a walk. The calibration base includes the
+    /// cached system prompt's char count (H3).
+    #[must_use]
+    pub fn cached_estimator(&self) -> TokenEstimator {
+        self.cached_estimator
+    }
+
+    /// Cached token estimate of the built context (no system overhead).
+    #[must_use]
+    pub fn cached_context_tokens(&self) -> u32 {
+        self.cached_context_tokens
+    }
+
+    /// The last system prompt built by `build_context_with_system`.
+    ///
+    /// Empty until the first turn builds one; refreshed at every turn start.
+    #[must_use]
+    pub fn cached_system_prompt(&self) -> &str {
+        &self.cached_system_prompt
+    }
+
+    /// Cached token estimate of the system prompt (incl. role label).
+    #[must_use]
+    pub fn cached_system_tokens(&self) -> u32 {
+        self.cached_system_tokens
+    }
+
+    /// Store a freshly built system prompt in the cache.
+    ///
+    /// Called by `build_context_with_system` at every turn start so the
+    /// per-frame status-bar path never re-reads AGENTS.md from disk.
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.cached_system_prompt = prompt;
+        self.cached_system_tokens = self
+            .cached_estimator
+            .estimate_tokens("system")
+            .saturating_add(self.cached_estimator.estimate_tokens(&self.cached_system_prompt));
+    }
+
+    /// System prompt tokens, building and caching the prompt on first use.
+    ///
+    /// The disk read happens only when the cache is empty (before the first
+    /// turn); every later call — including the per-frame status-bar path —
+    /// returns the cached value.
+    #[must_use]
+    pub fn system_prompt_tokens(&mut self, cwd: &Path, skills: &[crate::skills::Skill]) -> u32 {
+        if self.cached_system_prompt.is_empty() {
+            let (prompt, _) = crate::agent::build_system_prompt_with_agents_md(cwd, skills);
+            self.set_system_prompt(prompt);
         }
+        self.cached_system_tokens
+    }
 
-        messages
+    /// Recompute the cached estimator and context tokens from the entries.
+    ///
+    /// The only writer of the context cache. Called from exactly the
+    /// context-mutation points: `append_message`, `append_entry`,
+    /// `apply_compaction`, and session load/new/resume.
+    fn recompute_context_cache(&mut self) {
+        let context = build_context_from_entries(&self.entries);
+        let est =
+            TokenEstimator::from_messages_with_system(&context, self.cached_system_prompt.len());
+        self.cached_estimator = est;
+        self.cached_context_tokens = estimate_tokens_from_messages(&context, &est);
+        if !self.cached_system_prompt.is_empty() {
+            self.cached_system_tokens = est
+                .estimate_tokens("system")
+                .saturating_add(est.estimate_tokens(&self.cached_system_prompt));
+        }
     }
 
     /// Get the last entry ID (for parent chaining).
@@ -266,18 +403,17 @@ impl SessionStore {
         })
     }
 
-    /// Estimate current context token count from session entries.
-    /// Uses character-based estimation (chars / 4) on `build_context()` output.
+    /// Estimate current context token count from the session entries.
+    ///
+    /// Returns the cached estimate of `build_context()` output (recomputed
+    /// at every context mutation) — no walk, no clone.
     ///
     /// This does NOT include system prompt, AGENTS.md, or skills overhead.
     /// Use `estimate_context_tokens()` for a more accurate estimate that includes
     /// system overhead and actual LLM usage data when available.
     #[must_use]
     pub fn estimate_token_count(&self) -> u32 {
-        self.build_context()
-            .iter()
-            .map(|m| CompactionSettings::estimate_tokens(m.content()))
-            .sum()
+        self.cached_context_tokens
     }
 
     /// Estimate total context tokens including system overhead.
@@ -298,13 +434,9 @@ impl SessionStore {
             }
         }
 
-        // Fallback: character estimates + system overhead
-        let entry_tokens: u32 = self
-            .build_context()
-            .iter()
-            .map(|m| CompactionSettings::estimate_tokens(m.content()))
-            .sum();
-        entry_tokens.saturating_add(system_overhead_tokens)
+        // Fallback: cached character estimates + system overhead
+        self.cached_context_tokens
+            .saturating_add(system_overhead_tokens)
     }
 
     /// Last real usage from the most recent Assistant message, if any.
@@ -521,11 +653,12 @@ impl SessionStore {
             .filter(|e| matches!(e, SessionEntry::Message { .. }))
             .count();
 
-        // Find the ID of the first entry to keep
-        let first_kept_id = self.entries.get(cut_index).map(super::entry::SessionEntry::id);
-        let first_kept_id = match first_kept_id {
-            Some(id) => id,
-            None => return Ok((tokens_before, tokens_before, 0)),
+        // Find the ID of the first entry to keep. A `cut_index` at or past the
+        // end means compact-all: use the empty-string sentinel so the live
+        // window restarts right after the compaction entry (orphan recovery).
+        let first_kept_id = match self.entries.get(cut_index) {
+            Some(e) => e.id(),
+            None => String::new(),
         };
 
         // Build compaction entry
@@ -562,6 +695,7 @@ impl SessionStore {
 
         // Rewrite session file
         self.entries = new_entries;
+        self.recompute_context_cache();
         if let Some(ref path) = self.current_session_path {
             self.rewrite_session_file(path)?;
         }
@@ -572,21 +706,32 @@ impl SessionStore {
 
     /// Rewrite the entire session file from memory.
     ///
+    /// Writes to a temp file in the same directory, fsyncs, then renames over
+    /// the original, so a crash leaves either the old or the new file, never
+    /// a truncated one.
+    ///
     /// # Errors
     ///
-    /// - I/O errors when creating, writing, or flushing the session file.
-    fn rewrite_session_file(&self, path: &std::path::Path) -> io::Result<()> {
+    /// - Serialization errors for any entry (a partially rewritten file must
+    ///   not be written).
+    /// - I/O errors when creating, writing, syncing, or renaming the file.
+    fn rewrite_session_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let mut content = String::new();
         for entry in &self.entries {
-            if let Ok(json) = serde_json::to_string(entry) {
-                content.push_str(&json);
-                content.push('\n');
-            }
+            let json = serde_json::to_string(entry)
+                .with_context(|| "serializing session entry for rewrite")?;
+            content.push_str(&json);
+            content.push('\n');
         }
-        let file = std::fs::File::create(path)?;
+        let tmp_path = path.with_extension("jsonl.tmp");
+        let file = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
         let mut writer = std::io::BufWriter::new(file);
         writer.write_all(content.as_bytes())?;
         writer.flush()?;
+        writer.into_inner()?.sync_all()?;
+        std::fs::rename(&tmp_path, path)
+            .with_context(|| format!("renaming {} over {}", tmp_path.display(), path.display()))?;
         Ok(())
     }
 }

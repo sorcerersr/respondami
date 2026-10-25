@@ -72,8 +72,9 @@ pub fn load_agents_md(cwd: &Path) -> io::Result<Option<(String, PathBuf)>> {
         if path.exists() {
             let content = fs::read_to_string(path)?;
             if content.trim().is_empty() {
-                // Empty file — treat as not found
-                return Ok(None);
+                // Empty file — treat as absent and keep checking the next
+                // location (a zero-byte root file must not shadow the hidden one).
+                continue;
             }
             return Ok(Some((content, path.clone())));
         }

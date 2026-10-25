@@ -6,6 +6,7 @@
 //! Rust guideline compliant 2026-02-21
 
 use super::app::App;
+use crate::agent::token_estimation::TokenEstimator;
 use ratatui_md::HeightAware;
 use super::hook_display::HookDisplay;
 use super::thinking_display::ThinkingDisplay;
@@ -33,11 +34,15 @@ mod user_message;
 mod welcome_screen;
 
 #[cfg(test)]
+mod compaction_message_tests;
+#[cfg(test)]
 mod hook_message_tests;
 #[cfg(test)]
 mod system_message_tests;
 #[cfg(test)]
 mod thinking_message_tests;
+#[cfg(test)]
+mod user_message_tests;
 #[cfg(test)]
 mod welcome_screen_tests;
 
@@ -93,12 +98,12 @@ impl ChatMessage {
     /// Render this message into the given area using the buffer.
     /// Messages render in full (no clipping — `ScrollView` handles viewport).
     #[expect(clippy::too_many_arguments, reason = "render signature unified across all message types")]
-    pub fn render_into(&self, area: Rect, display: ThinkingDisplay, max_lines: usize, hook_display: HookDisplay, buf: &mut ratatui::buffer::Buffer, theme: &Theme, rtk_active: bool) {
+    pub fn render_into(&self, area: Rect, display: ThinkingDisplay, max_lines: usize, hook_display: HookDisplay, buf: &mut ratatui::buffer::Buffer, theme: &Theme, rtk_active: bool, est: &TokenEstimator) {
         match self {
             ChatMessage::User(msg) => msg.render_into(area, buf, theme),
             ChatMessage::Assistant(msg) => msg.render_into(area, buf, theme),
             ChatMessage::ToolCall(msg) => msg.render_into(area, buf, theme, rtk_active),
-            ChatMessage::Thinking(msg) => msg.render_into(area, display, max_lines, buf, theme),
+            ChatMessage::Thinking(msg) => msg.render_into(area, display, max_lines, buf, theme, est),
             ChatMessage::Compaction(msg) => msg.render_into(area, buf, theme),
             ChatMessage::System(msg) => msg.render_into(area, buf, theme),
             ChatMessage::Hook(msg) => msg.render_into(area, hook_display, buf, theme),
@@ -132,6 +137,7 @@ impl ChatRenderer {
         let max_lines = app.config.config.ui.thinking_max_lines;
         let hook_display = app.config.hook_display;
         let rtk_active = app.config.config.rtk.enabled && app.config.rtk_state.is_available();
+        let est = app.session.session_store.cached_estimator();
         let width = area.width as usize;
 
         // Compute heights for all messages
@@ -220,7 +226,7 @@ impl ChatRenderer {
                     height: msg_h as u16,
                 };
                 let mut buf = Buffer::empty(temp_area);
-                message.render_into(temp_area, display, max_lines, hook_display, &mut buf, theme, rtk_active);
+                message.render_into(temp_area, display, max_lines, hook_display, &mut buf, theme, rtk_active, &est);
 
                 // Copy visible rows to frame
                 let target_y = (msg_visible_start - scroll_offset) as u16;

@@ -64,6 +64,21 @@ fn load_agents_md_whitespace_only() {
     assert_eq!(result.unwrap(), None);
 }
 
+/// L-8 regression: an empty (or whitespace-only) root AGENTS.md must fall
+/// through to the `.respondami/AGENTS.md` fallback rather than short-circuiting
+/// to `None`.
+#[test]
+fn load_agents_md_empty_root_falls_to_hidden() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("AGENTS.md"), "").unwrap();
+    let hidden = dir.path().join(".respondami");
+    fs::create_dir_all(&hidden).unwrap();
+    fs::write(hidden.join("AGENTS.md"), "# Hidden Rules").unwrap();
+    let (content, path) = load_agents_md(dir.path()).unwrap().unwrap();
+    assert!(content.contains("Hidden Rules"));
+    assert!(path.to_string_lossy().contains(".respondami"));
+}
+
 #[test]
 fn load_agents_md_read_error() {
     // On Unix, create a file with no read permissions.

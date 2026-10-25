@@ -1,6 +1,8 @@
 # Respondami
 
-> **v0.1.0** — privacy-first coding agent. One binary, no telemetry, skills-driven.
+> **v0.2.0** — privacy-first coding agent. One binary, no telemetry, skills-driven.
+
+Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 Built with [Ratatui] and [Crossterm].
 
@@ -43,7 +45,7 @@ For a detailed walkthrough, see [docs/quick-start.md](./docs/quick-start.md).
 ## Features
 
 - **Session management** — persist conversations as JSONL, resume across sessions
-- **Automatic compaction** — LLM summarization keeps conversations within the context window
+- **Automatic compaction** — keeps conversations within the context window. Default is VCC (algorithmic, LLM-free, instant); LLM summarization is available via `compaction.mode`
 - **Skills** — self-contained capability packages (open standard, [agentskills.io](https://agentskills.io))
 - **Hooks** — shell scripts at lifecycle points to inject context, block actions, or run side effects
 - **RTK integration** — automatic command rewriting for safer shell execution

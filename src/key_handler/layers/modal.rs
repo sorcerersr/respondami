@@ -18,7 +18,6 @@
 
 use crossterm::event::KeyEvent;
 use crate::tui::App;
-use crate::tui::AppState;
 use super::super::KeyEventResult;
 
 /// Modal layer that handles global shortcuts with modal awareness.
@@ -69,14 +68,9 @@ impl ModalLayer {
         Ok(KeyEventResult::Unhandled)
     }
 
-    /// Check if any modal is currently open.
+    /// Check if any modal is currently open. Delegates to the canonical
+    /// `App::is_modal` predicate (which also covers `TokenStatsDialog`).
     fn is_modal_open(&self, app: &App) -> bool {
-        matches!(
-            app.modal.state,
-            AppState::SessionSelect
-                | AppState::InitPopup
-                | AppState::CommandPalette
-                | AppState::HelpPopup
-        )
+        app.is_modal()
     }
 }

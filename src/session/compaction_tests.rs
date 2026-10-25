@@ -53,7 +53,7 @@ use tempfile::TempDir;
             make_message_entry("I'm fine", "assistant"),
         ];
 
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 10);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
         assert!(cut.is_some());
         assert!(cut.unwrap() >= 1);
     }
@@ -76,7 +76,7 @@ use tempfile::TempDir;
         ];
 
         // Should stop at compaction boundary (index 3)
-        let cut = CompactionSettings::find_cut_point(&entries, 4, 6, 100000);
+        let cut = LlmCompaction::find_cut_point(&entries, 4, 6, 100000);
         assert!(cut.is_none() || cut.unwrap() >= 4);
     }
 
@@ -96,7 +96,7 @@ use tempfile::TempDir;
             make_message_entry("Done", "assistant"),
         ];
 
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 10);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
         if let Some(cut_idx) = cut {
             assert_ne!(cut_idx, 3, "should not cut at tool result");
         }
@@ -136,7 +136,7 @@ use tempfile::TempDir;
             make_message_entry("result", "user"),
         ];
 
-        let (read_files, modified_files) = CompactionSettings::extract_file_operations(&entries, 3);
+        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 3);
         assert_eq!(read_files, vec!["src/main.rs"]);
         assert_eq!(modified_files, vec!["src/lib.rs"]);
     }
@@ -168,14 +168,14 @@ use tempfile::TempDir;
             ),
         ];
 
-        let (read_files, modified_files) = CompactionSettings::extract_file_operations(&entries, 2);
+        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 2);
         assert_eq!(read_files, [] as [String; 0]);
         assert_eq!(modified_files, vec!["src/edit.rs"]);
     }
 
     #[test]
     fn summarize_prompt_includes_previous_summary() {
-        let prompt = CompactionSettings::summarization_user_prompt(
+        let prompt = LlmCompaction::summarization_user_prompt(
             "[User] hello\n[Assistant] hi",
             Some("## Goal\nBuild a CLI app"),
             4096,
@@ -188,7 +188,7 @@ use tempfile::TempDir;
 
     #[test]
     fn summarize_prompt_without_previous_summary() {
-        let prompt = CompactionSettings::summarization_user_prompt(
+        let prompt = LlmCompaction::summarization_user_prompt(
             "[User] hello",
             None,
             4096,
@@ -217,7 +217,7 @@ use tempfile::TempDir;
         ];
 
         // 6 messages (indices 1-6), should split at midpoint (index 4)
-        let cut = CompactionSettings::find_cut_point_by_count(&entries, 1, 7);
+        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
         assert_eq!(cut, Some(4)); // Compact entries 1-3, keep entries 4-6
     }
 
@@ -235,7 +235,7 @@ use tempfile::TempDir;
         ];
 
         // Only 1 message, can't meaningfully compact
-        let cut = CompactionSettings::find_cut_point_by_count(&entries, 1, 2);
+        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 2);
         assert_eq!(cut, None);
     }
 
@@ -260,7 +260,7 @@ use tempfile::TempDir;
         // Valid cuts: 1(user), 2(assistant), 4(assistant), 5(user), 6(assistant)
         // Tool result at index 3 is excluded
         // Midpoint of 5 valid cuts = index 2, so cut at valid_cuts[2] = 4
-        let cut = CompactionSettings::find_cut_point_by_count(&entries, 1, 7);
+        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
         assert_eq!(cut, Some(4));
     }
 
@@ -289,14 +289,67 @@ use tempfile::TempDir;
         // But wait, 5 >= end_index (5), so this means keep nothing and compact everything.
         // Actually min(5, 5) = 5, which means "keep from index 5" = keep nothing.
         // The cut point is the FIRST entry to KEEP, so cut=5 means keep entries 5..5 = empty.
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 2);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
         assert_eq!(cut, Some(5)); // Compact everything (keep nothing from the range)
 
         // With a higher threshold, we should keep some entries
         // keep_recent_tokens = 3
         // Walk: index 4 (2 tokens, acc=2 < 3), index 3 (2 tokens, acc=4 >= 3) → return min(3+1, 5) = 4
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 3);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 3);
         assert_eq!(cut, Some(4)); // Keep entry 4, compact entries 1-3
+    }
+
+    #[test]
+    fn find_cut_point_advances_past_orphaned_tool_result() {
+        // Regression (M-6): the budget-crossing entry is an assistant tool-call
+        // and i+1 lands on its tool result. The cut must advance to the next
+        // non-Tool entry so the kept prefix never starts with an orphan.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry("Y", "user"),          // index 1, 0 tokens
+            make_message_entry("XXXX", "assistant"),  // index 2, 1 token (tool-call)
+            make_message_entry("tool output", "tool"), // index 3, skipped in walk
+            make_message_entry("B", "user"),          // index 4, 0 tokens
+            make_message_entry("C", "assistant"),     // index 5, 0 tokens
+        ];
+
+        // keep=1: walk i=5 (0), i=4 (0), i=3 (tool, skip), i=2 (1 >= 1)
+        // → base=3 (tool) → advance to 4 (user).
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 6, 1);
+        assert_eq!(
+            cut, Some(4),
+            "cut must not land on the orphaned tool result"
+        );
+    }
+
+    #[test]
+    fn find_cut_point_advance_exhausted_returns_none() {
+        // M-6: if advancing past leading Tool entries runs out of safe entries
+        // (cut reaches end_index), there is nothing safe to keep → None.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            make_message_entry("Y", "user"),           // index 1, 0 tokens
+            make_message_entry("XXXX", "assistant"),   // index 2, 1 token
+            make_message_entry("tool output", "tool"), // index 3
+            make_message_entry("more output", "tool"), // index 4
+        ];
+
+        // keep=1: i=4,3 are tools (skipped); i=2 (1 >= 1) → base=3 →
+        // advance 3,4 → 5 = end_index → None.
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 1);
+        assert_eq!(cut, None, "advance exhausted the range → nothing safe to keep");
     }
 
     #[test]
@@ -319,7 +372,7 @@ use tempfile::TempDir;
 
         // cut_index = 5 (keep nothing), boundary_end = 5
         // kept_message_count = 0 < MIN_KEEP_MESSAGES = 4
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 5, 2);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
         assert_eq!(cut, Some(5));
 
         let kept_message_count = entries[5..5]
@@ -355,7 +408,7 @@ use tempfile::TempDir;
         ];
 
         // With a moderate threshold, cut should land somewhere in the middle.
-        let cut = CompactionSettings::find_cut_point(&entries, 1, 9, 10);
+        let cut = LlmCompaction::find_cut_point(&entries, 1, 9, 10);
         assert!(cut.is_some());
         let cut = cut.unwrap();
 
@@ -434,7 +487,7 @@ use tempfile::TempDir;
             make_message_entry(&result, "tool"),
         ];
 
-        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        let text = LlmCompaction::serialize_for_summary(&entries, 2);
 
         // The truncated content is the first 4095 bytes (the `§` is dropped
         // whole because 4096 is not a char boundary).
@@ -462,7 +515,7 @@ use tempfile::TempDir;
             make_message_entry(&result, "tool"),
         ];
 
-        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        let text = LlmCompaction::serialize_for_summary(&entries, 2);
 
         let expected_prefix = format!("[Tool Result] {}", "b".repeat(4096));
         assert!(text.starts_with(&expected_prefix), "exact boundary keeps all 4096 bytes");
@@ -483,7 +536,7 @@ use tempfile::TempDir;
             make_message_entry("short output", "tool"),
         ];
 
-        let text = CompactionSettings::serialize_for_summary(&entries, 2);
+        let text = LlmCompaction::serialize_for_summary(&entries, 2);
         assert_eq!(text, "[Tool Result] short output");
     }
 
@@ -502,6 +555,7 @@ fn make_test_skill_file(tmp: &TempDir, name: &str, body: &str) -> (Skill, std::p
             description: "test skill".to_string(),
             license: None,
             metadata: std::collections::HashMap::new(),
+            hooks: Vec::new(),
             file_path: path.clone(),
             base_dir: dir,
             source: SkillSource::Global,
@@ -525,6 +579,7 @@ fn make_test_skill_file(tmp: &TempDir, name: &str, body: &str) -> (Skill, std::p
             description: "test skill".to_string(),
             license: None,
             metadata: std::collections::HashMap::new(),
+            hooks: Vec::new(),
             file_path: tmp.path().join("gone").join("SKILL.md"),
             base_dir: tmp.path().join("gone"),
             source: SkillSource::Global,
@@ -591,7 +646,7 @@ impl ProviderTrait for MockProvider {
         })
     }
 
-    async fn ping(&self) -> Result<(), ProviderError> {
+    async fn ping(&self, _model: &str) -> Result<(), ProviderError> {
         Ok(())
     }
 }
@@ -617,14 +672,15 @@ impl ProviderTrait for MockProvider {
             entries.push(make_message_entry(&format!("Message {i}"), role));
         }
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        config.compaction.mode = crate::config::CompactionMode::Llm;
         let engine = CompactionEngine::from_config(&config);
         let provider = Provider::from_trait(Box::new(MockProvider {
             summary: "## Goal\nTest goal".to_string(),
         }));
 
         let plan = engine
-            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), vec![skill])
+            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), vec![skill], None)
             .await
             .expect("compute_compaction");
 
@@ -633,4 +689,53 @@ impl ProviderTrait for MockProvider {
         assert!(plan.summary.contains("<skill_instructions name=\"my-skill\">"));
         assert!(plan.summary.contains("Do the thing."));
         assert!(!plan.summary.contains("name: my-skill"), "frontmatter stripped");
+    }
+
+    #[tokio::test]
+    async fn compute_compaction_orphaned_first_kept_id_recovers() {
+        // M4: the LLM strategy shares `vcc::find_live_start` for its
+        // boundary. An orphaned `first_kept_entry_id` (no matching entry)
+        // must fall back to the entry after the compaction record instead
+        // of panicking or compacting pre-compaction history.
+        let tmp = TempDir::new().unwrap();
+        let mut entries = vec![SessionEntry::new_session(
+            "session_orphan".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            tmp.path().to_string_lossy().to_string(),
+            "model".to_string(),
+            32768,
+        )];
+        entries.push(make_message_entry("Pre 1", "user"));
+        entries.push(make_message_entry("Pre 2", "assistant"));
+        let compaction_idx = entries.len();
+        entries.push(SessionEntry::new_compaction(
+            None,
+            "Previous summary".to_string(),
+            "orphan_id_that_matches_nothing".to_string(),
+            10000,
+        ));
+        for i in 0..10 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            entries.push(make_message_entry(&format!("Post {i}"), role));
+        }
+
+        let mut config = crate::config::Config::default();
+        config.compaction.mode = crate::config::CompactionMode::Llm;
+        let engine = CompactionEngine::from_config(&config);
+        let provider = Provider::from_trait(Box::new(MockProvider {
+            summary: "## Goal\nOrphan test".to_string(),
+        }));
+
+        let plan = engine
+            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), Vec::new(), None)
+            .await
+            .expect("orphaned first_kept_entry_id must not fail compaction");
+
+        assert!(
+            plan.cut_index > compaction_idx,
+            "cut point ({}) must stay after the compaction record ({}); \
+             pre-compaction history is out of scope",
+            plan.cut_index,
+            compaction_idx
+        );
     }

@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use ratatui_md::HeightAware;
 use crate::tui::theme::Theme;
@@ -26,7 +27,7 @@ impl HeightAware for UserMessage {
         // 2 blank lines + content lines + 1 blank line
         let mut total_lines = 0;
         for line in self.content.lines() {
-            total_lines += line.chars().count().div_ceil(width.max(1)).max(1);
+            total_lines += line.width().div_ceil(width.max(1)).max(1);
         }
         total_lines + 3 // +2 for top spacing, +1 for bottom blank line
     }
