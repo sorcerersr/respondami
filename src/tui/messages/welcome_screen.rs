@@ -52,6 +52,11 @@ impl WelcomeScreen {
 
     /// Render a centered line of text at the given row within the area.
     fn render_centered_line(buf: &mut Buffer, area: Rect, row: u16, text: &str, style: Style) {
+        // Guard: `row` is an absolute buffer row; on a short terminal the running
+        // cursor can advance past the area bottom. Skip rather than panic.
+        if row >= area.y + area.height {
+            return;
+        }
         let text_width = text.width();
         let start_col = (area.width as usize).saturating_sub(text_width).saturating_div(2) as u16;
         let mut col = start_col;
@@ -66,6 +71,10 @@ impl WelcomeScreen {
 
     /// Render a right-aligned line of text at the given row within the area.
     fn render_right_aligned_line(buf: &mut Buffer, area: Rect, row: u16, text: &str, style: Style) {
+        // Guard: `row` is an absolute buffer row; skip when past the area bottom.
+        if row >= area.y + area.height {
+            return;
+        }
         let text_width = text.width();
         let start_col = (area.width as usize).saturating_sub(text_width) as u16;
         let mut col = start_col;
@@ -248,6 +257,7 @@ impl WelcomeScreen {
 
         let buf = frame.buffer_mut();
         let width = area.width as usize;
+        let bottom = area.y + area.height; // absolute buffer row of the area bottom
 
         // Fill background
         for y in 0..area.height {
@@ -294,24 +304,27 @@ impl WelcomeScreen {
             let panel_width = min_panel_width.min((width - 4) / 3);
             let total_panels_width = panel_width * 3 + 2; // 2 gaps
             let panels_start_x = (width - total_panels_width).saturating_div(2);
+            // Clamp panel height to the remaining space so a short terminal clips
+            // the panels instead of writing past the buffer bottom.
+            let panel_h = (panel_total_height as u16).min(bottom.saturating_sub(row));
 
             let left_area = Rect {
                 x: area.x + panels_start_x as u16,
                 y: row,
                 width: panel_width as u16,
-                height: panel_total_height as u16,
+                height: panel_h,
             };
             let mid_area = Rect {
                 x: area.x + (panels_start_x + panel_width + 1) as u16,
                 y: row,
                 width: panel_width as u16,
-                height: panel_total_height as u16,
+                height: panel_h,
             };
             let right_area = Rect {
                 x: area.x + (panels_start_x + panel_width * 2 + 2) as u16,
                 y: row,
                 width: panel_width as u16,
-                height: panel_total_height as u16,
+                height: panel_h,
             };
 
             // Skills panel (purple header)
@@ -357,18 +370,20 @@ impl WelcomeScreen {
             let panel_width = min_panel_width.min((width - 2) / 2);
             let total_panels_width = panel_width * 2 + 1;
             let panels_start_x = (width - total_panels_width).saturating_div(2);
+            // Clamp panel height to the remaining space (short-terminal clip).
+            let panel_h = (panel_total_height as u16).min(bottom.saturating_sub(row));
 
             let left_area = Rect {
                 x: area.x + panels_start_x as u16,
                 y: row,
                 width: panel_width as u16,
-                height: panel_total_height as u16,
+                height: panel_h,
             };
             let right_area = Rect {
                 x: area.x + (panels_start_x + panel_width + 1) as u16,
                 y: row,
                 width: panel_width as u16,
-                height: panel_total_height as u16,
+                height: panel_h,
             };
 
             let skills_widget = FilledHeaderBar::new("Skills")
@@ -396,7 +411,7 @@ impl WelcomeScreen {
                 .content(skills_content)
                 .content_bg(theme.bg)
                 .content_fg(theme.text_muted);
-            let skills_h = (2 + skills_line_count) as u16;
+            let skills_h = (2 + skills_line_count).min(bottom.saturating_sub(row) as usize) as u16;
             let skills_area = Rect {
                 x: area.x,
                 y: row,
@@ -414,7 +429,7 @@ impl WelcomeScreen {
                 .content(hooks_content)
                 .content_bg(theme.bg)
                 .content_fg(theme.text_muted);
-            let hooks_h = (2 + hooks_line_count) as u16;
+            let hooks_h = (2 + hooks_line_count).min(bottom.saturating_sub(row) as usize) as u16;
             let hooks_area = Rect {
                 x: area.x,
                 y: row,
@@ -432,7 +447,7 @@ impl WelcomeScreen {
                 .content(context_content)
                 .content_bg(theme.bg)
                 .content_fg(theme.text_muted);
-            let context_h = (2 + context_line_count) as u16;
+            let context_h = (2 + context_line_count).min(bottom.saturating_sub(row) as usize) as u16;
             let context_area = Rect {
                 x: area.x,
                 y: row,
