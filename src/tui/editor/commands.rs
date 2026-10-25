@@ -5,10 +5,7 @@
 //! the Ctrl+G command menu.
 
 /// Simple case-insensitive fuzzy match. Returns `Some(score)` if matched.
-///
-/// # Panics
-///
-/// - If the needle string is empty (caller should check before calling).
+/// An empty needle matches everything with score `0` (no panic).
 #[must_use]
 pub fn fuzzy_match_case_insensitive(needle: &str, haystack: &str) -> Option<usize> {
     let needle_lower = needle.to_lowercase();

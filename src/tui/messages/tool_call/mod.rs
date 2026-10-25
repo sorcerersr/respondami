@@ -169,6 +169,9 @@ fn build_pending_content_lines(output: &str, theme: &Theme) -> Vec<Line<'static>
 }
 
 impl HeightAware for ToolCallMessage {
+    // `_theme` is intentionally unused: the height is theme-independent (it depends
+    // only on text width via `FilledHeaderBar::height`), so the concrete
+    // `Theme::gh_dark()` is constructed purely for styling the content lines.
     fn height(&self, width: usize, _theme: &dyn ratatui_md::MdTheme) -> usize {
         if width == 0 {
             return 4;

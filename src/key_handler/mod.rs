@@ -22,6 +22,9 @@ mod token_stats;
 mod compact_keep_prompt;
 pub mod layers;
 
+#[cfg(test)]
+mod command_palette_tests;
+
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
 use ratatui::backend::CrosstermBackend;

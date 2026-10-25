@@ -205,11 +205,9 @@ pub fn cursor_delete(input: &mut String, pos: &mut usize) {
     if *pos >= input.len() {
         return;
     }
-    let width = char_width_at(input, *pos);
     input.remove(*pos);
-    // If we deleted '\n', cursor stays (lines joined)
-    // Otherwise, cursor stays (next char shifts into position)
-    let _ = width;
+    // Cursor stays: if we deleted '\n' the lines join; otherwise the next
+    // character shifts into the position.
 }
 
 // ---------------------------------------------------------------------------
