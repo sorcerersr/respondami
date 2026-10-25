@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1259 total)
+cargo test --workspace                         # all tests (1285 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1259 tests** (1041 root + 38 ratatui-widgets + 180 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1285 tests** (1060 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -323,7 +323,7 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (1041 tests)
+### Root Crate Tests (1060 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
@@ -339,6 +339,7 @@ cargo test --workspace                       # all tests pass
 | `src/image_tests.rs`                          | MIME sniff, process_image (png/jpeg/gif/webp), animated-GIF reject, resize, token estimate |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
+| `src/key_handler/command_palette_tests.rs`  | Command palette navigation and scroll clamping  |
 | `src/key_handler/layers/input_tests.rs`       | Input layer key handling                                |
 | `src/key_handler/layers/modal_tests.rs`       | Modal layer shortcuts                                   |
 | `src/key_handler/layers/navigation_tests.rs`  | Navigation layer (j/k/Up/Down)                          |
@@ -379,9 +380,11 @@ cargo test --workspace                       # all tests pass
 | `src/tui/hook_display_tests.rs`               | Hook display modes                                      |
 | `src/tui/layout_tests.rs`                     | Layout calculations, input area height                  |
 | `src/tui/messages/hook_message_tests.rs`      | Hook message rendering                                  |
+| `src/tui/messages/compaction_message_tests.rs`| Compaction message rendering, display-width height      |
 | `src/tui/messages/system_message_tests.rs`    | System message rendering                                |
 | `src/tui/messages/thinking_message_tests.rs`  | Thinking block rendering                                |
 | `src/tui/messages/tool_call/mod_tests.rs`     | Tool call variant building                              |
+| `src/tui/messages/user_message_tests.rs`      | User message rendering, display-width height            |
 | `src/tui/messages/welcome_screen_tests.rs`    | Welcome screen rendering                                |
 | `src/tui/status_bar_tests.rs`                 | Status bar rendering                                    |
 | `src/tui/thinking_display_tests.rs`           | Thinking display toggle                                 |
@@ -392,5 +395,5 @@ cargo test --workspace                       # all tests pass
 
 | Test File                 | Coverage                                                                                                                    | Tests |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, header bar                                               | 38    |
-| `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 180   |
+| `crates/ratatui-widgets/` | Panel overlay, autocomplete popup, command palette, header bar                                               | 41    |
+| `crates/ratatui-md/`      | Markdown parsing, rendering (headings, paragraphs, lists, tables, code, blockquotes, task lists, rules), height calculation | 184   |
