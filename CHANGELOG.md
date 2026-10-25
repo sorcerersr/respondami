@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-25
+
+### Security
+
+- base64 0.22.1 → 0.23.1
+- libc 0.2.186 → 0.2.191
+- tokio 1.53.3 → 1.54.1
+- pulldown-cmark 0.13.4 → 0.13.5
+- unicode-normalization 0.1.25 → 0.1.26
+
 ## [0.2.0] - 2026-10-25
 
 ### Features

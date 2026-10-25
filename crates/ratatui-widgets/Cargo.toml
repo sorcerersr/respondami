@@ -1,6 +1,6 @@
 [package]
 name = "ratatui-widgets"
-version = "0.2.0"
+version = "0.2.1"
 description = "Reusable ratatui widgets extracted from the Respondami TUI"
 edition = "2024"
 license = "MIT"
