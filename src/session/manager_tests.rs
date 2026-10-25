@@ -193,6 +193,96 @@ use super::{build_context_from_entries, SessionStore, SessionEntry, AgentMessage
     }
 
     // ---------------------------------------------------------------------------
+    // H-1: CompactAll sentinel keeps the tail
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn h1_compact_all_keeps_subsequent_turn() {
+        // CompactAll: apply_compaction with cut_index past the end writes the
+        // empty-string first_kept_entry_id sentinel. The next turn's messages
+        // must flow into the context (pre-fix they were all skipped because no
+        // entry has an empty id to end the skip).
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager
+            .append_message(None, AgentMessage::user("old question".to_string()))
+            .unwrap();
+        manager
+            .append_message(None, AgentMessage::assistant("old reply".to_string(), String::new(), Vec::new(), None))
+            .unwrap();
+
+        // CompactAll: cut past the end → first_kept_entry_id = "".
+        let cut = manager.entries().len();
+        manager
+            .apply_compaction("summary of the old turn".to_string(), cut, 100)
+            .unwrap();
+
+        // A new turn after the compaction.
+        manager
+            .append_message(None, AgentMessage::user("new question".to_string()))
+            .unwrap();
+
+        let context = manager.build_context();
+        assert!(
+            context.iter().any(|m| m.content().contains("summary of the old turn")),
+            "compaction summary must be injected: {context:?}"
+        );
+        assert!(
+            context.iter().any(|m| m.content() == "new question"),
+            "the turn after a CompactAll compaction must be kept: {context:?}"
+        );
+        // The pre-compaction turn is gone (the file was rewritten without it).
+        assert!(
+            !context.iter().any(|m| m.content() == "old question"),
+            "pre-compaction messages must not reappear: {context:?}"
+        );
+    }
+
+    #[test]
+    fn h1_non_empty_first_kept_still_skips() {
+        // Regression guard: a normal (non-empty) first_kept_entry_id must still
+        // skip the entries before the target. The target and everything after
+        // it are kept.
+        let entries = vec![
+            SessionEntry::new_session(
+                "session_1".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "/cwd".to_string(),
+                "model".to_string(),
+                32768,
+            ),
+            SessionEntry::new_message(None, AgentMessage::user("before cut".to_string())),
+            SessionEntry::new_compaction(
+                None,
+                "Summary".to_string(),
+                "keep-target".to_string(),
+                100,
+            ),
+            SessionEntry::new_message(None, AgentMessage::user("after cut".to_string())),
+        ];
+        // Override the last message's id to be the skip target so the skip ends
+        // there; the "before cut" message (before the compaction) is not in the
+        // rewritten file, but a message between the compaction and the target
+        // would be skipped. Here the target is the message right after, so both
+        // the summary and "after cut" are kept.
+        let mut entries = entries;
+        if let SessionEntry::Message { id, .. } = &mut entries[3] {
+            *id = "keep-target".to_string();
+        }
+
+        let context = build_context_from_entries(&entries);
+        assert!(
+            context.iter().any(|m| m.content().contains("Summary")),
+            "summary must be injected: {context:?}"
+        );
+        assert!(
+            context.iter().any(|m| m.content() == "after cut"),
+            "the target message must be kept: {context:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // rewrite_session_file (compaction)
     // ---------------------------------------------------------------------------
 

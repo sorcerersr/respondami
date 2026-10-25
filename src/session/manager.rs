@@ -100,7 +100,11 @@ pub fn build_context_from_entries(entries: &[SessionEntry]) -> Vec<AgentMessage>
                 messages.push(AgentMessage::user(format!(
                     "[Previous conversation summary]\n{summary}"
                 )));
-                skip_until = Some(first_kept_entry_id.clone());
+                skip_until = if first_kept_entry_id.is_empty() {
+                    None // CompactAll: everything before the summary is dropped; keep the tail
+                } else {
+                    Some(first_kept_entry_id.clone())
+                };
             }
             SessionEntry::ModelChange { .. } => {
                 // Model changes are tracked but don't add messages
