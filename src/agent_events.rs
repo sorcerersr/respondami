@@ -290,22 +290,7 @@ pub async fn process_agent_events(
                 }
             }
             Ok(Some(AgentEvent::SkillActivation { skill_name })) => {
-                // Update active skills set; register the skill's frontmatter
-                // hooks only on first activation (activation-scoped firing).
-                if app.active_skills.insert(skill_name.clone())
-                    && let Some(skill) = app.config.skills.iter().find(|s| s.name == skill_name)
-                {
-                    crate::hooks::register_skill_hooks(&mut app.config.hook_registry, skill);
-                }
-                // Persist to session
-                app.session.session_store.add_activated_skill(&skill_name);
-                // Display the skill activation message (only this, no system message)
-                app.chat
-                    .chat_messages
-                    .push(crate::tui::ChatMessage::SkillActivation(
-                        crate::tui::messages::SkillActivationMessage { skill_name },
-                    ));
-                app.maybe_auto_scroll();
+                handle_skill_activation_event(app, &skill_name);
             }
             Ok(Some(AgentEvent::NeedsCompaction {
                 reason,
@@ -551,6 +536,28 @@ pub async fn process_agent_events(
     // The SSE capture guard lives until the very end of the turn (the
     // provider writes captures during every request of the agent task).
     drop(sse_guard);
+}
+
+/// Handle a `SkillActivation` event: update the active skills set, register
+/// the skill's frontmatter hooks (idempotent — a re-activation refreshes them
+/// from the skill file; activation-scoped firing), persist the activation to
+/// the session, and display the activation message.
+pub(crate) fn handle_skill_activation_event(app: &mut App, skill_name: &str) {
+    app.active_skills.insert(skill_name.to_string());
+    if let Some(skill) = app.config.skills.iter().find(|s| s.name == skill_name) {
+        crate::hooks::register_skill_hooks(&mut app.config.hook_registry, skill);
+    }
+    // Persist to session
+    app.session.session_store.add_activated_skill(skill_name);
+    // Display the skill activation message (only this, no system message)
+    app.chat
+        .chat_messages
+        .push(crate::tui::ChatMessage::SkillActivation(
+            crate::tui::messages::SkillActivationMessage {
+                skill_name: skill_name.to_string(),
+            },
+        ));
+    app.maybe_auto_scroll();
 }
 
 /// Calculate the visible height of the chat area in lines.

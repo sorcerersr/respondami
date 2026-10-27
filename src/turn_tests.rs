@@ -11,10 +11,11 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use crate::config::Config;
 use crate::hooks::{Hook, HookEvent, HookSource, ToolMatcher};
 use crate::session::CompactionPlan;
-use crate::skills::{Skill, SkillSource};
+use crate::skills::{Skill, SkillHook, SkillSource};
 use crate::tui::{App, AppState, ChatMessage, HookDisplay};
 use crate::turn::{
     PendingTurn, restart_agent, rollback_pending_turn, run_turn_with_input, start_turn,
+    undo_turn_setup,
 };
 use tempfile::TempDir;
 
@@ -598,6 +599,120 @@ fn rollback_pending_turn_is_noop_when_nothing_pending() {
     assert!(app.pending_turn.is_none());
     assert_eq!(app.chat.chat_messages.len(), pre_len);
     assert_eq!(app.editor.input_buffer, "keep me");
+}
+
+// ---- undo_turn_setup: hook registry re-sync ----
+
+/// A skill with one `PreToolUse` hook, loaded into the app's skill set.
+fn app_with_hooked_skill() -> App {
+    let mut app = make_app();
+    // Hermetic: drop any directory hooks loaded from the real config dir so
+    // the exact-count assertions below are environment-independent.
+    app.config.hook_registry = crate::hooks::HookRegistry::new();
+    app.config.skills = vec![Skill {
+        name: "refine".to_string(),
+        description: "test".to_string(),
+        license: None,
+        metadata: std::collections::HashMap::new(),
+        hooks: vec![SkillHook {
+            event: HookEvent::PreToolUse,
+            command: "sh /skills/refine/scripts/enforce.sh".to_string(),
+            matcher: None,
+        }],
+        file_path: PathBuf::from("/skills/refine/SKILL.md"),
+        base_dir: PathBuf::from("/skills/refine"),
+        source: SkillSource::Global,
+    }];
+    app
+}
+
+#[test]
+fn undo_turn_setup_removes_rolled_back_skill_hooks() {
+    let mut app = app_with_hooked_skill();
+    let pre_len = app.chat.chat_messages.len();
+
+    // The turn activated `/refine` (the `/skillname` path) and its hooks
+    // are registered; the pre-turn set was empty.
+    app.activate_skill("refine");
+    assert_eq!(
+        app.config
+            .hook_registry
+            .hooks(HookEvent::PreToolUse)
+            .len(),
+        1
+    );
+
+    undo_turn_setup(
+        &mut app,
+        pre_len,
+        false,
+        "typed question".to_string(),
+        HashSet::new(),
+    );
+
+    assert!(app.active_skills.is_empty());
+    assert_eq!(app.config.hook_registry.total_count(), 0);
+    assert_eq!(app.editor.input_buffer, "typed question");
+}
+
+#[test]
+fn undo_turn_setup_keeps_pre_turn_skill_hooks() {
+    let mut app = app_with_hooked_skill();
+    let pre_len = app.chat.chat_messages.len();
+
+    // The skill was active before the turn and must survive the rollback,
+    // with its hooks re-registered from the skill set.
+    app.activate_skill("refine");
+    let pre_turn_skills = app.active_skills.clone();
+
+    undo_turn_setup(
+        &mut app,
+        pre_len,
+        false,
+        "x".to_string(),
+        pre_turn_skills,
+    );
+
+    assert!(app.active_skills.contains("refine"));
+    assert_eq!(
+        app.config
+            .hook_registry
+            .hooks(HookEvent::PreToolUse)
+            .len(),
+        1
+    );
+}
+
+// ---- End-to-end regression: /skillname + re-activation survive restart ----
+
+#[test]
+fn skillname_activation_then_reactivation_survives_agent_restart() {
+    // The reported bug: `/refine` (TUI path) never registered hooks into the
+    // TUI registry; the model's `activate_skill` call then found the skill
+    // already active and the `insert` gate skipped registration. After
+    // compaction, the agent restarted from the empty registry and the hooks
+    // were gone. This test simulates the full sequence and asserts the
+    // restart clone (what `restart_agent` builds) carries the hook.
+    let mut app = app_with_hooked_skill();
+
+    // 1. `/refine` — the TUI activation path.
+    assert!(app.activate_skill("refine"));
+
+    // 2. The model calls `activate_skill` for the already-active skill —
+    // the `SkillActivation` event handler runs (idempotent register).
+    crate::agent_events::handle_skill_activation_event(&mut app, "refine");
+
+    // 3. Compaction restarts the agent: it clones the TUI registry.
+    let restart_registry = app.config.hook_registry.clone();
+
+    let hooks = restart_registry.hooks(HookEvent::PreToolUse);
+    assert_eq!(
+        hooks.len(),
+        1,
+        "the restart clone must carry the skill's PreToolUse hook"
+    );
+    assert_eq!(hooks[0].name, "refine:enforce.sh");
+    assert_eq!(hooks[0].skill_name, Some("refine".to_string()));
 }
 
 // ---- PendingTurn ----

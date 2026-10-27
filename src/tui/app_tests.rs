@@ -5,6 +5,28 @@ use super::app::App;
 use super::chat_state::ChatState;
 use super::messages::{ChatMessage, UserMessage, AssistantMessage, SystemMessage};
 use crate::session::{RequestTokenUsage, Usage};
+use crate::skills::{Skill, SkillHook, SkillSource};
+
+fn app_with_skill(name: &str, hooks: Vec<SkillHook>) -> App {
+    let mut app = App::new(
+        crate::config::Config::default(),
+        std::path::PathBuf::from("."),
+    );
+    // Hermetic: drop any directory hooks loaded from the real config dir so
+    // the exact-count assertions below are environment-independent.
+    app.config.hook_registry = crate::hooks::HookRegistry::new();
+    app.config.skills = vec![Skill {
+        name: name.to_string(),
+        description: "test skill".to_string(),
+        license: None,
+        metadata: std::collections::HashMap::new(),
+        hooks,
+        file_path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
+        base_dir: std::path::PathBuf::from(format!("/skills/{name}")),
+        source: SkillSource::Global,
+    }];
+    app
+}
 
     // Scroll behavior tests (pinned scroll, auto-scroll)
     #[test]
@@ -185,6 +207,62 @@ use crate::session::{RequestTokenUsage, Usage};
         assert_eq!(app.editor.history_index, 0);
         assert!(app.editor.saved_input.is_none());
         assert_eq!(app.editor.saved_cursor, 0);
+    }
+
+    // Skill activation tests (`/skillname` path: set + hook registry sync)
+    #[test]
+    fn activate_skill_registers_hooks_on_new_activation() {
+        let mut app = app_with_skill(
+            "refine",
+            vec![SkillHook {
+                event: crate::hooks::HookEvent::PreToolUse,
+                command: "sh /skills/refine/scripts/enforce.sh".to_string(),
+                matcher: Some("Read|Write".to_string()),
+            }],
+        );
+
+        let newly = app.activate_skill("refine");
+
+        assert!(newly);
+        assert!(app.active_skills.contains("refine"));
+        let hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::PreToolUse);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].name, "refine:enforce.sh");
+        assert_eq!(hooks[0].skill_name, Some("refine".to_string()));
+    }
+
+    #[test]
+    fn activate_skill_second_activation_no_duplicate_hooks() {
+        let mut app = app_with_skill(
+            "refine",
+            vec![SkillHook {
+                event: crate::hooks::HookEvent::PreToolUse,
+                command: "sh /skills/refine/scripts/enforce.sh".to_string(),
+                matcher: None,
+            }],
+        );
+
+        assert!(app.activate_skill("refine"));
+        assert!(!app.activate_skill("refine"));
+
+        assert_eq!(
+            app.config
+                .hook_registry
+                .hooks(crate::hooks::HookEvent::PreToolUse)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn activate_skill_unknown_name_updates_set_without_hooks() {
+        let mut app = app_with_skill("refine", Vec::new());
+
+        let newly = app.activate_skill("nonexistent");
+
+        assert!(newly);
+        assert!(app.active_skills.contains("nonexistent"));
+        assert_eq!(app.config.hook_registry.total_count(), 0);
     }
 
     // Token usage reset tests (session boundary vs turn boundary)

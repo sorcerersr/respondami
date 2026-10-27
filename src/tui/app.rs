@@ -186,8 +186,19 @@ impl App {
     }
 
     /// Activate a skill by name. Returns true if the skill was not already active.
+    ///
+    /// On new activation the skill's frontmatter hooks are registered into
+    /// the TUI hook registry so they fire on this and all subsequent turns
+    /// (including after compaction). A skill missing from the loaded set
+    /// (deleted before startup) updates the active set without hooks.
     pub fn activate_skill(&mut self, skill_name: &str) -> bool {
-        self.active_skills.insert(skill_name.to_string())
+        let newly = self.active_skills.insert(skill_name.to_string());
+        if newly
+            && let Some(skill) = self.config.skills.iter().find(|s| s.name == skill_name)
+        {
+            crate::hooks::register_skill_hooks(&mut self.config.hook_registry, skill);
+        }
+        newly
     }
 
     /// Check if the app is in a "working" state (show working indicator).

@@ -124,6 +124,84 @@ fn register_skill_hooks_matcher_compiles_valid_regex() {
     assert!(!m.matches("Read"));
 }
 
+#[test]
+fn register_skill_hooks_idempotent_double_register() {
+    let mut registry = HookRegistry::new();
+    let skill = make_skill(
+        "planning",
+        vec![
+            SkillHook {
+                event: HookEvent::PreToolUse,
+                command: "sh /skills/planning/scripts/a.sh".to_string(),
+                matcher: None,
+            },
+            SkillHook {
+                event: HookEvent::Stop,
+                command: "sh /skills/planning/scripts/b.sh".to_string(),
+                matcher: None,
+            },
+        ],
+    );
+    register_skill_hooks(&mut registry, &skill);
+    register_skill_hooks(&mut registry, &skill);
+    // Exactly one copy per event after re-registration (the double-fire fix).
+    assert_eq!(registry.total_count(), 2);
+    assert_eq!(registry.hooks(HookEvent::PreToolUse).len(), 1);
+    assert_eq!(registry.hooks(HookEvent::Stop).len(), 1);
+}
+
+#[test]
+fn register_skill_hooks_re_register_refreshes_command() {
+    let mut registry = HookRegistry::new();
+    let mut skill = make_skill(
+        "s",
+        vec![SkillHook {
+            event: HookEvent::Stop,
+            command: "echo v1".to_string(),
+            matcher: None,
+        }],
+    );
+    register_skill_hooks(&mut registry, &skill);
+    // The skill file changed on disk: re-registration replaces, not appends.
+    skill.hooks[0].command = "echo v2".to_string();
+    register_skill_hooks(&mut registry, &skill);
+    assert_eq!(registry.total_count(), 1);
+    assert_eq!(registry.hooks(HookEvent::Stop)[0].command, "echo v2");
+}
+
+#[test]
+fn register_skill_hooks_re_register_does_not_touch_other_skills() {
+    let mut registry = HookRegistry::new();
+    let a = make_skill(
+        "a",
+        vec![SkillHook {
+            event: HookEvent::Stop,
+            command: "echo a".to_string(),
+            matcher: None,
+        }],
+    );
+    let b = make_skill(
+        "b",
+        vec![SkillHook {
+            event: HookEvent::Stop,
+            command: "echo b".to_string(),
+            matcher: None,
+        }],
+    );
+    register_skill_hooks(&mut registry, &a);
+    register_skill_hooks(&mut registry, &b);
+    register_skill_hooks(&mut registry, &a);
+    assert_eq!(registry.total_count(), 2);
+    assert!(registry
+        .hooks(HookEvent::Stop)
+        .iter()
+        .any(|h| h.name == "a:echo a"));
+    assert!(registry
+        .hooks(HookEvent::Stop)
+        .iter()
+        .any(|h| h.name == "b:echo b"));
+}
+
 // ---------------------------------------------------------------------------
 // rebuild_hook_registry
 // ---------------------------------------------------------------------------

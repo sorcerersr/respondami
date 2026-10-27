@@ -434,11 +434,14 @@ pub fn rollback_pending_turn(app: &mut App) {
 /// skills, and put the typed text back in the editor. Also clears any
 /// `PreCompact` hook context captured for a compaction that never ran (the
 /// cancel path bypasses `handle_compaction_result`, the only other clear).
+/// The hook registry is re-synced to the restored skill set so a rolled-back
+/// `/skillname` activation doesn't leave its hooks firing for a deactivated
+/// skill.
 ///
 /// Shared by `rollback_pending_turn` (compaction cancel) and the blocked
 /// `PreCompact` pre-prompt path (a hook vetoed compaction, so the turn must
 /// not proceed).
-fn undo_turn_setup(
+pub(crate) fn undo_turn_setup(
     app: &mut App,
     pre_turn_chat_len: usize,
     created_session: bool,
@@ -460,6 +463,14 @@ fn undo_turn_setup(
         app.session.reset_history_guard();
     }
     app.active_skills = pre_turn_skills;
+    // Re-sync the registry to the restored set (a rolled-back turn may have
+    // activated a skill whose hooks are now registered).
+    app.config.hook_registry = crate::hooks::rebuild_hook_registry(
+        &app.config.skills,
+        &app.active_skills,
+        &crate::config::Config::config_dir(),
+        &app.config.cwd,
+    );
     app.editor.input_buffer = restore_input;
     app.editor.cursor_pos = app.editor.input_buffer.len();
 }
