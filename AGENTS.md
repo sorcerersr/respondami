@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1289 tests** (1064 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1303 tests** (1078 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -97,7 +97,7 @@ cargo test --workspace                       # all tests pass
 ### Skill Hooks (frontmatter `hooks:`)
 
 - Skill frontmatter `hooks:` load into `Skill.hooks` (`src/skills.rs`). Malformed entries → `SkillDiagnostic` warning, entry skipped; a bad hook never fails skill loading.
-- Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
+- Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`; `/skillname` via `App::activate_skill`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `register_skill_hooks` is idempotent (remove-then-add), so re-activation never double-fires and the TUI registry — the source every agent launch clones — always carries the active skills' hooks across compaction. `undo_turn_setup` re-syncs the registry to the restored skill set on rollback. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
 - `ToolMatcher` (loader.rs) filters `PreToolUse`/`PostToolUse` skill hooks by tool name (case-insensitive regex). `None`/`*`/empty → `All`; a regex that fails to compile → `Never` (logged). A non-matching tool skips the hook entirely (no shell spawn, no TUI entry). Directory hooks are always `All`.
 - `execute_hook` sets `SKILL_NAME`/`SKILL_DIR` env vars for skill hooks only.
 - Model-context injection (G2): `UserPromptSubmit` and `PreToolUse` stdout are tail-appended to the user message / tool result the model sees (TUI stays clean; the augmented form is what's saved to the session and pushed to live context, so the byte-identical invariant holds). `PreCompact` stdout is captured into `App.pending_precompact_context` and appended to the compaction summary in `handle_compaction_result` (taken once, cleared on every outcome). `PostToolUse` stdout is injected as a separate, salient `user` message after the tool result (framed `[Hook instruction — <name>]`, persisted via `SaveHookInstruction`) — a blocked hook (exit 2) uses its stderr as the body, and a failed hook (other exit) injects nothing and logs a `warn!`. `format_hook_context` builds the `[hook: <name>]` blocks and skips empty stdout.
