@@ -103,8 +103,8 @@ impl std::fmt::Debug for App {
 
 impl App {
     pub fn new(config: Config, cwd: PathBuf) -> Self {
-        let model_name = config.provider.model.clone();
-        let context_window = config.provider.context_window;
+        let model_name = config.provider.active_model.clone();
+        let context_window = config.provider.active_context_window();
         let thinking_display = config.ui.thinking_display;
         let tool_output_expanded = config.ui.tool_output_expanded;
         let hook_display = config.ui.hook_display;
@@ -193,9 +193,7 @@ impl App {
     /// (deleted before startup) updates the active set without hooks.
     pub fn activate_skill(&mut self, skill_name: &str) -> bool {
         let newly = self.active_skills.insert(skill_name.to_string());
-        if newly
-            && let Some(skill) = self.config.skills.iter().find(|s| s.name == skill_name)
-        {
+        if newly && let Some(skill) = self.config.skills.iter().find(|s| s.name == skill_name) {
             crate::hooks::register_skill_hooks(&mut self.config.hook_registry, skill);
         }
         newly
@@ -222,6 +220,7 @@ impl App {
                 | super::mode::AppState::CommandPalette
                 | super::mode::AppState::HelpPopup
                 | super::mode::AppState::TokenStatsDialog
+                | super::mode::AppState::ModelSelect
         )
     }
 
@@ -620,7 +619,27 @@ impl App {
             super::mode::AppState::HelpPopup => StateHandler::HelpPopup,
             super::mode::AppState::TokenStatsDialog => StateHandler::TokenStats,
             super::mode::AppState::CompactKeepPrompt => StateHandler::CompactKeepPrompt,
+            super::mode::AppState::ModelSelect => StateHandler::ModelSelect,
         }
+    }
+
+    /// Switch to a different model by name. Updates the config and status bar.
+    pub fn switch_model(&mut self, model_name: &str) {
+        self.config.config.provider.active_model = model_name.to_string();
+        self.config.model_name = model_name.to_string();
+        // Update context window if the model is in the list
+        if let Some(model) = self
+            .config
+            .config
+            .provider
+            .models
+            .iter()
+            .find(|m| m.name == model_name)
+        {
+            self.config.context_window = model.context_window;
+        }
+        self.modal.state = super::mode::AppState::Idle;
+        self.add_system_message(&format!("Model switched to: {model_name}"));
     }
 
     /// Get a user message from history by index (reverse chronological order).

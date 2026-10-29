@@ -2,40 +2,36 @@
 //!
 //! Maps `OpenAI` Chat Completions API to the normalized provider abstraction.
 
+use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
-    ChatCompletionRequestAssistantMessageArgs,
-    ChatCompletionRequestMessage,
-    ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionRequestMessageContentPartText,
-    ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestToolMessageArgs,
-    ChatCompletionRequestUserMessageArgs,
-    ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart,
-    ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCalls,
-    ChatCompletionTool,
-    ChatCompletionTools,
-    CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs,
-    CreateChatCompletionResponse,
-    FunctionCall,
-    FunctionObject,
-    ImageUrl,
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessageArgs,
+    ChatCompletionRequestUserMessageArgs, ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart, ChatCompletionTool, ChatCompletionTools,
+    CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
+    FunctionCall, FunctionObject, ImageUrl,
 };
-use async_openai::Client;
 
 use super::{
-    ChatChunk, ChatRequest, CompletionResponse, is_context_overflow,
-    LlamaCppSettings, Message, ProviderError, ProviderTrait,
+    ChatChunk, ChatRequest, CompletionResponse, DiscoveredModel, LlamaCppSettings, Message,
+    ProviderError, ProviderTrait, is_context_overflow,
 };
 use crate::session::Usage;
+use std::sync::Mutex;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 /// User-Agent string for HTTP requests to the provider.
 const USER_AGENT: &str = concat!("Respondami/", env!("CARGO_PKG_VERSION"));
+
+/// 30s cache for `list_models` results, keyed by endpoint URL. Avoids
+/// hammering the endpoint on every `/model` picker open.
+static MODEL_CACHE: Mutex<Option<(String, Instant, Vec<DiscoveredModel>)>> = Mutex::new(None);
+const MODEL_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Provider for OpenAI-compatible endpoints (llama.cpp, Ollama, vLLM, `OpenAI`).
 ///
@@ -129,15 +125,15 @@ impl LlamaCppProvider {
 
         let url = format!("{}/chat/completions", self.url);
 
-        let mut req_builder = self.http_client
+        let mut req_builder = self
+            .http_client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
             .body(request_body);
 
         if !self.api_key.is_empty() {
-            req_builder =
-                req_builder.header("Authorization", format!("Bearer {}", self.api_key));
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
         let response = req_builder
@@ -171,10 +167,20 @@ impl LlamaCppProvider {
                     detail: format!("HTTP {}: {}", status, body.trim()),
                 });
             }
-            return Err(ProviderError::Http { status, body, retry_after });
+            return Err(ProviderError::Http {
+                status,
+                body,
+                retry_after,
+            });
         }
 
-        super::sse::parse_sse_stream(response, tx, cancel_rx, crate::sse_debug::current_turn().as_ref()).await
+        super::sse::parse_sse_stream(
+            response,
+            tx,
+            cancel_rx,
+            crate::sse_debug::current_turn().as_ref(),
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -198,6 +204,55 @@ impl LlamaCppProvider {
     }
 
     // -----------------------------------------------------------------------
+    // Model discovery
+    // -----------------------------------------------------------------------
+
+    pub(super) async fn list_models_inner(&self) -> Result<Vec<DiscoveredModel>, ProviderError> {
+        // Check the 30s cache first (keyed by endpoint URL).
+        {
+            let guard = MODEL_CACHE.lock().unwrap();
+            if let Some((url, at, models)) = guard.as_ref()
+                && url == &self.url
+                && at.elapsed() < MODEL_CACHE_TTL
+            {
+                return Ok(models.clone());
+            }
+        }
+
+        let endpoint = models_endpoint_url(&self.url);
+        let mut req_builder = self.http_client.get(&endpoint);
+        if !self.api_key.is_empty() {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        let response = req_builder
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(std::io::Error::other(e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ProviderError::Http {
+                status,
+                body,
+                retry_after: None,
+            });
+        }
+
+        let body = response.text().await.unwrap_or_default();
+        let models = parse_models_response(&body);
+
+        // Store in cache.
+        {
+            let mut guard = MODEL_CACHE.lock().unwrap();
+            *guard = Some((self.url.clone(), Instant::now(), models.clone()));
+        };
+
+        Ok(models)
+    }
+
+    // -----------------------------------------------------------------------
     // Health check
     // -----------------------------------------------------------------------
 
@@ -206,14 +261,12 @@ impl LlamaCppProvider {
         // configured model (some endpoints reject unknown model names).
         let request = CreateChatCompletionRequestArgs::default()
             .model(model)
-            .messages(vec![
-                ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content("ping")
-                        .build()
-                        .expect("invalid"),
-                ),
-            ])
+            .messages(vec![ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content("ping")
+                    .build()
+                    .expect("invalid"),
+            )])
             .max_completion_tokens(1u32)
             .build()
             .expect("invalid");
@@ -257,6 +310,55 @@ pub(crate) fn parse_completion_response(
     Ok(CompletionResponse { content, usage })
 }
 
+/// Build the `/v1/models` endpoint URL from the base URL.
+///
+/// Handles base URLs with or without a trailing `/v1` and with or without a
+/// trailing slash. Examples:
+/// - `http://localhost:8080` → `http://localhost:8080/v1/models`
+/// - `http://localhost:8080/v1` → `http://localhost:8080/v1/models`
+/// - `http://localhost:8080/v1/` → `http://localhost:8080/v1/models`
+#[must_use]
+pub(crate) fn models_endpoint_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
+/// Parse a `/v1/models` response body into a list of [`DiscoveredModel`]s.
+///
+/// Tolerant: returns an empty list on any parse failure. Each entry is read
+/// from `data[].id`; the context length is read from `data[].context_length`
+/// (falling back to `data[].max_context_length`).
+#[must_use]
+pub(crate) fn parse_models_response(body: &str) -> Vec<DiscoveredModel> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let Some(data) = value.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    data.iter()
+        .filter_map(|entry| {
+            let name = entry.get("id")?.as_str()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let context_length = entry
+                .get("context_length")
+                .or_else(|| entry.get("max_context_length"))
+                .and_then(serde_json::Value::as_u64)
+                .map(|c| u32::try_from(c).unwrap_or(u32::MAX));
+            Some(DiscoveredModel {
+                name,
+                context_length,
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // ProviderTrait implementation
 // ---------------------------------------------------------------------------
@@ -283,6 +385,10 @@ impl ProviderTrait for LlamaCppProvider {
     async fn ping(&self, model: &str) -> Result<(), ProviderError> {
         self.ping_inner(model).await
     }
+
+    async fn list_models(&self) -> Result<Vec<DiscoveredModel>, ProviderError> {
+        self.list_models_inner().await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,27 +396,23 @@ impl ProviderTrait for LlamaCppProvider {
 // ---------------------------------------------------------------------------
 
 /// Convert a normalized `ChatRequest` to an `OpenAI` `CreateChatCompletionRequest`.
-fn build_openai_request(
-    req: &ChatRequest,
-    stream: bool,
-) -> CreateChatCompletionRequest {
-    let chat_messages: Vec<ChatCompletionRequestMessage> = req
-        .messages
-        .iter()
-        .filter_map(to_openai_message)
-        .collect();
+fn build_openai_request(req: &ChatRequest, stream: bool) -> CreateChatCompletionRequest {
+    let chat_messages: Vec<ChatCompletionRequestMessage> =
+        req.messages.iter().filter_map(to_openai_message).collect();
 
     let tools: Vec<ChatCompletionTools> = req
         .tools
         .iter()
-        .map(|def| ChatCompletionTools::Function(ChatCompletionTool {
-            function: FunctionObject {
-                name: def.name.clone(),
-                description: Some(def.description.clone()),
-                parameters: Some(def.parameters.clone()),
-                strict: None, // omitted from JSON via skip_serializing_if (matches pi-coding-agent)
-            },
-        }))
+        .map(|def| {
+            ChatCompletionTools::Function(ChatCompletionTool {
+                function: FunctionObject {
+                    name: def.name.clone(),
+                    description: Some(def.description.clone()),
+                    parameters: Some(def.parameters.clone()),
+                    strict: None, // omitted from JSON via skip_serializing_if (matches pi-coding-agent)
+                },
+            })
+        })
         .collect();
 
     let mut req_builder = CreateChatCompletionRequestArgs::default();
@@ -330,12 +432,10 @@ fn build_openai_request(
     // in a dedicated trailing chunk, matching what fantasy/crush does.
     // See: OpenAI stream_options: { include_usage: true }
     if stream {
-        request.stream_options = Some(
-            async_openai::types::chat::ChatCompletionStreamOptions {
-                include_usage: Some(true),
-                include_obfuscation: None,
-            }
-        );
+        request.stream_options = Some(async_openai::types::chat::ChatCompletionStreamOptions {
+            include_usage: Some(true),
+            include_obfuscation: None,
+        });
     }
 
     request
@@ -407,27 +507,24 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
                 // that said nothing, increasing the probability of empty
                 // responses. The tool result's own text note already describes
                 // the image; this part just makes the turn non-empty.
-                let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
-                    ChatCompletionRequestUserMessageContentPart::Text(
+                let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> =
+                    vec![ChatCompletionRequestUserMessageContentPart::Text(
                         ChatCompletionRequestMessageContentPartText {
                             text: "Image attached.".to_string(),
                             prompt_cache_breakpoint: None,
                         },
-                    ),
-                ];
-                parts.extend(
-                    images.iter().map(|img| {
-                        ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                            ChatCompletionRequestMessageContentPartImage {
-                                image_url: ImageUrl {
-                                    url: format!("data:{};base64,{}", img.mime_type, img.data),
-                                    detail: None,
-                                },
-                                prompt_cache_breakpoint: None,
+                    )];
+                parts.extend(images.iter().map(|img| {
+                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                        ChatCompletionRequestMessageContentPartImage {
+                            image_url: ImageUrl {
+                                url: format!("data:{};base64,{}", img.mime_type, img.data),
+                                detail: None,
                             },
-                        )
-                    }),
-                );
+                            prompt_cache_breakpoint: None,
+                        },
+                    )
+                }));
                 ChatCompletionRequestUserMessageContent::Array(parts)
             };
             Some(ChatCompletionRequestMessage::User(
@@ -436,7 +533,7 @@ pub(crate) fn to_openai_message(msg: &Message) -> Option<ChatCompletionRequestMe
                     .build()
                     .expect("invalid user message"),
             ))
-        },
+        }
         Message::Assistant {
             content,
             tool_calls,

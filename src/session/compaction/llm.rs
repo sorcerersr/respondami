@@ -12,8 +12,8 @@ use crate::config::Config;
 use crate::provider::{ChatRequest, Message, Provider};
 use crate::session::{AgentMessage, ContentBlock, SessionEntry};
 use crate::skills::Skill;
-use std::path::PathBuf;
 use async_trait::async_trait;
+use std::path::PathBuf;
 
 /// LLM-based compaction: summarize the pre-cut window with a model call.
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ impl CompactionStrategy for LlmCompaction {
         _keep: Option<usize>,
     ) -> anyhow::Result<CompactionPlan> {
         let settings = CompactionSettings::from_config(&config.compaction);
-        let context_window = config.provider.context_window;
+        let context_window = config.provider.active_context_window();
 
         // Find compaction boundary (start after last compaction or after
         // session header). Shared with VCC (M4): `find_live_start` also
@@ -53,14 +53,15 @@ impl CompactionStrategy for LlmCompaction {
         .ok_or_else(|| anyhow::anyhow!("No valid cut point found"))?;
 
         // Count-based fallback when token estimates are too low
-        let cut_index = if cut_index <= boundary_start {
-            LlmCompaction::find_cut_point_by_count(&entries, boundary_start, boundary_end)
+        let cut_index =
+            if cut_index <= boundary_start {
+                LlmCompaction::find_cut_point_by_count(&entries, boundary_start, boundary_end)
                 .ok_or_else(|| anyhow::anyhow!(
                     "Cannot find valid cut point. Token-based: {cut_index}, count-based: none"
                 ))?
-        } else {
-            cut_index
-        };
+            } else {
+                cut_index
+            };
 
         if cut_index <= boundary_start {
             return Err(anyhow::anyhow!(
@@ -82,10 +83,12 @@ impl CompactionStrategy for LlmCompaction {
         }
 
         // Estimate tokens before (includes system overhead)
-        let system_overhead =
-            crate::turn::estimate_system_overhead_tokens(&cwd, &skills, &TokenEstimator::heuristic());
-        let tokens_before =
-            LlmCompaction::estimate_tokens_from_entries(&entries, system_overhead);
+        let system_overhead = crate::turn::estimate_system_overhead_tokens(
+            &cwd,
+            &skills,
+            &TokenEstimator::heuristic(),
+        );
+        let tokens_before = LlmCompaction::estimate_tokens_from_entries(&entries, system_overhead);
 
         // Serialize entries before cut point
         let conversation_text = LlmCompaction::serialize_for_summary(&entries, cut_index);
@@ -106,13 +109,12 @@ impl CompactionStrategy for LlmCompaction {
         });
 
         // Extract file operations
-        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, cut_index);
+        let (read_files, modified_files) =
+            LlmCompaction::extract_file_operations(&entries, cut_index);
 
         // Build summarization prompt
-        let max_summary_tokens = std::cmp::min(
-            settings.reserve_tokens,
-            context_window.saturating_div(4),
-        );
+        let max_summary_tokens =
+            std::cmp::min(settings.reserve_tokens, context_window.saturating_div(4));
         let user_prompt = LlmCompaction::summarization_user_prompt(
             &conversation_text,
             previous_summary.as_deref(),
@@ -141,7 +143,9 @@ impl CompactionStrategy for LlmCompaction {
         let active_skills = entries
             .first()
             .and_then(|e| match e {
-                SessionEntry::Session { activated_skills, .. } => Some(activated_skills.clone()),
+                SessionEntry::Session {
+                    activated_skills, ..
+                } => Some(activated_skills.clone()),
                 _ => None,
             })
             .unwrap_or_default();
@@ -164,7 +168,10 @@ impl LlmCompaction {
     fn estimate_tokens_from_entries(entries: &[SessionEntry], system_overhead: u32) -> u32 {
         // Try to get actual usage from the last Assistant message
         for entry in entries.iter().rev() {
-            if let SessionEntry::Message { message: AgentMessage::Assistant { usage, .. }, .. } = entry
+            if let SessionEntry::Message {
+                message: AgentMessage::Assistant { usage, .. },
+                ..
+            } = entry
                 && let Some(u) = usage.as_ref()
             {
                 return u.prompt_tokens;
@@ -178,7 +185,9 @@ impl LlmCompaction {
                 total += CompactionSettings::estimate_tokens(message.content());
                 if let AgentMessage::Tool { images, .. } = message {
                     for img in images {
-                        total = total.saturating_add(crate::image::estimate_image_tokens(img.width, img.height));
+                        total = total.saturating_add(crate::image::estimate_image_tokens(
+                            img.width, img.height,
+                        ));
                     }
                 }
             }
@@ -350,7 +359,9 @@ impl LlmCompaction {
                     AgentMessage::User { content } => {
                         lines.push(format!("[User] {content}"));
                     }
-                    AgentMessage::Assistant { content: blocks, .. } => {
+                    AgentMessage::Assistant {
+                        content: blocks, ..
+                    } => {
                         for block in blocks {
                             match block {
                                 ContentBlock::Thinking { thinking } => {
@@ -364,7 +375,10 @@ impl LlmCompaction {
                                     }
                                 }
                                 ContentBlock::ToolCall { tool_call } => {
-                                    lines.push(format!("[Tool] {}: {}", tool_call.name, tool_call.arguments));
+                                    lines.push(format!(
+                                        "[Tool] {}: {}",
+                                        tool_call.name, tool_call.arguments
+                                    ));
                                 }
                             }
                         }
@@ -375,7 +389,11 @@ impl LlmCompaction {
                             // multi-byte char straddling it is dropped whole
                             // (a raw `&result[..4096]` panics mid-char).
                             let safe = result.floor_char_boundary(4096);
-                            format!("{}... (truncated, {} bytes total)", &result[..safe], result.len())
+                            format!(
+                                "{}... (truncated, {} bytes total)",
+                                &result[..safe],
+                                result.len()
+                            )
                         } else {
                             result.clone()
                         };
@@ -390,7 +408,10 @@ impl LlmCompaction {
     /// Extract file operations from entries before the cut point.
     /// Returns (`read_files`, `modified_files`) sorted lists.
     #[must_use]
-    pub fn extract_file_operations(entries: &[SessionEntry], cut_index: usize) -> (Vec<String>, Vec<String>) {
+    pub fn extract_file_operations(
+        entries: &[SessionEntry],
+        cut_index: usize,
+    ) -> (Vec<String>, Vec<String>) {
         let mut read_files = std::collections::HashSet::new();
         let mut modified_files = std::collections::HashSet::new();
 
@@ -399,7 +420,9 @@ impl LlmCompaction {
                 break;
             }
             if let SessionEntry::Message { message, .. } = entry
-                && let AgentMessage::Assistant { content: blocks, .. } = message
+                && let AgentMessage::Assistant {
+                    content: blocks, ..
+                } = message
             {
                 for block in blocks {
                     if let ContentBlock::ToolCall { tool_call: tc } = block {
@@ -531,7 +554,9 @@ impl LlmCompaction {
         let system_prompt = LlmCompaction::summarization_system_prompt();
 
         let messages = vec![
-            Message::System { content: system_prompt },
+            Message::System {
+                content: system_prompt,
+            },
             Message::User {
                 content: user_prompt.to_string(),
                 images: Vec::new(),
@@ -540,12 +565,12 @@ impl LlmCompaction {
 
         let max_tokens = std::cmp::min(
             config.compaction.reserve_tokens,
-            config.provider.context_window.saturating_div(4),
+            config.provider.active_context_window().saturating_div(4),
         );
 
         let request = ChatRequest {
             messages,
-            model: config.provider.model.clone(),
+            model: config.provider.active_model.clone(),
             tools: Vec::new(),
             stream: false,
             max_tokens: Some(max_tokens),

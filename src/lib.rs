@@ -11,8 +11,8 @@ pub mod commands;
 pub mod config;
 pub mod context;
 pub mod event_loop;
-pub mod hooks;
 pub mod history_guard;
+pub mod hooks;
 pub mod image;
 pub mod key_handler;
 pub mod logging;
@@ -23,8 +23,8 @@ pub mod session;
 pub mod skills;
 pub mod sse_debug;
 pub mod tools;
-pub mod turn;
 pub mod tui;
+pub mod turn;
 
 #[cfg(test)]
 mod agent_events_tests;
@@ -45,25 +45,25 @@ mod logging_tests;
 #[cfg(test)]
 mod project_dir_tests;
 #[cfg(test)]
-mod sse_debug_tests;
-#[cfg(test)]
 mod skills_tests;
+#[cfg(test)]
+mod sse_debug_tests;
 #[cfg(test)]
 mod turn_tests;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crossterm::event::{Event, KeyEventKind, MouseEventKind, EventStream,
-    KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
+use crossterm::event::{
+    Event, EventStream, KeyEventKind, KeyboardEnhancementFlags, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use futures_util::StreamExt;
-use tokio::time::sleep;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::Terminal;
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::tui::{App, AppState, Theme};
@@ -99,7 +99,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Check endpoint (non-blocking, result shown as system message via oneshot)
     let provider = crate::provider::Provider::from_settings(&config.provider.settings);
-    let endpoint_model = config.provider.model.clone();
+    let endpoint_model = config.provider.active_model.clone();
     let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
     let endpoint_check = tokio::spawn(async move {
         let result = match provider {
@@ -120,8 +120,14 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Setup terminal — enter raw mode first to disable echo and canonical mode.
     crossterm::terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen,
-        crossterm::style::SetBackgroundColor(crossterm::style::Color::Rgb { r: 0x15, g: 0x1B, b: 0x23 }),
+    execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        crossterm::style::SetBackgroundColor(crossterm::style::Color::Rgb {
+            r: 0x15,
+            g: 0x1B,
+            b: 0x23
+        }),
     )?;
     // Enable bracketed paste — terminal sends paste as structured Event::Paste.
     execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
@@ -178,9 +184,9 @@ pub async fn run() -> anyhow::Result<()> {
             let handle = app.token_stats_task.take().unwrap();
             match handle.await {
                 Ok(result) => app.modal.token_stats = Some(result),
-                Err(_) => app.modal.token_stats = Some(Err(
-                    "token stats task panicked".to_string(),
-                )),
+                Err(_) => {
+                    app.modal.token_stats = Some(Err("token stats task panicked".to_string()));
+                }
             }
         }
 
@@ -239,7 +245,8 @@ pub async fn run() -> anyhow::Result<()> {
 
                     // If user cancelled during compaction (Esc/Ctrl+C), abort
                     // the background task and roll back any deferred turn.
-                    if was_compacting && app.modal.state != AppState::Compacting
+                    if was_compacting
+                        && app.modal.state != AppState::Compacting
                         && let Some(task) = app.compaction_task.take()
                     {
                         task.abort();
@@ -249,8 +256,14 @@ pub async fn run() -> anyhow::Result<()> {
                     }
                 }
                 Event::Paste(text) => {
-                    let text: String = text.chars().filter(|c| !c.is_control() || *c == '\n').take(10_000).collect();
-                    app.editor.input_buffer.insert_str(app.editor.cursor_pos, &text);
+                    let text: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() || *c == '\n')
+                        .take(10_000)
+                        .collect();
+                    app.editor
+                        .input_buffer
+                        .insert_str(app.editor.cursor_pos, &text);
                     app.editor.cursor_pos += text.len();
                     app.chat.scroll_to_bottom();
                 }
@@ -284,13 +297,15 @@ pub async fn run() -> anyhow::Result<()> {
 /// # Errors
 ///
 /// - Terminal restore commands fail if the terminal is already gone.
-async fn shutdown_terminal(
-    endpoint_check: tokio::task::JoinHandle<()>,
-) -> anyhow::Result<()> {
+async fn shutdown_terminal(endpoint_check: tokio::task::JoinHandle<()>) -> anyhow::Result<()> {
     execute!(std::io::stdout(), crate::mouse::DisableMouseScroll)?;
     execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
     execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
-    execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::style::ResetColor)?;
+    execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::style::ResetColor
+    )?;
     let _ = crossterm::terminal::disable_raw_mode();
     endpoint_check.await.ok();
     tracing::info!("Quitting respondami");

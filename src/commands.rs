@@ -73,20 +73,51 @@ pub async fn execute_palette_command(
             app.modal.state = AppState::HelpPopup;
         }
         "model" => {
-            app.add_system_message(&format!(
-                "Model: {}\nContext window: {} tokens\nContext usage: {}% ({} input tokens)\nSession totals: ↑{} input ↓{} output",
-                app.config.model_name,
-                app.config.context_window,
-                if app.config.context_window > 0 {
-                    (f64::from(app.session.current_request_usage.input_tokens) / f64::from(app.config.context_window) * 100.0) as u64
-                } else {
-                    0
-                },
-                app.session.current_request_usage.input_tokens,
-                app.session.cumulative_usage.input_tokens,
-                app.session.cumulative_usage.output_tokens,
-            ));
-            app.chat.auto_scroll = true;
+            // Open the model select popup: union configured + discovered models.
+            let provider = crate::agent::build_provider(&app.config.config)
+                .map_err(|e| anyhow::anyhow!("Failed to build provider: {e}"))?;
+            let discovered = provider.list_models().await.unwrap_or_default();
+
+            let mut models: Vec<String> = app
+                .config
+                .config
+                .provider
+                .models
+                .iter()
+                .map(|m| m.name.clone())
+                .collect();
+
+            // Merge newly discovered models into config and the picker list.
+            for dm in &discovered {
+                if !models.contains(&dm.name) {
+                    models.push(dm.name.clone());
+                    app.config
+                        .config
+                        .provider
+                        .models
+                        .push(crate::config::ModelConfig {
+                            name: dm.name.clone(),
+                            context_window: dm.context_length.unwrap_or(32768),
+                            vision: true,
+                        });
+                }
+            }
+
+            if models.is_empty() {
+                app.add_system_message("No models available. Add models to your config.");
+                app.chat.auto_scroll = true;
+            } else {
+                app.modal.model_select_models = models;
+                // Pre-select the current model
+                app.modal.model_select_index = app
+                    .modal
+                    .model_select_models
+                    .iter()
+                    .position(|m| m == &app.config.model_name)
+                    .unwrap_or(0);
+                app.modal.model_select_scroll_offset = 0;
+                app.modal.state = AppState::ModelSelect;
+            }
         }
         "clear" => {
             app.clear_chat();

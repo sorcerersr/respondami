@@ -4,19 +4,19 @@
 //! consumes `ChatChunk` events (content, reasoning, tool calls, usage), executes
 //! tool calls as they arrive, and assembles the final `AgentResponse`.
 
+use crate::agent::token_estimation::TokenEstimator;
 use crate::config::Config;
 use crate::provider::{
-    accumulate_tool_call, agent_messages_to_provider_messages, finalize_tool_calls, ChatChunk, ChatRequest,
-    Message, PartialToolCall, Provider, ProviderError, ToolDef,
+    ChatChunk, ChatRequest, Message, PartialToolCall, Provider, ProviderError, ToolDef,
+    accumulate_tool_call, agent_messages_to_provider_messages, finalize_tool_calls,
 };
 use crate::session::{AgentMessage, ContentBlock, ToolCall, Usage};
-use crate::agent::token_estimation::TokenEstimator;
 use crate::tools::ToolRegistry;
 use crate::tui::AgentEvent;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
-use std::time::Duration;
 
 /// Response from the agent.
 #[derive(Debug)]
@@ -30,7 +30,8 @@ impl AgentResponse {
     /// Concatenate all text blocks.
     #[must_use]
     pub fn text(&self) -> String {
-        self.content.iter()
+        self.content
+            .iter()
             .filter_map(|b| {
                 if let ContentBlock::Text { text } = b {
                     Some(text.as_str())
@@ -45,7 +46,8 @@ impl AgentResponse {
     /// Concatenate all thinking blocks.
     #[must_use]
     pub fn thinking(&self) -> String {
-        self.content.iter()
+        self.content
+            .iter()
             .filter_map(|b| {
                 if let ContentBlock::Thinking { thinking } = b {
                     Some(thinking.as_str())
@@ -60,7 +62,8 @@ impl AgentResponse {
     /// Extract all tool calls from content blocks.
     #[must_use]
     pub fn tool_calls(&self) -> Vec<&ToolCall> {
-        self.content.iter()
+        self.content
+            .iter()
             .filter_map(|b| {
                 if let ContentBlock::ToolCall { tool_call } = b {
                     Some(tool_call)
@@ -74,13 +77,17 @@ impl AgentResponse {
     /// Check if this response has any thinking blocks.
     #[must_use]
     pub fn has_thinking(&self) -> bool {
-        self.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }))
+        self.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }))
     }
 
     /// Check if this response has any tool call blocks.
     #[must_use]
     pub fn has_tool_calls(&self) -> bool {
-        self.content.iter().any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+        self.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
     }
 
     /// Check if the response is empty (no text, no tool calls, no thinking).
@@ -172,7 +179,7 @@ pub async fn stream_response_from_messages(
 
     let request = ChatRequest {
         messages,
-        model: config.provider.model.clone(),
+        model: config.provider.active_model.clone(),
         tools,
         stream: true,
         max_tokens: None,
@@ -314,9 +321,12 @@ pub async fn stream_response_from_messages(
     // If the provider didn't send usage data, estimate from content using the
     // session's calibrated estimator (the context messages carry the last real
     // `prompt_tokens` used for calibration).
-    let usage = if let Some(u) = last_usage { u } else {
+    let usage = if let Some(u) = last_usage {
+        u
+    } else {
         let est = TokenEstimator::from_messages(context_messages);
-        let text_content: String = blocks.iter()
+        let text_content: String = blocks
+            .iter()
             .filter_map(|b| {
                 if let ContentBlock::Text { text } = b {
                     Some(text.as_str())
@@ -327,7 +337,12 @@ pub async fn stream_response_from_messages(
             .collect::<Vec<_>>()
             .join("\n");
         let prompt_tokens = est.estimate_tokens(
-            &request.messages.iter().map(crate::provider::Message::content).collect::<Vec<_>>().join("\n"),
+            &request
+                .messages
+                .iter()
+                .map(crate::provider::Message::content)
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
         let completion_tokens = est.estimate_tokens(&text_content);
         let total = prompt_tokens.saturating_add(completion_tokens);

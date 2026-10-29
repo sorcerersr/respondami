@@ -18,8 +18,8 @@ fn provider_config_full() {
     "context_window": 4096
 }"#;
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.model, "my-model");
-    assert_eq!(config.context_window, 4096);
+    assert_eq!(config.active_model, "my-model");
+    assert_eq!(config.active_context_window(), 4096);
     assert_eq!(config.provider_type(), "llamacpp");
 }
 
@@ -33,8 +33,8 @@ fn provider_config_legacy_no_type_field() {
 }"#;
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
     assert_eq!(config.provider_type(), "llamacpp");
-    assert_eq!(config.model, "llama3.2");
-    assert_eq!(config.context_window, 8192);
+    assert_eq!(config.active_model, "llama3.2");
+    assert_eq!(config.active_context_window(), 8192);
 }
 
 #[test]
@@ -42,10 +42,13 @@ fn provider_config_defaults() {
     // Minimal config — all fields should default
     let json = r"{}";
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.model, "llama3.2");
-    assert_eq!(config.context_window, 32768);
-    assert!(config.vision, "vision defaults to true");
-    assert!(!config.strip_images_after_view, "strip_images_after_view defaults to false");
+    assert_eq!(config.active_model, "llama3.2");
+    assert_eq!(config.active_context_window(), 32768);
+    assert!(config.active_vision(), "vision defaults to true");
+    assert!(
+        !config.strip_images_after_view,
+        "strip_images_after_view defaults to false"
+    );
     let ProviderSettings::LlamaCpp(s) = &config.settings;
     assert_eq!(s.url, "http://localhost:8080");
     assert_eq!(s.api_key, "");
@@ -77,7 +80,7 @@ fn provider_config_vision_false() {
     "vision": false
 }"#;
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
-    assert!(!config.vision, "vision: false must be honored");
+    assert!(!config.active_vision(), "vision: false must be honored");
 }
 
 #[test]
@@ -95,7 +98,10 @@ fn config_top_level_vision_ignored() {
     "vision": false
 }"#;
     let config: Config = serde_json::from_str(json).unwrap();
-    assert!(config.provider.vision, "top-level vision must be ignored");
+    assert!(
+        config.provider.active_vision(),
+        "top-level vision must be ignored"
+    );
 }
 
 #[test]
@@ -120,17 +126,26 @@ fn provider_config_roundtrip() {
             url: "http://localhost:8080".to_string(),
             api_key: "key123".to_string(),
         }),
-        model: "my-model".to_string(),
-        context_window: 4096,
-        vision: false,
+        models: vec![crate::config::ModelConfig {
+            name: "my-model".to_string(),
+            context_window: 4096,
+            vision: false,
+        }],
+        active_model: "my-model".to_string(),
         strip_images_after_view: true,
     };
     let json = serde_json::to_string(&config).unwrap();
     let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(decoded.model, config.model);
-    assert_eq!(decoded.context_window, config.context_window);
+    assert_eq!(decoded.active_model, config.active_model);
+    assert_eq!(
+        decoded.active_context_window(),
+        config.active_context_window()
+    );
     assert_eq!(decoded.provider_type(), config.provider_type());
-    assert!(!decoded.vision, "vision must round-trip inside the provider object");
+    assert!(
+        !decoded.active_vision(),
+        "vision must round-trip inside the provider object"
+    );
     assert!(
         decoded.strip_images_after_view,
         "strip_images_after_view must round-trip inside the provider object"
@@ -152,9 +167,9 @@ fn provider_config_roundtrip() {
 #[test]
 fn config_default_values() {
     let config = Config::default();
-    assert_eq!(config.provider.model, "llama3.2");
-    assert_eq!(config.provider.context_window, 32768);
-    assert!(config.provider.vision);
+    assert_eq!(config.provider.active_model, "llama3.2");
+    assert_eq!(config.provider.active_context_window(), 32768);
+    assert!(config.provider.active_vision());
     assert!(config.compaction.enabled);
     assert_eq!(config.compaction.reserve_tokens, 16384);
     assert_eq!(config.compaction.keep_recent_tokens, 16384);
@@ -169,7 +184,7 @@ fn config_validate_valid() {
 #[test]
 fn config_validate_zero_context_window() {
     let mut config = Config::default();
-    config.provider.context_window = 0;
+    config.provider.models[0].context_window = 0;
     assert!(config.validate().is_err());
 }
 
@@ -217,9 +232,19 @@ fn compaction_config_mode_defaults_to_vcc() {
     // Legacy config without a `mode` key must load with the new default.
     let json = r#"{"enabled": true, "reserve_tokens": 16384, "keep_recent_tokens": 16384}"#;
     let config: CompactionConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.mode, CompactionMode::Vcc, "mode defaults to vcc on upgrade");
-    assert!(config.vcc.smart_keep_tail, "smart_keep_tail defaults to true");
-    assert_eq!(config.vcc.brief_budget_tokens, 1100, "brief_budget_tokens defaults to 1100");
+    assert_eq!(
+        config.mode,
+        CompactionMode::Vcc,
+        "mode defaults to vcc on upgrade"
+    );
+    assert!(
+        config.vcc.smart_keep_tail,
+        "smart_keep_tail defaults to true"
+    );
+    assert_eq!(
+        config.vcc.brief_budget_tokens, 1100,
+        "brief_budget_tokens defaults to 1100"
+    );
 }
 
 #[test]
@@ -287,7 +312,7 @@ fn config_full_roundtrip() {
     let config = Config::default();
     let json = serde_json::to_string(&config).unwrap();
     let decoded: Config = serde_json::from_str(&json).unwrap();
-    assert_eq!(decoded.provider.model, config.provider.model);
+    assert_eq!(decoded.provider.active_model, config.provider.active_model);
     assert_eq!(decoded.compaction.enabled, config.compaction.enabled);
 }
 
@@ -298,11 +323,17 @@ fn config_full_roundtrip() {
 #[test]
 fn config_default_ui() {
     let config = Config::default();
-    assert!(matches!(config.ui.thinking_display, ThinkingDisplay::Collapsed));
+    assert!(matches!(
+        config.ui.thinking_display,
+        ThinkingDisplay::Collapsed
+    ));
     assert_eq!(config.ui.thinking_max_lines, 5);
     assert!(config.ui.tool_output_expanded);
     assert!(config.ui.file_show_hidden);
-    assert_eq!(config.ui.file_always_visible, vec!["docs/plans/", "docs/reviews/"]);
+    assert_eq!(
+        config.ui.file_always_visible,
+        vec!["docs/plans/", "docs/reviews/"]
+    );
 }
 
 #[test]

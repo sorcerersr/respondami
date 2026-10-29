@@ -753,8 +753,11 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     };
 
     // Vision gate: drop image attachments when the model can't see them.
-    let (final_result, tool_images) =
-        apply_vision_gate(ctx.config.provider.vision, final_result, tool_images);
+    let (final_result, tool_images) = apply_vision_gate(
+        ctx.config.provider.active_vision(),
+        final_result,
+        tool_images,
+    );
 
     // Run PostToolUse hooks (only for successful tool calls). These are
     // side effects; their stdout never reaches the model. A blocked hook
@@ -885,7 +888,9 @@ async fn strip_seen_images(
     let mut stripped_ids: Vec<String> = Vec::new();
     for (i, msg) in context.iter_mut().enumerate() {
         if let AgentMessage::Tool {
-            images, tool_call_id, ..
+            images,
+            tool_call_id,
+            ..
         } = msg
             && !images.is_empty()
         {
@@ -896,7 +901,11 @@ async fn strip_seen_images(
         }
     }
     if !stripped_ids.is_empty() {
-        let _ = tx.send(AgentEvent::StripImages { tool_call_ids: stripped_ids }).await;
+        let _ = tx
+            .send(AgentEvent::StripImages {
+                tool_call_ids: stripped_ids,
+            })
+            .await;
     }
 }
 
@@ -1065,7 +1074,10 @@ pub(crate) fn strip_images_from_tool(msg: &AgentMessage) -> AgentMessage {
             .get("path")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unknown");
-        new_result.push_str(&format!("\n{}", image_removal_note(path, img.width, img.height)));
+        new_result.push_str(&format!(
+            "\n{}",
+            image_removal_note(path, img.width, img.height)
+        ));
     }
     AgentMessage::Tool {
         tool_call_id: tool_call_id.clone(),

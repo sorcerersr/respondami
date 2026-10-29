@@ -52,7 +52,7 @@ fn never_finishes_task() -> tokio::task::JoinHandle<anyhow::Result<CompactionPla
 /// tiny context window + zero reserve → `should_compact` is always true.
 fn deferral_config() -> Config {
     let mut config = Config::default();
-    config.provider.context_window = 10;
+    config.provider.models[0].context_window = 10;
     config.compaction.reserve_tokens = 0;
     config
 }
@@ -497,16 +497,22 @@ async fn unknown_skill_returns_not_found() {
     app.editor.input_buffer = "/zzz".to_string();
     let mut terminal = make_terminal();
 
-    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+    let quit = start_turn(&mut app, &mut terminal)
+        .await
+        .expect("start_turn");
 
     assert!(!quit);
-    let not_found = app.chat
+    let not_found = app
+        .chat
         .chat_messages
         .iter()
         .any(|m| matches!(m, ChatMessage::System(s) if s.content.contains("not found")));
     assert!(not_found, "expected a not-found system message");
     assert!(
-        !app.chat.chat_messages.iter().any(|m| matches!(m, ChatMessage::User(_))),
+        !app.chat
+            .chat_messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::User(_))),
         "turn must not fall through to run_turn_with_input"
     );
 }
@@ -635,10 +641,7 @@ fn undo_turn_setup_removes_rolled_back_skill_hooks() {
     // are registered; the pre-turn set was empty.
     app.activate_skill("refine");
     assert_eq!(
-        app.config
-            .hook_registry
-            .hooks(HookEvent::PreToolUse)
-            .len(),
+        app.config.hook_registry.hooks(HookEvent::PreToolUse).len(),
         1
     );
 
@@ -665,20 +668,11 @@ fn undo_turn_setup_keeps_pre_turn_skill_hooks() {
     app.activate_skill("refine");
     let pre_turn_skills = app.active_skills.clone();
 
-    undo_turn_setup(
-        &mut app,
-        pre_len,
-        false,
-        "x".to_string(),
-        pre_turn_skills,
-    );
+    undo_turn_setup(&mut app, pre_len, false, "x".to_string(), pre_turn_skills);
 
     assert!(app.active_skills.contains("refine"));
     assert_eq!(
-        app.config
-            .hook_registry
-            .hooks(HookEvent::PreToolUse)
-            .len(),
+        app.config.hook_registry.hooks(HookEvent::PreToolUse).len(),
         1
     );
 }

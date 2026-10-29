@@ -61,7 +61,9 @@ impl Message {
     #[must_use]
     pub fn content(&self) -> &str {
         match self {
-            Message::System { content } | Message::User { content, .. } | Message::Assistant { content, .. } => content,
+            Message::System { content }
+            | Message::User { content, .. }
+            | Message::Assistant { content, .. } => content,
             Message::Tool { result, .. } => result,
         }
     }
@@ -117,6 +119,15 @@ pub struct CompletionResponse {
     pub usage: Option<Usage>,
 }
 
+/// A model discovered from the provider's `/v1/models` endpoint.
+#[derive(Debug, Clone)]
+pub struct DiscoveredModel {
+    /// The model name (exact string to send in requests).
+    pub name: String,
+    /// The model's context length, if reported by the endpoint.
+    pub context_length: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Provider trait — extensible abstraction
 // ---------------------------------------------------------------------------
@@ -145,6 +156,9 @@ pub trait ProviderTrait: Send + Sync {
     /// `model` — the configured model name to probe with (some endpoints
     /// reject unknown model names, so the literal `"dummy"` was unreliable).
     async fn ping(&self, model: &str) -> Result<(), ProviderError>;
+
+    /// List models available at the provider's `/v1/models` endpoint.
+    async fn list_models(&self) -> Result<Vec<DiscoveredModel>, ProviderError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,16 +197,18 @@ impl Provider {
     /// not configured or unavailable.
     pub fn from_settings(settings: &ProviderSettings) -> Result<Self, ProviderError> {
         match settings {
-            ProviderSettings::LlamaCpp(s) => {
-                Ok(Provider { inner: Box::new(LlamaCppProvider::from_settings(s)) })
-            }
+            ProviderSettings::LlamaCpp(s) => Ok(Provider {
+                inner: Box::new(LlamaCppProvider::from_settings(s)),
+            }),
         }
     }
 
     /// Clone the provider for use in spawned tasks.
     #[must_use]
     pub fn clone_provider(&self) -> Self {
-        Provider { inner: self.inner.clone_box() }
+        Provider {
+            inner: self.inner.clone_box(),
+        }
     }
 
     /// Construct a provider from an arbitrary trait implementation.
@@ -237,6 +253,16 @@ impl Provider {
     /// Returns an error if the provider endpoint is unreachable.
     pub async fn ping(&self, model: &str) -> Result<(), ProviderError> {
         self.inner.ping(model).await
+    }
+
+    /// List models available at the provider's `/v1/models` endpoint.
+    ///
+    /// # Errors
+    ///
+    /// - Network errors if the provider endpoint is unreachable.
+    /// - HTTP errors if the endpoint returns a non-200 status.
+    pub async fn list_models(&self) -> Result<Vec<DiscoveredModel>, ProviderError> {
+        self.inner.list_models().await
     }
 }
 
@@ -290,10 +316,13 @@ pub fn agent_message_to_message(msg: &AgentMessage) -> Message {
             content: content.clone(),
             images: Vec::new(),
         },
-        AgentMessage::Assistant { content: blocks, .. } => {
+        AgentMessage::Assistant {
+            content: blocks, ..
+        } => {
             let content = msg.text();
             let reasoning = msg.thinking();
-            let tool_calls: Vec<ToolCall> = blocks.iter()
+            let tool_calls: Vec<ToolCall> = blocks
+                .iter()
                 .filter_map(|b| {
                     if let ContentBlock::ToolCall { tool_call } = b {
                         Some(tool_call.clone())
@@ -355,10 +384,7 @@ pub fn agent_messages_to_provider_messages(messages: &[AgentMessage]) -> Vec<Mes
 }
 
 /// Accumulate a `ToolCallDelta` into a `PartialToolCall`.
-pub fn accumulate_tool_call(
-    pending: &mut Vec<PartialToolCall>,
-    delta: &ToolCallDelta,
-) {
+pub fn accumulate_tool_call(pending: &mut Vec<PartialToolCall>, delta: &ToolCallDelta) {
     let idx = delta.index as usize;
     while pending.len() <= idx {
         pending.push(PartialToolCall {
@@ -570,7 +596,10 @@ impl ProviderError {
 pub fn is_context_overflow(status: u16, body: &str) -> bool {
     // 1. Try to parse structured error and check `error.type`
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(body)
-        && let Some(error_type) = val.get("error").and_then(|e| e.get("type")).and_then(|t| t.as_str())
+        && let Some(error_type) = val
+            .get("error")
+            .and_then(|e| e.get("type"))
+            .and_then(|t| t.as_str())
     {
         let context_overflow_types = [
             "exceed_context_size_error",

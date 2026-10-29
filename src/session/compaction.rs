@@ -127,7 +127,7 @@ impl CompactionEngine {
         };
         Self {
             settings: CompactionSettings::from_config(&config.compaction),
-            context_window: config.provider.context_window,
+            context_window: config.provider.active_context_window(),
             strategy,
         }
     }
@@ -135,7 +135,8 @@ impl CompactionEngine {
     /// Check if compaction should be triggered based on current token usage.
     #[must_use]
     pub fn should_compact(&self, current_tokens: u32) -> bool {
-        self.settings.should_compact(current_tokens, self.context_window)
+        self.settings
+            .should_compact(current_tokens, self.context_window)
     }
 
     /// Estimate total context tokens including system overhead.
@@ -143,7 +144,11 @@ impl CompactionEngine {
     /// Prefers actual LLM usage data from the last Assistant message.
     /// Falls back to character estimates + `system_overhead_tokens`.
     #[must_use]
-    pub fn estimate_context_tokens(&self, session: &SessionStore, system_overhead_tokens: u32) -> u32 {
+    pub fn estimate_context_tokens(
+        &self,
+        session: &SessionStore,
+        system_overhead_tokens: u32,
+    ) -> u32 {
         session.estimate_context_tokens(system_overhead_tokens)
     }
 
@@ -202,7 +207,8 @@ impl CompactionEngine {
             )
             .await?;
 
-        let (tb, ta, mr) = session.apply_compaction(plan.summary, plan.cut_index, plan.tokens_before)?;
+        let (tb, ta, mr) =
+            session.apply_compaction(plan.summary, plan.cut_index, plan.tokens_before)?;
         Ok((tb, ta, mr))
     }
 }
