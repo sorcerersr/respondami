@@ -10,7 +10,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::config::Config;
 use crate::hooks::{Hook, HookEvent, HookSource, ToolMatcher};
-use crate::session::CompactionPlan;
+use crate::session::{CompactionPlan, SessionStore};
 use crate::skills::{Skill, SkillHook, SkillSource};
 use crate::tui::{App, AppState, ChatMessage, HookDisplay};
 use crate::turn::{
@@ -39,7 +39,15 @@ fn make_terminal() -> Terminal<CrosstermBackend<std::io::Stdout>> {
 }
 
 fn make_app() -> App {
-    App::new(Config::default(), PathBuf::from("."))
+    // The session store is re-pointed at a temp dir: tests that create a
+    // session must not write into the real `.respondami/sessions/` (the
+    // mtime-sorted /resume dialog would show them on top of real sessions).
+    // `keep` keeps the dir alive without threading a TempDir through
+    // every call site; the leftover /tmp dir is harmless.
+    let dir = tempfile::tempdir().unwrap().keep();
+    let mut app = App::new(Config::default(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(&dir);
+    app
 }
 
 /// A compaction task that never finishes — used to trip the in-progress
@@ -131,7 +139,9 @@ async fn run_turn_with_input_blocked_while_compaction_in_progress() {
 
 #[tokio::test]
 async fn run_turn_defers_to_background_compaction_when_near_threshold() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     let pre_len = app.chat.chat_messages.len();
     let mut terminal = make_terminal();
 
@@ -174,7 +184,9 @@ async fn run_turn_defers_to_background_compaction_when_near_threshold() {
 
 #[tokio::test]
 async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     let mut terminal = make_terminal();
 
     // `/skillname` shape: LLM gets the injected prompt, chat shows what was
@@ -214,7 +226,9 @@ async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
 
 #[tokio::test]
 async fn run_turn_ups_hook_stdout_not_injected_into_model_input() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.hook_registry.add(make_hook(
         HookEvent::UserPromptSubmit,
         "ups.sh",
@@ -254,7 +268,9 @@ async fn run_turn_ups_hook_stdout_not_injected_into_model_input() {
 
 #[tokio::test]
 async fn run_turn_ups_hook_empty_stdout_not_injected() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config
         .hook_registry
         .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "true"));
@@ -282,7 +298,9 @@ async fn run_turn_ups_hook_empty_stdout_not_injected() {
 
 #[tokio::test]
 async fn run_turn_precompact_blocked_undoes_turn_setup() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.hook_registry.add(make_hook(
         HookEvent::PreCompact,
         "gate.sh",
@@ -321,7 +339,9 @@ async fn run_turn_precompact_blocked_undoes_turn_setup() {
 
 #[tokio::test]
 async fn run_turn_precompact_stdout_captured_for_summary() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.hook_registry.add(make_hook(
         HookEvent::PreCompact,
         "pc.sh",
@@ -446,7 +466,9 @@ async fn skill_activation_persists_to_session_header() {
     )
     .unwrap();
 
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.skills = vec![Skill {
         name: "my-skill".to_string(),
         description: "test".to_string(),
@@ -493,7 +515,9 @@ async fn unknown_skill_returns_not_found() {
     // `/zzz` fuzzy-matches no command id, so `parse_slash_command` passes it
     // to `handle_skill_activation`, which must stop the turn with a
     // not-found system message (no fall-through to `run_turn_with_input`).
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(Config::default(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.editor.input_buffer = "/zzz".to_string();
     let mut terminal = make_terminal();
 

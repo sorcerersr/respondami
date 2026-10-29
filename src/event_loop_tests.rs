@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::event_loop::{CompactionPollResult, CompactionResult, handle_compaction_result, join_panic_message, poll_compaction_task, transition_to_idle};
-use crate::session::{CompactionPlan, RequestTokenUsage};
+use crate::session::{CompactionPlan, RequestTokenUsage, SessionStore};
 use crate::turn::PendingTurn;
 use crate::tui::{App, AppState, ChatMessage};
 
@@ -389,6 +389,9 @@ async fn poll_launches_pending_turn_when_compaction_finishes() {
 #[tokio::test]
 async fn handle_compaction_result_appends_pending_precompact_context() {
     let mut app = make_poll_app();
+    // Keep the test session out of the real `.respondami/sessions/`.
+    let dir = tempfile::TempDir::new().unwrap();
+    app.session.session_store = SessionStore::new(dir.path());
     app.session
         .session_store
         .create_session("model".to_string(), 32768, ".".to_string())
@@ -425,6 +428,9 @@ async fn handle_compaction_result_appends_pending_precompact_context() {
 #[tokio::test]
 async fn handle_compaction_result_no_pending_context_is_noop() {
     let mut app = make_poll_app();
+    // Keep the test session out of the real `.respondami/sessions/`.
+    let dir = tempfile::TempDir::new().unwrap();
+    app.session.session_store = SessionStore::new(dir.path());
     app.session
         .session_store
         .create_session("model".to_string(), 32768, ".".to_string())

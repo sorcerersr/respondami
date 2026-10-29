@@ -169,6 +169,10 @@ cargo test --workspace                       # all tests pass
 - JSONL format with fsync on every append. Session header on line 1, messages appended.
 - `apply_compaction()` rewrites the entire file, clears usage data from kept Assistant messages to prevent stale `prompt_tokens` from triggering double compaction.
 
+### Test Session Pollution
+
+- `App::new(config, cwd)` points the session store at `cwd/.respondami/sessions`. Tests that reach `create_session` (directly, or via `start_turn`/`run_turn_with_input` past the compaction guard) must re-point `app.session.session_store` at a `tempfile` dir after construction, or they write header-only session files into the real project dir. The mtime-sorted `/resume` dialog then shows them on top of real sessions (0 messages, empty name; resuming one lands on the welcome screen).
+
 ## File Map
 
 ### Core
