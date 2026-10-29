@@ -19,7 +19,9 @@ The file is created automatically with default values on first launch. Existing 
     "url": "http://localhost:8080",
     "api_key": "",
     "model": "llama3.2",
-    "context_window": 32768
+    "context_window": 32768,
+    "vision": true,
+    "strip_images_after_view": false
   },
   "compaction": {
     "enabled": true,
@@ -59,6 +61,8 @@ Settings for connecting to the LLM backend.
 | `api_key` | string | `""` | API key for authentication (if required by the server). |
 | `model` | string | `"llama3.2"` | Model name to use for completions. |
 | `context_window` | integer | `32768` | Context window size in tokens. Must be greater than 0. |
+| `vision` | boolean | `true` | Whether this model supports vision (images). When `false`, the `read` tool returns a text note instead of an image attachment. |
+| `strip_images_after_view` | boolean | `false` | Workaround for some server/provider environments where images in the conversation interfere with prompt caching. When enabled, an image is removed from the context after the model has seen it (a text note is left in its place, and the file can be re-read). |
 
 ## Compaction
 

@@ -26,6 +26,11 @@ pub struct ProviderConfig {
     /// Whether this model supports vision (images). When false, the `read`
     /// tool returns a text note instead of an image attachment.
     pub vision: bool,
+    /// Workaround for server/provider environments where images in the
+    /// conversation interfere with prompt caching. When true, an image is
+    /// removed from the context after the model has seen it (a text note is
+    /// left in its place; the file can be re-read).
+    pub strip_images_after_view: bool,
 }
 
 impl ProviderConfig {
@@ -73,6 +78,10 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             .get("vision")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
+        let strip_images_after_view = obj
+            .get("strip_images_after_view")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
         // Build settings based on `type` field (or default to llamacpp for legacy)
         let settings = match obj
@@ -100,6 +109,7 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             model,
             context_window,
             vision,
+            strip_images_after_view,
         })
     }
 }
@@ -131,6 +141,10 @@ impl Serialize for ProviderConfig {
             serde_json::Value::Number(self.context_window.into()),
         );
         map.insert("vision".to_string(), serde_json::Value::Bool(self.vision));
+        map.insert(
+            "strip_images_after_view".to_string(),
+            serde_json::Value::Bool(self.strip_images_after_view),
+        );
 
         map.serialize(serializer)
     }
@@ -349,6 +363,7 @@ impl Default for Config {
                 model: "llama3.2".to_string(),
                 context_window: 32768,
                 vision: true,
+                strip_images_after_view: false,
             },
             compaction: CompactionConfig {
                 enabled: default_compaction_enabled(),
@@ -412,6 +427,10 @@ impl Config {
         let needs_migration = raw.get("ui").is_none()
             || raw.get("rtk").is_none()
             || raw.get("provider").and_then(|p| p.get("vision")).is_none()
+            || raw
+                .get("provider")
+                .and_then(|p| p.get("strip_images_after_view"))
+                .is_none()
             || raw.get("compaction").and_then(|c| c.get("mode")).is_none();
 
         let config: Self = serde_json::from_value(raw)

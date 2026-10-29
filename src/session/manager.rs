@@ -704,6 +704,47 @@ impl SessionStore {
         Ok((tokens_before, self.estimate_token_count(), messages_removed))
     }
 
+    /// Strip images from the tool results with the given IDs, appending a
+    /// removal note to each result (`strip_images_after_view` workaround).
+    ///
+    /// Uses the same transform as the agent loop's live-context strip
+    /// ([`crate::agent::strip_images_from_tool`]), so session and live
+    /// context stay byte-identical. Rewrites the session file (atomic);
+    /// no-op when none of the IDs carry images.
+    ///
+    /// # Errors
+    ///
+    /// - I/O errors when rewriting the session file to disk.
+    pub fn strip_tool_images(&mut self, tool_call_ids: &[String]) -> anyhow::Result<()> {
+        let mut changed = false;
+        for entry in &mut self.entries {
+            let should_strip = matches!(
+                entry,
+                SessionEntry::Message {
+                    message: AgentMessage::Tool {
+                        tool_call_id, images, ..
+                    },
+                    ..
+                } if !images.is_empty() && tool_call_ids.iter().any(|id| id == tool_call_id)
+            );
+            if should_strip
+                && let SessionEntry::Message { message, .. } = entry
+            {
+                *message = crate::agent::strip_images_from_tool(message);
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        self.recompute_context_cache();
+        if let Some(ref path) = self.current_session_path {
+            self.rewrite_session_file(path)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Rewrite the entire session file from memory.
     ///
     /// Writes to a temp file in the same directory, fsyncs, then renames over

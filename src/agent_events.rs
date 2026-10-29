@@ -266,6 +266,9 @@ pub async fn process_agent_events(
                     }
                 }
             }
+            Ok(Some(AgentEvent::StripImages { tool_call_ids })) => {
+                handle_strip_images_event(app, tool_call_ids);
+            }
             Ok(Some(AgentEvent::HookMessage {
                 event,
                 hook_name,
@@ -558,6 +561,19 @@ pub(crate) fn handle_skill_activation_event(app: &mut App, skill_name: &str) {
             },
         ));
     app.maybe_auto_scroll();
+}
+
+/// `StripImages` handler (`strip_images_after_view` workaround): the agent
+/// loop already stripped the live context; apply the identical transform to
+/// the session and rewrite the JSONL (atomic). Failure is logged, not fatal
+/// — the live session stays correct in memory; a later resume re-strips
+/// (one re-prefill).
+pub(crate) fn handle_strip_images_event(app: &mut App, tool_call_ids: Vec<String>) {
+    if app.session.session_store.has_active_session()
+        && let Err(e) = app.session.session_store.strip_tool_images(&tool_call_ids)
+    {
+        tracing::error!("Failed to strip images from session: {e}");
+    }
 }
 
 /// Calculate the visible height of the chat area in lines.

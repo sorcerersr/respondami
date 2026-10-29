@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1289 total)
+cargo test --workspace                         # all tests (1321 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1303 tests** (1078 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1321 tests** (1096 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -327,15 +327,15 @@ cargo test --workspace                       # all tests pass
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
-| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing        |
+| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing, image strip (`image_removal_note`/`strip_images_from_tool`/`strip_seen_images`)        |
 | `src/agent/token_estimation_tests.rs`         | Token estimation from messages                          |
-| `src/agent_events_tests.rs`                   | Agent event processing edge cases                       |
+| `src/agent_events_tests.rs`                   | Agent event processing edge cases, `StripImages` handler  |
 | `src/agents_md_tests.rs`                      | AGENTS.md loading and parsing                           |
 | `src/commands_tests.rs`                       | Command palette commands                                |
-| `src/config_tests.rs`                         | Config loading and validation                           |
+| `src/config_tests.rs`                         | Config loading and validation, `strip_images_after_view` default/parse  |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
-| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, `poll_compaction_task` (not finished / idle / pending-turn launch) |
-| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability |
+| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, post-compaction image strip, `poll_compaction_task` (not finished / idle / pending-turn launch) |
+| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability, strip one-time drift |
 | `src/image_tests.rs`                          | MIME sniff, process_image (png/jpeg/gif/webp), animated-GIF reject, resize, token estimate |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
@@ -359,7 +359,7 @@ cargo test --workspace                       # all tests pass
 | `src/session/compaction/vcc/rank_tests.rs`      | VCC block scoring + ranked selection                   |
 | `src/session/compaction/vcc/merge_tests.rs`     | VCC merge_previous, strip_active_skills                |
 | `src/session/entry_tests.rs`                  | Session entry serialization                             |
-| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage      |
+| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage, `strip_tool_images`  |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
 | `src/sse_debug_tests.rs`                      | SSE debug utilities                                     |
 | `src/tools/activate_skill_tests.rs`           | activate_skill tool                                     |

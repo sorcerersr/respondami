@@ -115,3 +115,62 @@ fn drain_pending_events_processes_all_event_types() {
     assert_eq!(usages.len(), 1);
     assert_eq!(usages[0].completion_tokens, 50);
 }
+
+// ---------------------------------------------------------------------------
+// StripImages handler (strip_images_after_view)
+// ---------------------------------------------------------------------------
+
+fn image_tool_msg() -> crate::session::AgentMessage {
+    crate::session::AgentMessage::tool(
+        "call_img".to_string(),
+        "read".to_string(),
+        serde_json::json!({ "path": "/tmp/pic.png" }),
+        "Image: /tmp/pic.png (100x50, image/png)".to_string(),
+        vec![crate::image::ImageContent {
+            data: "aW1hZ2U=".to_string(),
+            mime_type: "image/png".to_string(),
+            width: 100,
+            height: 50,
+        }],
+    )
+}
+
+/// `StripImages` handler: strips the matching tool result from the active
+/// session and rewrites the JSONL (base64 gone, note present).
+#[test]
+fn strip_images_event_strips_active_session() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, "/".to_string())
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(None, image_tool_msg())
+        .unwrap();
+
+    super::agent_events::handle_strip_images_event(&mut app, vec!["call_img".to_string()]);
+
+    let context = app.session.session_store.build_context();
+    match &context[0] {
+        crate::session::AgentMessage::Tool { images, result, .. } => {
+            assert!(images.is_empty(), "images must be stripped from the session");
+            assert!(
+                result.contains("[image removed: /tmp/pic.png (100x50). Re-read to view again.]"),
+                "removal note must be appended: {result}"
+            );
+        }
+        other => panic!("expected Tool message, got {other:?}"),
+    }
+}
+
+/// `StripImages` handler with no active session: a no-op (no panic, no error).
+#[test]
+fn strip_images_event_no_active_session_is_noop() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    // No session created — the handler must be a clean no-op.
+    super::agent_events::handle_strip_images_event(&mut app, vec!["call_img".to_string()]);
+    assert!(!app.session.session_store.has_active_session());
+}

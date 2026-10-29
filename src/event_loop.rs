@@ -155,6 +155,37 @@ pub async fn handle_compaction_result(
                     // outgoing prefix is legitimately different, so reset the
                     // history guard baseline (see `crate::history_guard`).
                     app.session.reset_history_guard();
+                    // `strip_images_after_view`: the compaction rewrite is
+                    // already in flight, so strip images from the kept
+                    // entries here too (the summary is text, so images never
+                    // survive into it — compaction can't resurrect one).
+                    if app.config.config.provider.strip_images_after_view {
+                        let ids: Vec<String> = app
+                            .session
+                            .session_store
+                            .entries()
+                            .iter()
+                            .filter_map(|e| {
+                                if let crate::session::SessionEntry::Message {
+                                    message: crate::session::AgentMessage::Tool {
+                                        tool_call_id, images, ..
+                                    },
+                                    ..
+                                } = e
+                                    && !images.is_empty()
+                                {
+                                    Some(tool_call_id.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if !ids.is_empty()
+                            && let Err(e) = app.session.session_store.strip_tool_images(&ids)
+                        {
+                            tracing::error!("Failed to strip images after compaction: {e}");
+                        }
+                    }
                     // Reset the context-usage percentage to the
                     // post-compaction estimate so the status bar reflects the
                     // rewrite immediately (avoids the 0% flicker and the

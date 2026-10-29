@@ -627,3 +627,109 @@ use super::{build_context_from_entries, SessionStore, SessionEntry, AgentMessage
         assert!(!manager.has_active_session());
         assert!(manager.session_id().is_none());
     }
+
+    // ---------------------------------------------------------------------------
+    // strip_tool_images (strip_images_after_view)
+    // ---------------------------------------------------------------------------
+
+    fn image_tool_msg() -> AgentMessage {
+        AgentMessage::tool(
+            "call_img".to_string(),
+            "read".to_string(),
+            serde_json::json!({ "path": "/tmp/pic.png" }),
+            "Image: /tmp/pic.png (100x50, image/png)".to_string(),
+            vec![crate::image::ImageContent {
+                data: "aW1hZ2U=".to_string(),
+                mime_type: "image/png".to_string(),
+                width: 100,
+                height: 50,
+            }],
+        )
+    }
+
+    #[test]
+    fn strip_tool_images_strips_matching_ids() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager.append_message(None, image_tool_msg()).unwrap();
+
+        manager.strip_tool_images(&["call_img".to_string()]).unwrap();
+
+        let context = manager.build_context();
+        match &context[0] {
+            AgentMessage::Tool { images, result, .. } => {
+                assert!(images.is_empty(), "images must be stripped");
+                assert!(
+                    result.contains("[image removed: /tmp/pic.png (100x50). Re-read to view again.]"),
+                    "removal note must be appended: {result}"
+                );
+            }
+            other => panic!("expected Tool message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_tool_images_no_match_is_noop() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager.append_message(None, image_tool_msg()).unwrap();
+
+        // A non-matching ID must leave the entry untouched (no rewrite).
+        manager.strip_tool_images(&["other_id".to_string()]).unwrap();
+
+        let context = manager.build_context();
+        match &context[0] {
+            AgentMessage::Tool { images, .. } => assert_eq!(images.len(), 1, "unmatched ID → unchanged"),
+            other => panic!("expected Tool message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_tool_images_persists_to_disk() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        let session_id = manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager.append_message(None, image_tool_msg()).unwrap();
+
+        manager.strip_tool_images(&["call_img".to_string()]).unwrap();
+
+        // The rewritten file must carry the stripped form (no base64, note present).
+        let path = manager.sessions_dir().join(format!("{session_id}.jsonl"));
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("aW1hZ2U="),
+            "base64 image data must be gone from the rewritten file"
+        );
+        assert!(
+            content.contains("image removed"),
+            "removal note must be in the rewritten file"
+        );
+
+        // A fresh store loading the file sees the stripped form.
+        let mut reloaded = SessionStore::new(&dir);
+        reloaded.load_session(&path).unwrap();
+        let context = reloaded.build_context();
+        match &context[0] {
+            AgentMessage::Tool { images, .. } => assert_eq!(images.as_slice(), []),
+            other => panic!("expected Tool message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_tool_images_recomputes_context_cache() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager.append_message(None, image_tool_msg()).unwrap();
+        let before = manager.cached_context_tokens();
+
+        manager.strip_tool_images(&["call_img".to_string()]).unwrap();
+
+        // The cache must equal a fresh computation (recomputed, not stale).
+        let est = manager.cached_estimator();
+        let expected = estimate_tokens_from_messages(&manager.build_context(), &est);
+        assert_eq!(manager.cached_context_tokens(), expected);
+        assert_ne!(before, expected, "strip changes the token estimate");
+    }

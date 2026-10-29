@@ -45,9 +45,26 @@ fn provider_config_defaults() {
     assert_eq!(config.model, "llama3.2");
     assert_eq!(config.context_window, 32768);
     assert!(config.vision, "vision defaults to true");
+    assert!(!config.strip_images_after_view, "strip_images_after_view defaults to false");
     let ProviderSettings::LlamaCpp(s) = &config.settings;
     assert_eq!(s.url, "http://localhost:8080");
     assert_eq!(s.api_key, "");
+}
+
+#[test]
+fn provider_config_strip_images_after_view_true() {
+    let json = r#"{
+    "type": "llamacpp",
+    "url": "http://example.com:8080",
+    "model": "my-model",
+    "context_window": 4096,
+    "strip_images_after_view": true
+}"#;
+    let config: ProviderConfig = serde_json::from_str(json).unwrap();
+    assert!(
+        config.strip_images_after_view,
+        "strip_images_after_view: true must be honored"
+    );
 }
 
 #[test]
@@ -106,6 +123,7 @@ fn provider_config_roundtrip() {
         model: "my-model".to_string(),
         context_window: 4096,
         vision: false,
+        strip_images_after_view: true,
     };
     let json = serde_json::to_string(&config).unwrap();
     let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();
@@ -114,8 +132,16 @@ fn provider_config_roundtrip() {
     assert_eq!(decoded.provider_type(), config.provider_type());
     assert!(!decoded.vision, "vision must round-trip inside the provider object");
     assert!(
+        decoded.strip_images_after_view,
+        "strip_images_after_view must round-trip inside the provider object"
+    );
+    assert!(
         json.contains("\"vision\":false"),
         "vision must serialize inside the provider object: {json}"
+    );
+    assert!(
+        json.contains("\"strip_images_after_view\":true"),
+        "strip_images_after_view must serialize inside the provider object: {json}"
     );
 }
 

@@ -75,6 +75,10 @@ pub enum AgentEvent {
         result: String,
         images: Vec<ImageContent>,
     },
+    /// Images were stripped from the live context (the model has seen them;
+    /// `strip_images_after_view` workaround). Apply the identical transform
+    /// to the session entries with these tool call IDs and rewrite the JSONL.
+    StripImages { tool_call_ids: Vec<String> },
     /// Agent signals that compaction is needed.
     /// Main thread performs compaction and restarts the agent.
     NeedsCompaction {
