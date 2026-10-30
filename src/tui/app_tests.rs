@@ -593,3 +593,37 @@ fn app_with_skill(name: &str, hooks: Vec<SkillHook>) -> App {
         // result already delivered). Either way the field is managed.
         drop(app.model_fetch.take());
     }
+
+    #[tokio::test]
+    async fn spawn_model_fetch_sends_err_when_server_down() {
+        // Point at a closed localhost port: `list_models` fails with a network
+        // error, and the fetch surfaces it as `Err` (the llamacpp reachability
+        // signal, since the startup ping is skipped).
+        let mut config = crate::config::Config::default();
+        config.provider.settings = crate::provider::ProviderSettings::LlamaCpp(
+            crate::provider::LlamaCppSettings {
+                url: "http://127.0.0.1:9".to_string(),
+                api_key: String::new(),
+            },
+        );
+        config.provider.models.clear();
+        config.provider.active_model.clear();
+        let mut app = App::new(config, std::path::PathBuf::from("."));
+        app.spawn_model_fetch(false);
+        let Some((rx, _)) = app.model_fetch.take() else {
+            panic!("expected an in-flight model fetch");
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await;
+        assert!(result.is_ok(), "fetch did not complete in time");
+        let recv = result.unwrap();
+        assert!(recv.is_ok(), "receiver closed without a result");
+        let inner = recv.unwrap();
+        let count = match &inner {
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        };
+        assert!(
+            inner.is_err(),
+            "expected Err for a down server, got Ok with {count} models"
+        );
+    }

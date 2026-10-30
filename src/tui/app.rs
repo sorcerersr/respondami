@@ -25,6 +25,14 @@ use crate::config::Config;
 use crate::session::{RequestTokenUsage, SessionStore, Usage};
 use crate::tools::ToolRegistry;
 
+/// An in-flight model-list fetch (`llamacpp` autodetection): the oneshot
+/// receiver for the result (an `Err` when the fetch failed) and the
+/// `keep_current` flag (`false` = startup, `true` = refresh).
+type ModelFetch = (
+    tokio::sync::oneshot::Receiver<Result<Vec<crate::provider::DiscoveredModel>, String>>,
+    bool,
+);
+
 /// The main application state.
 ///
 /// Thin facade that owns focused sub-structs for each domain:
@@ -77,12 +85,11 @@ pub struct App {
     /// In-flight model-list fetch (`llamacpp` autodetection). The `bool` is
     /// `keep_current`: `false` for the startup fetch (resolve the loaded
     /// model), `true` for refreshes (re-resolve the current model's
-    /// attributes). Polled with `try_recv` each loop iteration; `None` once
-    /// delivered (or if the sender was dropped without a result).
-    pub model_fetch: Option<(
-        tokio::sync::oneshot::Receiver<Vec<crate::provider::DiscoveredModel>>,
-        bool,
-    )>,
+    /// attributes). The `Result` is `Err` when the fetch failed (server down);
+    /// the main loop shows it as a system message. Polled with `try_recv` each
+    /// loop iteration; `None` once delivered (or if the sender was dropped
+    /// without a result).
+    pub model_fetch: Option<ModelFetch>,
 }
 
 impl std::fmt::Debug for App {
@@ -733,11 +740,21 @@ impl App {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.model_fetch = Some((rx, keep_current));
         tokio::spawn(async move {
-            let models = provider.list_models().await.unwrap_or_default();
-            if models.is_empty() {
-                tracing::warn!("model fetch returned no models; keeping last known state");
+            match provider.list_models().await {
+                Ok(models) => {
+                    if models.is_empty() {
+                        tracing::warn!("model fetch returned no models; keeping last known state");
+                    }
+                    let _ = tx.send(Ok(models));
+                }
+                Err(e) => {
+                    // The fetch is the llamacpp reachability check (the startup
+                    // ping can't run without a resolved model name). Surface the
+                    // failure so a down server still produces a warning.
+                    tracing::warn!("model fetch failed: {e}");
+                    let _ = tx.send(Err(format!("LLM endpoint unreachable: {e}")));
+                }
             }
-            let _ = tx.send(models);
         });
     }
 

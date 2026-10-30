@@ -97,23 +97,37 @@ pub async fn run() -> anyhow::Result<()> {
     let config = Config::load()?;
     tracing::info!("Config loaded");
 
-    // Check endpoint (non-blocking, result shown as system message via oneshot)
-    let provider = crate::provider::Provider::from_settings(&config.provider.settings);
-    let endpoint_model = config.provider.active_model.clone();
+    // Check endpoint (non-blocking, result shown as system message via oneshot).
+    // `llamacpp` skips the ping: it can't run without a resolved model name, and
+    // the startup model fetch is itself the reachability check (its failure is
+    // surfaced as a system message by the main loop).
+    let is_llamacpp = matches!(
+        config.provider.settings,
+        crate::provider::ProviderSettings::LlamaCpp(_)
+    );
     let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
-    let endpoint_check = tokio::spawn(async move {
-        let result = match provider {
-            Ok(p) => match p.ping(&endpoint_model).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(format!("LLM endpoint unreachable: {e}")),
-            },
-            Err(e) => Err(format!("Provider not configured: {e}")),
-        };
-        if let Err(ref msg) = result {
-            tracing::warn!("{}", msg);
-        }
-        let _ = endpoint_tx.send(result);
-    });
+    let mut endpoint_check: Option<tokio::task::JoinHandle<()>> = None;
+    if is_llamacpp {
+        // No ping for llamacpp; drop the sender so the receiver is `Closed`
+        // (the main loop treats a closed endpoint channel as "no check").
+        drop(endpoint_tx);
+    } else {
+        let provider = crate::provider::Provider::from_settings(&config.provider.settings);
+        let endpoint_model = config.provider.active_model.clone();
+        endpoint_check = Some(tokio::spawn(async move {
+            let result = match provider {
+                Ok(p) => match p.ping(&endpoint_model).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(format!("LLM endpoint unreachable: {e}")),
+                },
+                Err(e) => Err(format!("Provider not configured: {e}")),
+            };
+            if let Err(ref msg) = result {
+                tracing::warn!("{msg}");
+            }
+            let _ = endpoint_tx.send(result);
+        }));
+    }
 
     // Get CWD
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -233,10 +247,16 @@ pub async fn run() -> anyhow::Result<()> {
             .as_mut()
             .map(|(rx, _)| tokio::sync::oneshot::Receiver::try_recv(rx));
         match model_outcome {
-            Some(Ok(models)) => {
+            Some(Ok(Ok(models))) => {
                 let keep_current = app.model_fetch.as_ref().map(|(_, k)| *k).unwrap_or(false);
                 app.model_fetch = None;
                 app.apply_fetched_models(models, keep_current);
+            }
+            Some(Ok(Err(msg))) => {
+                // The fetch failed (server down); surface it as a warning. This
+                // is the llamacpp reachability signal (the ping is skipped).
+                app.model_fetch = None;
+                app.add_system_message(&format!("⚠ {msg}"));
             }
             Some(Err(tokio::sync::oneshot::error::TryRecvError::Closed)) => {
                 app.model_fetch = None;
@@ -319,13 +339,16 @@ pub async fn run() -> anyhow::Result<()> {
 /// Tear down the terminal after a quit request.
 ///
 /// Shared by the Ctrl+D path and a quit triggered while a deferred turn
-/// is running. Awaits the endpoint check task so its result is logged
-/// before shutdown.
+/// is running. Awaits the endpoint check task (if any) so its result is
+/// logged before shutdown. `llamacpp` has no endpoint check (the model fetch
+/// is the reachability signal), so the handle is `None`.
 ///
 /// # Errors
 ///
 /// - Terminal restore commands fail if the terminal is already gone.
-async fn shutdown_terminal(endpoint_check: tokio::task::JoinHandle<()>) -> anyhow::Result<()> {
+async fn shutdown_terminal(
+    endpoint_check: Option<tokio::task::JoinHandle<()>>,
+) -> anyhow::Result<()> {
     execute!(std::io::stdout(), crate::mouse::DisableMouseScroll)?;
     execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
     execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
@@ -335,7 +358,9 @@ async fn shutdown_terminal(endpoint_check: tokio::task::JoinHandle<()>) -> anyho
         crossterm::style::ResetColor
     )?;
     let _ = crossterm::terminal::disable_raw_mode();
-    endpoint_check.await.ok();
+    if let Some(handle) = endpoint_check {
+        handle.await.ok();
+    }
     tracing::info!("Quitting respondami");
     Ok(())
 }
