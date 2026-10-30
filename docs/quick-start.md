@@ -34,12 +34,12 @@ On first run, Respondami creates `~/.config/respondami/config.json` with default
 {
   "provider": {
     "type": "llamacpp",
-    "url": "http://localhost:8080",
-    "model": "llama3.2",
-    "context_window": 32768
+    "url": "http://localhost:8080"
   }
 }
 ```
+
+The `llamacpp` type autodetects the model, context window, and vision support from the server's `/v1/models` endpoint, so no model block is needed. (For a generic OpenAI-compatible endpoint with an explicit model list, use `"type": "openai"` — see [configuration.md](./configuration.md).)
 
 ## 4. Run
 

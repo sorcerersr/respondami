@@ -15,12 +15,17 @@ The file is created automatically with default values on first launch. Existing 
 ```json
 {
   "provider": {
-    "type": "llamacpp",
+    "type": "openai",
     "url": "http://localhost:8080",
     "api_key": "",
-    "model": "llama3.2",
-    "context_window": 32768,
-    "vision": true,
+    "active_model": "llama3.2",
+    "models": [
+      {
+        "name": "llama3.2",
+        "context_window": 32768,
+        "vision": true
+      }
+    ],
     "strip_images_after_view": false
   },
   "compaction": {
@@ -52,17 +57,23 @@ The file is created automatically with default values on first launch. Existing 
 
 ## Provider
 
-Settings for connecting to the LLM backend.
+Settings for connecting to the LLM backend. Two provider types are supported:
+
+- `"openai"` — generic OpenAI-compatible endpoint (llama.cpp, Ollama, vLLM, OpenAI). You configure the model list explicitly; the active model is remembered in the config.
+- `"llamacpp"` — a llama.cpp server/router that reports per-model state on `/v1/models`. Models, the active model, context window, and vision are autodetected at runtime, so the config carries no model block. The active model resolves to the server's loaded model at startup.
+
+Legacy configs using `"llamacpp"` with a model block (or no `type`) are auto-migrated to `"openai"` on load and re-saved with the new type.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | string | `"llamacpp"` | Provider type. Currently only `"llamacpp"` is supported. |
+| `type` | string | `"openai"` | Provider type. One of `"openai"` or `"llamacpp"`. |
 | `url` | string | `"http://localhost:8080"` | Base URL of the provider server. Must start with `http://` or `https://`. |
 | `api_key` | string | `""` | API key for authentication (if required by the server). |
-| `model` | string | `"llama3.2"` | Model name to use for completions. |
-| `context_window` | integer | `32768` | Context window size in tokens. Must be greater than 0. |
-| `vision` | boolean | `true` | Whether this model supports vision (images). When `false`, the `read` tool returns a text note instead of an image attachment. |
+| `active_model` | string | first model | `openai` only. The active model name; updated by the `/model` picker and persisted. `llamacpp` omits this (resolved at startup). |
+| `models` | array | one default model | `openai` only. Per-model config, keyed by `name`. Each entry: `name` (string), `context_window` (integer, > 0), `vision` (boolean, default `true`). `llamacpp` omits this (autodetected). |
 | `strip_images_after_view` | boolean | `false` | Workaround for some server/provider environments where images in the conversation interfere with prompt caching. When enabled, an image is removed from the context after the model has seen it (a text note is left in its place, and the file can be re-read). |
+
+For `llamacpp`, the status bar and `/model` picker show each model's loaded state (`●` loaded / `○` not loaded) and vision support (`◉`), both read from the server. The `read` tool's vision gate follows the autodetected `vision` flag for the active model.
 
 ## Compaction
 
