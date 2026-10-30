@@ -155,9 +155,40 @@ pub fn get_activity(state: &AppState, theme: &Theme) -> (&'static str, Color, bo
         _ => ("● Ready ●", theme.green, false),
     }
 }
+/// Build the model segment spans for the status bar.
+///
+/// Optional loaded icon (llamacpp only) + model name + optional vision icon.
+/// Loaded: `●` green / `○` orange / `?` muted. Vision: `◉` accent, shown only
+/// when supported. The loaded icon is omitted for `openai` (the concept
+/// doesn't apply; `loaded` is `None`).
+#[must_use]
+pub fn build_model_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
+    let is_llamacpp = matches!(
+        app.config.config.provider.settings,
+        crate::provider::ProviderSettings::LlamaCpp(_)
+    );
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+    if is_llamacpp {
+        let (icon, color) = match app.config.loaded {
+            Some(true) => ("●", theme.green),
+            Some(false) => ("○", theme.orange),
+            None => ("?", theme.text_muted),
+        };
+        spans.push(Span::styled(icon, Style::default().fg(color)));
+    }
+    spans.push(Span::styled(
+        app.config.model_name.clone(),
+        Style::default().fg(theme.accent),
+    ));
+    if app.config.vision {
+        spans.push(Span::styled(" ◉", Style::default().fg(theme.accent)));
+    }
+    spans.push(Span::styled(" │", Style::default().fg(theme.accent)));
+    spans
+}
+
 pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     frame.render_widget(Clear, area);
-
     // Check for transient status bar message
     if let Some((msg, started_at)) = app.ui.status_bar_message.take() {
         let elapsed = started_at.elapsed().as_secs_f64();
@@ -194,7 +225,6 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| ".".to_string());
 
-    let model = &app.config.model_name;
     let context_window = app.config.context_window;
 
     // Context usage: use session-level token totals (prompt + completion) for percentage.
@@ -309,10 +339,8 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut App, theme: &T
         None => {}
     }
 
-    spans.push(Span::styled(
-        format!(" {model} │"),
-        Style::default().fg(theme.accent),
-    ));
+    spans.extend(build_model_spans(app, theme));
+
     spans.push(Span::styled(
         format!(" {pct_str} / {context_window_str}"),
         Style::default().fg(context_color),

@@ -56,6 +56,9 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // Resumed session — the next outgoing prefix legitimately differs from
     // whatever the guard saw last, so reset the baseline.
     app.session.reset_history_guard();
+    // `llamacpp`: refresh the model list on resume so the status bar's loaded
+    // icon reflects the server's current state. Best-effort; silent on failure.
+    app.spawn_model_fetch(true);
     app.modal.state = AppState::Idle;
     app.chat.auto_scroll = true;
     Ok(())

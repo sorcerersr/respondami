@@ -4,11 +4,79 @@
 use std::time::{Duration, Instant};
 
 use super::status_bar::{
-    format_k, git_branch_cached, gradient_color, interpolate_rgb, GitBranch, GRADIENT_GREEN,
-    GRADIENT_RED, GRADIENT_YELLOW,
+    build_model_spans, format_k, git_branch_cached, gradient_color, interpolate_rgb, GitBranch,
+    GRADIENT_GREEN, GRADIENT_RED, GRADIENT_YELLOW,
 };
 use super::theme::Theme;
 use ratatui::style::Color;
+
+    // Model segment span tests (Phase 5: loaded + vision icons)
+
+    fn span_text<'a>(span: &'a ratatui::text::Span<'a>) -> &'a str {
+        span.content.as_ref()
+    }
+
+    fn llamacpp_app(loaded: Option<bool>, vision: bool) -> super::app::App {
+        let mut config = crate::config::Config::default();
+        config.provider.settings = crate::provider::ProviderSettings::LlamaCpp(
+            crate::provider::LlamaCppSettings {
+                url: "http://192.168.178.68:8080".to_string(),
+                api_key: "1234".to_string(),
+            },
+        );
+        config.provider.models.clear();
+        config.provider.active_model.clear();
+        let mut app = super::app::App::new(config, std::path::PathBuf::from("."));
+        app.config.loaded = loaded;
+        app.config.vision = vision;
+        app.config.model_name = "coder-27b".to_string();
+        app
+    }
+
+    #[test]
+    fn model_spans_llamacpp_loaded_no_vision() {
+        let app = llamacpp_app(Some(true), false);
+        let spans = build_model_spans(&app, &Theme::gh_dark());
+        // " ", "●", "coder-27b", " │"
+        assert_eq!(spans.len(), 4);
+        assert_eq!(span_text(&spans[1]), "●");
+        assert_eq!(spans[1].style.fg, Some(Color::Rgb(0x3e, 0x8a, 0x41))); // green
+        assert_eq!(span_text(&spans[2]), "coder-27b");
+        assert_eq!(span_text(&spans[3]), " │");
+    }
+
+    #[test]
+    fn model_spans_llamacpp_not_loaded_vision() {
+        let app = llamacpp_app(Some(false), true);
+        let spans = build_model_spans(&app, &Theme::gh_dark());
+        // " ", "○", "coder-27b", " ◉", " │"
+        assert_eq!(spans.len(), 5);
+        assert_eq!(span_text(&spans[1]), "○");
+        assert_eq!(span_text(&spans[3]), " ◉");
+    }
+
+    #[test]
+    fn model_spans_llamacpp_unknown_loaded() {
+        let app = llamacpp_app(None, false);
+        let spans = build_model_spans(&app, &Theme::gh_dark());
+        assert_eq!(spans.len(), 4);
+        assert_eq!(span_text(&spans[1]), "?");
+    }
+
+    #[test]
+    fn model_spans_openai_no_loaded_icon() {
+        let mut app = super::app::App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        app.config.vision = true;
+        app.config.model_name = "llama3.2".to_string();
+        let spans = build_model_spans(&app, &Theme::gh_dark());
+        // " ", "llama3.2", " ◉", " │" — no loaded icon for openai.
+        assert_eq!(spans.len(), 4);
+        assert_eq!(span_text(&spans[1]), "llama3.2");
+        assert_eq!(span_text(&spans[2]), " ◉");
+    }
 
     #[test]
     fn gradient_0_is_green() {

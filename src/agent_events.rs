@@ -338,8 +338,9 @@ pub async fn process_agent_events(
                 // Spawn compaction LLM call as a background task (spawn-and-poll pattern).
                 // This keeps the event loop responsive — the UI draws, animates, and
                 // processes terminal events while compaction runs.
-                let engine = CompactionEngine::from_config(&app.config.config);
-                let provider = match build_provider(&app.config.config) {
+                let live_config = app.config.live_config();
+                let engine = CompactionEngine::from_config(&live_config);
+                let provider = match build_provider(&live_config) {
                     Ok(p) => p,
                     Err(e) => {
                         app.add_system_message(&format!(
@@ -352,7 +353,7 @@ pub async fn process_agent_events(
                     }
                 };
                 let entries = app.session.session_store.entries().to_vec();
-                let config = app.config.config.clone();
+                let config = live_config;
                 let cwd = app.config.cwd.clone();
                 let skills = app.config.skills.clone();
 

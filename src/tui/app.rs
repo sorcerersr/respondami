@@ -74,6 +74,15 @@ pub struct App {
     /// next frame, not only if it finished before the first frame. `None`
     /// once delivered (or if the sender was dropped without a result).
     pub endpoint_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
+    /// In-flight model-list fetch (`llamacpp` autodetection). The `bool` is
+    /// `keep_current`: `false` for the startup fetch (resolve the loaded
+    /// model), `true` for refreshes (re-resolve the current model's
+    /// attributes). Polled with `try_recv` each loop iteration; `None` once
+    /// delivered (or if the sender was dropped without a result).
+    pub model_fetch: Option<(
+        tokio::sync::oneshot::Receiver<Vec<crate::provider::DiscoveredModel>>,
+        bool,
+    )>,
 }
 
 impl std::fmt::Debug for App {
@@ -97,14 +106,36 @@ impl std::fmt::Debug for App {
             )
             .field("compaction_trigger", &self.compaction_trigger)
             .field("endpoint_rx", &self.endpoint_rx.is_some())
+            .field("model_fetch", &self.model_fetch.is_some())
             .finish()
     }
 }
 
 impl App {
     pub fn new(config: Config, cwd: PathBuf) -> Self {
-        let model_name = config.provider.active_model.clone();
-        let context_window = config.provider.active_context_window();
+        // The `llamacpp` provider autodetects its model at startup (resolved
+        // non-blocking by the event loop). Until then it shows a `…`
+        // placeholder with the graceful defaults. The `openai` provider reads
+        // its model synchronously from config.
+        let is_llamacpp = matches!(
+            config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        );
+        let model_name = if is_llamacpp {
+            "…".to_string()
+        } else {
+            config.provider.active_model.clone()
+        };
+        let context_window = if is_llamacpp {
+            32768
+        } else {
+            config.provider.active_context_window()
+        };
+        let vision = if is_llamacpp {
+            false
+        } else {
+            config.provider.active_vision()
+        };
         let thinking_display = config.ui.thinking_display;
         let tool_output_expanded = config.ui.tool_output_expanded;
         let hook_display = config.ui.hook_display;
@@ -155,6 +186,9 @@ impl App {
                 config,
                 model_name,
                 context_window,
+                vision,
+                loaded: None,
+                discovered_models: Vec::new(),
                 thinking_display,
                 tool_output_expanded,
                 hook_display,
@@ -176,6 +210,7 @@ impl App {
             pending_precompact_context: None,
             compaction_trigger: "auto",
             endpoint_rx: None,
+            model_fetch: None,
         }
     }
 
@@ -623,23 +658,127 @@ impl App {
         }
     }
 
-    /// Switch to a different model by name. Updates the config and status bar.
+    /// Switch to a different model by name. Updates the live model state and
+    /// status bar.
+    ///
+    /// `openai`: updates `config.provider.active_model` (persisted) and the
+    /// context window from the configured model list. `llamacpp`: updates the
+    /// live `ConfigState` fields from `discovered_models` and persists nothing
+    /// to config (the startup model is always the server's loaded model, not a
+    /// remembered selection).
     pub fn switch_model(&mut self, model_name: &str) {
-        self.config.config.provider.active_model = model_name.to_string();
-        self.config.model_name = model_name.to_string();
-        // Update context window if the model is in the list
-        if let Some(model) = self
-            .config
-            .config
-            .provider
-            .models
-            .iter()
-            .find(|m| m.name == model_name)
-        {
-            self.config.context_window = model.context_window;
+        let is_llamacpp = matches!(
+            self.config.config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        );
+        if is_llamacpp {
+            // Resolve the new model's attributes from the discovered list with
+            // the graceful fallbacks; keep the current state if not found.
+            if let Some((ctx, vision, loaded)) = self.config.resolve_discovered(model_name) {
+                self.config.context_window = ctx;
+                self.config.vision = vision;
+                self.config.loaded = loaded;
+            }
+            self.config.model_name = model_name.to_string();
+        } else {
+            self.config.config.provider.active_model = model_name.to_string();
+            self.config.model_name = model_name.to_string();
+            // Update context window + vision from the configured model list.
+            if let Some(model) = self
+                .config
+                .config
+                .provider
+                .models
+                .iter()
+                .find(|m| m.name == model_name)
+            {
+                self.config.context_window = model.context_window;
+                self.config.vision = model.vision;
+            }
         }
         self.modal.state = super::mode::AppState::Idle;
         self.add_system_message(&format!("Model switched to: {model_name}"));
+        // `llamacpp`: refresh the model list after a switch so the loaded/
+        // vision/ctx of the newly selected model are current (the server may
+        // have loaded it since the last fetch). Best-effort; silent on failure.
+        if is_llamacpp {
+            self.spawn_model_fetch(true);
+        }
+    }
+
+    /// Spawn a background `list_models()` fetch (llamacpp autodetection).
+    ///
+    /// `keep_current` = `false` for the startup fetch (resolve the loaded
+    /// model); `true` for refreshes (re-resolve the current model's
+    /// attributes). The result is delivered to the main loop via the
+    /// `model_fetch` oneshot, which calls [`App::apply_fetched_models`]. A
+    /// new fetch replaces any in-flight one (the stale task's send fails
+    /// harmlessly). No-op for the `openai` provider (no autodetection).
+    pub fn spawn_model_fetch(&mut self, keep_current: bool) {
+        if !matches!(
+            self.config.config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        ) {
+            return;
+        }
+        let provider = match crate::provider::Provider::from_settings(
+            &self.config.config.provider.settings,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("model fetch: provider not configured: {e}");
+                return;
+            }
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.model_fetch = Some((rx, keep_current));
+        tokio::spawn(async move {
+            let models = provider.list_models().await.unwrap_or_default();
+            if models.is_empty() {
+                tracing::warn!("model fetch returned no models; keeping last known state");
+            }
+            let _ = tx.send(models);
+        });
+    }
+
+    /// Apply a fetched model list to the live `ConfigState`.
+    ///
+    /// `keep_current` = `false` (startup): choose the loaded model (first
+    /// `loaded == true`, else first `loaded == None`, else first) and set it
+    /// as active. `keep_current` = `true` (refresh): keep the current
+    /// `model_name` and re-resolve its attributes. An empty list keeps the
+    /// last known state (graceful degradation).
+    #[allow(clippy::too_many_lines, reason = "two distinct branches (startup vs refresh) each set four fields; splitting would obscure the symmetry")]
+    pub fn apply_fetched_models(
+        &mut self,
+        models: Vec<crate::provider::DiscoveredModel>,
+        keep_current: bool,
+    ) {
+        if models.is_empty() {
+            return;
+        }
+        self.config.discovered_models = models.clone();
+        if keep_current {
+            if let Some((ctx, vision, loaded)) =
+                self.config.resolve_discovered(&self.config.model_name)
+            {
+                self.config.context_window = ctx;
+                self.config.vision = vision;
+                self.config.loaded = loaded;
+            }
+        } else {
+            let chosen = models
+                .iter()
+                .find(|m| m.loaded == Some(true))
+                .or_else(|| models.iter().find(|m| m.loaded.is_none()))
+                .unwrap_or(&models[0]);
+            if let Some((ctx, vision, loaded)) = self.config.resolve_discovered(&chosen.name) {
+                self.config.model_name = chosen.name.clone();
+                self.config.context_window = ctx;
+                self.config.vision = vision;
+                self.config.loaded = loaded;
+            }
+        }
     }
 
     /// Get a user message from history by index (reverse chronological order).

@@ -6,17 +6,20 @@
 //! Rust guideline compliant 2026-02-21
 
 mod llamacpp;
+mod openai;
 mod sse;
 
 #[doc(inline)]
 pub use llamacpp::LlamaCppProvider;
+#[doc(inline)]
+pub use openai::OpenAIProvider;
 
 #[cfg(test)]
 mod finalize_tool_calls_tests;
 #[cfg(test)]
-mod llamacpp_tests;
-#[cfg(test)]
 mod mod_tests;
+#[cfg(test)]
+mod openai_tests;
 #[cfg(test)]
 mod sse_tests;
 
@@ -126,6 +129,12 @@ pub struct DiscoveredModel {
     pub name: String,
     /// The model's context length, if reported by the endpoint.
     pub context_length: Option<u32>,
+    /// Whether the model is currently loaded on the server. `None` when the
+    /// endpoint does not report it (the generic `OpenAI` provider).
+    pub loaded: Option<bool>,
+    /// Whether the model supports vision (image input). `None` when the
+    /// endpoint does not report it (the generic `OpenAI` provider).
+    pub vision: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +198,7 @@ impl Provider {
     /// Construct a provider from config settings.
     ///
     /// Dispatches to the appropriate provider implementation based on the
-    /// `ProviderSettings` variant (currently only `LlamaCpp`).
+    /// `ProviderSettings` variant (`OpenAI` or `LlamaCpp`).
     ///
     /// # Errors
     ///
@@ -197,6 +206,9 @@ impl Provider {
     /// not configured or unavailable.
     pub fn from_settings(settings: &ProviderSettings) -> Result<Self, ProviderError> {
         match settings {
+            ProviderSettings::OpenAI(s) => Ok(Provider {
+                inner: Box::new(OpenAIProvider::from_settings(s)),
+            }),
             ProviderSettings::LlamaCpp(s) => Ok(Provider {
                 inner: Box::new(LlamaCppProvider::from_settings(s)),
             }),
@@ -274,6 +286,7 @@ impl Provider {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderType {
+    OpenAI,
     LlamaCpp,
 }
 
@@ -281,11 +294,22 @@ pub enum ProviderType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderSettings {
+    #[serde(rename = "openai")]
+    OpenAI(OpenAISettings),
     #[serde(rename = "llamacpp")]
     LlamaCpp(LlamaCppSettings),
 }
 
 /// Settings for OpenAI-compatible providers (llama.cpp, Ollama, vLLM, `OpenAI`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAISettings {
+    #[serde(default = "default_url")]
+    pub url: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Settings for the llama.cpp provider (autodetects models from the server).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlamaCppSettings {
     #[serde(default = "default_url")]

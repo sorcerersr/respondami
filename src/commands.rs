@@ -73,35 +73,59 @@ pub async fn execute_palette_command(
             app.modal.state = AppState::HelpPopup;
         }
         "model" => {
-            // Open the model select popup: union configured + discovered models.
+            // Open the model select popup.
+            // `openai`: union configured + discovered models (existing behavior).
+            // `llamacpp`: the list is exactly the discovered models (no config
+            // union); the fetch also refreshes the live model's loaded/vision/ctx.
             let provider = crate::agent::build_provider(&app.config.config)
                 .map_err(|e| anyhow::anyhow!("Failed to build provider: {e}"))?;
             let discovered = provider.list_models().await.unwrap_or_default();
 
-            let mut models: Vec<String> = app
-                .config
-                .config
-                .provider
-                .models
-                .iter()
-                .map(|m| m.name.clone())
-                .collect();
+            let is_llamacpp = matches!(
+                app.config.config.provider.settings,
+                crate::provider::ProviderSettings::LlamaCpp(_)
+            );
 
-            // Merge newly discovered models into config and the picker list.
-            for dm in &discovered {
-                if !models.contains(&dm.name) {
-                    models.push(dm.name.clone());
-                    app.config
-                        .config
-                        .provider
-                        .models
-                        .push(crate::config::ModelConfig {
-                            name: dm.name.clone(),
-                            context_window: dm.context_length.unwrap_or(32768),
-                            vision: true,
-                        });
+            let models: Vec<String> = if is_llamacpp {
+                // Store the discovered list and re-resolve the current model's
+                // attributes (keep the active model; the picker shows exactly
+                // what the server reports).
+                app.config.discovered_models = discovered.clone();
+                if let Some((ctx, vision, loaded)) =
+                    app.config.resolve_discovered(&app.config.model_name)
+                {
+                    app.config.context_window = ctx;
+                    app.config.vision = vision;
+                    app.config.loaded = loaded;
                 }
-            }
+                discovered.iter().map(|m| m.name.clone()).collect()
+            } else {
+                let mut models: Vec<String> = app
+                    .config
+                    .config
+                    .provider
+                    .models
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect();
+
+                // Merge newly discovered models into config and the picker list.
+                for dm in &discovered {
+                    if !models.contains(&dm.name) {
+                        models.push(dm.name.clone());
+                        app.config
+                            .config
+                            .provider
+                            .models
+                            .push(crate::config::ModelConfig {
+                                name: dm.name.clone(),
+                                context_window: dm.context_length.unwrap_or(32768),
+                                vision: true,
+                            });
+                    }
+                }
+                models
+            };
 
             if models.is_empty() {
                 app.add_system_message("No models available. Add models to your config.");
@@ -204,9 +228,10 @@ pub async fn execute_compact(app: &mut App, keep: Option<usize>) -> anyhow::Resu
     app.chat.auto_scroll = true;
 
     let entries = app.session.session_store.entries().to_vec();
-    let engine = crate::session::CompactionEngine::from_config(&app.config.config);
-    let provider = crate::agent::build_provider(&app.config.config)?;
-    let config = app.config.config.clone();
+    let live_config = app.config.live_config();
+    let engine = crate::session::CompactionEngine::from_config(&live_config);
+    let provider = crate::agent::build_provider(&live_config)?;
+    let config = live_config;
     let cwd = app.config.cwd.clone();
     let skills = app.config.skills.clone();
 

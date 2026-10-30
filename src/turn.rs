@@ -382,9 +382,10 @@ pub async fn run_turn_with_input(
             app.modal.state = AppState::Compacting;
 
             let entries = app.session.session_store.entries().to_vec();
-            let engine = crate::session::CompactionEngine::from_config(&app.config.config);
-            let provider = crate::agent::build_provider(&app.config.config)?;
-            let config = app.config.config.clone();
+            let live_config = app.config.live_config();
+            let engine = crate::session::CompactionEngine::from_config(&live_config);
+            let provider = crate::agent::build_provider(&live_config)?;
+            let config = live_config;
             let cwd = app.config.cwd.clone();
             let skills = app.config.skills.clone();
 
@@ -552,7 +553,7 @@ pub(crate) fn restart_agent(app: &mut App, user_msg: String) -> RestartedAgent {
 
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-    let config = app.config.config.clone();
+    let config = app.config.live_config();
     let cwd = app.config.cwd.clone();
     let agent_tool_registry = app.tool_registry.clone();
     let rtk_state = app.config.rtk_state.clone();

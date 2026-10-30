@@ -154,6 +154,13 @@ pub async fn run() -> anyhow::Result<()> {
     // with `try_recv` each iteration so a slow check's result is still shown.
     app.endpoint_rx = Some(endpoint_rx);
 
+    // `llamacpp` autodetection: spawn the non-blocking startup model fetch.
+    // Resolves the active model to the server's loaded model (first loaded,
+    // else first unknown, else first). The result is polled in the main loop
+    // and applied via `apply_fetched_models(keep_current = false)`. No-op for
+    // the `openai` provider.
+    app.spawn_model_fetch(false);
+
     // Async event stream — proper tokio integration, no background threads.
     let mut events = EventStream::new();
 
@@ -214,6 +221,27 @@ pub async fn run() -> anyhow::Result<()> {
             Some(Err(tokio::sync::oneshot::error::TryRecvError::Empty)) => {
                 // Not yet sent; keep polling next iteration.
             }
+            None => {}
+        }
+
+        // Poll the in-flight model-list fetch (llamacpp autodetection).
+        // `Empty` = not yet sent, keep polling; `Closed` = sender dropped,
+        // stop. The owned result is captured first so the mutable borrow of
+        // `app` is released before we mutate it.
+        let model_outcome = app
+            .model_fetch
+            .as_mut()
+            .map(|(rx, _)| tokio::sync::oneshot::Receiver::try_recv(rx));
+        match model_outcome {
+            Some(Ok(models)) => {
+                let keep_current = app.model_fetch.as_ref().map(|(_, k)| *k).unwrap_or(false);
+                app.model_fetch = None;
+                app.apply_fetched_models(models, keep_current);
+            }
+            Some(Err(tokio::sync::oneshot::error::TryRecvError::Closed)) => {
+                app.model_fetch = None;
+            }
+            Some(Err(tokio::sync::oneshot::error::TryRecvError::Empty)) => {}
             None => {}
         }
 

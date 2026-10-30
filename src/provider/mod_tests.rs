@@ -206,7 +206,10 @@ use super::{Message, ProviderError, ToolDef, ToolCallDelta, accumulate_tool_call
     #[test]
     fn llamacpp_settings_default_url() {
         let json = r#"{"type": "llamacpp"}"#;
-        let ProviderSettings::LlamaCpp(s) = serde_json::from_str(json).unwrap();
+        let ProviderSettings::LlamaCpp(s) = serde_json::from_str(json).unwrap()
+            else {
+                panic!("expected LlamaCpp settings");
+            };
         assert_eq!(s.url, "http://localhost:8080");
         assert_eq!(s.api_key, "");
     }
@@ -214,7 +217,10 @@ use super::{Message, ProviderError, ToolDef, ToolCallDelta, accumulate_tool_call
     #[test]
     fn llamacpp_settings_custom_values() {
         let json = r#"{"type": "llamacpp", "url": "http://example.com:9000", "api_key": "secret"}"#;
-        let ProviderSettings::LlamaCpp(s) = serde_json::from_str(json).unwrap();
+        let ProviderSettings::LlamaCpp(s) = serde_json::from_str(json).unwrap()
+            else {
+                panic!("expected LlamaCpp settings");
+            };
         assert_eq!(s.url, "http://example.com:9000");
         assert_eq!(s.api_key, "secret");
     }

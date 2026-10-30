@@ -963,6 +963,7 @@ impl LayoutRenderer {
     /// Shows a list of configured models with the selected one highlighted.
     fn render_model_select_popup(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         use super::editor::FILE_POPUP_PAGE_SIZE;
+        use ratatui::style::Modifier;
 
         let models = app.modal.model_select_models.clone();
         if models.is_empty() {
@@ -995,8 +996,88 @@ impl LayoutRenderer {
         let selected = app.modal.model_select_index;
         let scroll_offset = app.modal.model_select_scroll_offset;
 
+        let is_llamacpp = matches!(
+            app.config.config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        );
+
+        // Build styled rows: selection arrow + optional loaded icon (llamacpp
+        // only) + model name + optional vision icon. The loaded icon comes
+        // from `discovered_models`; the vision icon from `discovered_models`
+        // (llamacpp) or the per-model config flag (openai).
+        let mut styled: Vec<Line<'static>> = Vec::new();
+        for (i, model) in models.iter().enumerate() {
+            let is_selected = i == selected;
+            let bg = if is_selected { theme.accent } else { theme.bg_light };
+            let mut spans: Vec<ratatui::text::Span<'static>> = Vec::new();
+            spans.push(ratatui::text::Span::styled(
+                if is_selected { "→ " } else { "  " },
+                ratatui::style::Style::default()
+                    .fg(theme.text)
+                    .bg(bg)
+                    .add_modifier(if is_selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ));
+
+            // Look up the model's attributes (loaded + vision).
+            let (loaded, vision) = if is_llamacpp {
+                match app
+                    .config
+                    .discovered_models
+                    .iter()
+                    .find(|m| &m.name == model)
+                {
+                    Some(dm) => (dm.loaded, dm.vision == Some(true)),
+                    None => (None, false),
+                }
+            } else {
+                let vision = app
+                    .config
+                    .config
+                    .provider
+                    .models
+                    .iter()
+                    .find(|m| &m.name == model)
+                    .map(|m| m.vision)
+                    .unwrap_or(false);
+                (None, vision)
+            };
+
+            // Loaded icon (llamacpp only): `●` green / `○` orange / `?` muted.
+            if is_llamacpp {
+                let (icon, color) = match loaded {
+                    Some(true) => ("●", theme.green),
+                    Some(false) => ("○", theme.orange),
+                    None => ("?", theme.text_muted),
+                };
+                spans.push(ratatui::text::Span::styled(
+                    icon,
+                    ratatui::style::Style::default().fg(color).bg(bg),
+                ));
+            }
+
+            spans.push(ratatui::text::Span::styled(
+                model.clone(),
+                ratatui::style::Style::default().fg(theme.text).bg(bg),
+            ));
+
+            // Vision icon: `◉` accent, shown only when supported.
+            if vision {
+                spans.push(ratatui::text::Span::styled(
+                    " ◉",
+                    ratatui::style::Style::default().fg(theme.accent).bg(bg),
+                ));
+            }
+
+            styled.push(Line::from(spans));
+        }
+
         let popup = AutocompletePopup::new()
             .items(models)
+            .items_styled(styled)
             .selected(selected)
             .scroll_offset(scroll_offset)
             .max_height(FILE_POPUP_PAGE_SIZE)

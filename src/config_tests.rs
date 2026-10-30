@@ -1,7 +1,7 @@
 use crate::config::{
     CompactionConfig, CompactionMode, Config, ProviderConfig, RtkConfig, UiConfig, VccConfig,
 };
-use crate::provider::{LlamaCppSettings, ProviderSettings};
+use crate::provider::{OpenAISettings, ProviderSettings};
 use crate::tui::ThinkingDisplay;
 
 // ---------------------------------------------------------------------------
@@ -20,21 +20,78 @@ fn provider_config_full() {
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
     assert_eq!(config.active_model, "my-model");
     assert_eq!(config.active_context_window(), 4096);
-    assert_eq!(config.provider_type(), "llamacpp");
+    // Legacy `llamacpp` + model block migrates to `openai`.
+    assert_eq!(config.provider_type(), "openai");
 }
 
 #[test]
 fn provider_config_legacy_no_type_field() {
-    // Legacy config without "type" field should default to llamacpp
+    // Legacy config without "type" field migrates to openai
     let json = r#"{
     "url": "http://localhost:9000",
     "model": "llama3.2",
     "context_window": 8192
 }"#;
     let config: ProviderConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.provider_type(), "llamacpp");
+    assert_eq!(config.provider_type(), "openai");
     assert_eq!(config.active_model, "llama3.2");
     assert_eq!(config.active_context_window(), 8192);
+}
+
+#[test]
+fn provider_config_llamacpp_autodetect() {
+    // New `llamacpp` provider: no model block, no active_model.
+    let json = r#"{
+    "type": "llamacpp",
+    "url": "http://192.168.178.68:8080",
+    "api_key": "1234"
+}"#;
+    let config: ProviderConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.provider_type(), "llamacpp");
+    assert!(config.models.is_empty(), "llamacpp has no configured models");
+    assert_eq!(config.active_model, "", "llamacpp active model resolved at startup");
+    let ProviderSettings::LlamaCpp(s) = &config.settings else {
+        panic!("expected LlamaCpp settings");
+    };
+    assert_eq!(s.url, "http://192.168.178.68:8080");
+    assert_eq!(s.api_key, "1234");
+}
+
+#[test]
+fn provider_config_llamacpp_roundtrip_skips_models() {
+    // `llamacpp` serializes without active_model/models.
+    let config = ProviderConfig {
+        settings: ProviderSettings::LlamaCpp(crate::provider::LlamaCppSettings {
+            url: "http://192.168.178.68:8080".to_string(),
+            api_key: "1234".to_string(),
+        }),
+        models: Vec::new(),
+        active_model: String::new(),
+        strip_images_after_view: false,
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    assert!(json.contains("\"type\":\"llamacpp\""), "{json}");
+    assert!(!json.contains("\"models\""), "llamacpp must not serialize models: {json}");
+    assert!(!json.contains("\"active_model\""), "llamacpp must not serialize active_model: {json}");
+    let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.provider_type(), "llamacpp");
+    assert_eq!(decoded.models.len(), 0);
+}
+
+#[test]
+fn provider_config_openai_explicit_type() {
+    let json = r#"{
+    "type": "openai",
+    "url": "http://example.com:8080",
+    "api_key": "secret",
+    "active_model": "my-model",
+    "models": [ { "name": "my-model", "context_window": 4096, "vision": false } ]
+}"#;
+    let config: ProviderConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.provider_type(), "openai");
+    assert_eq!(config.active_model, "my-model");
+    assert_eq!(config.active_context_window(), 4096);
+    assert!(!config.active_vision());
 }
 
 #[test]
@@ -49,7 +106,9 @@ fn provider_config_defaults() {
         !config.strip_images_after_view,
         "strip_images_after_view defaults to false"
     );
-    let ProviderSettings::LlamaCpp(s) = &config.settings;
+    let ProviderSettings::OpenAI(s) = &config.settings else {
+        panic!("expected OpenAI settings");
+    };
     assert_eq!(s.url, "http://localhost:8080");
     assert_eq!(s.api_key, "");
 }
@@ -122,7 +181,7 @@ fn provider_config_unknown_type_rejects() {
 #[test]
 fn provider_config_roundtrip() {
     let config = ProviderConfig {
-        settings: ProviderSettings::LlamaCpp(LlamaCppSettings {
+        settings: ProviderSettings::OpenAI(OpenAISettings {
             url: "http://localhost:8080".to_string(),
             api_key: "key123".to_string(),
         }),
@@ -191,7 +250,9 @@ fn config_validate_zero_context_window() {
 #[test]
 fn config_validate_invalid_url() {
     let mut config = Config::default();
-    let ProviderSettings::LlamaCpp(s) = &mut config.provider.settings;
+    let ProviderSettings::OpenAI(s) = &mut config.provider.settings else {
+        panic!("expected OpenAI settings");
+    };
     s.url = "not-a-url".to_string();
     assert!(config.validate().is_err());
 }
@@ -199,9 +260,36 @@ fn config_validate_invalid_url() {
 #[test]
 fn config_validate_https_url_ok() {
     let mut config = Config::default();
-    let ProviderSettings::LlamaCpp(s) = &mut config.provider.settings;
+    let ProviderSettings::OpenAI(s) = &mut config.provider.settings else {
+        panic!("expected OpenAI settings");
+    };
     s.url = "https://example.com".to_string();
     config.validate().unwrap();
+}
+
+#[test]
+fn config_validate_llamacpp_no_models_ok() {
+    // `llamacpp` requires only a valid URL; no models needed.
+    let mut config = Config::default();
+    config.provider.settings =
+        ProviderSettings::LlamaCpp(crate::provider::LlamaCppSettings {
+            url: "http://192.168.178.68:8080".to_string(),
+            api_key: "1234".to_string(),
+        });
+    config.provider.models.clear();
+    config.provider.active_model.clear();
+    config.validate().unwrap();
+}
+
+#[test]
+fn config_validate_llamacpp_bad_url_rejects() {
+    let mut config = Config::default();
+    config.provider.settings =
+        ProviderSettings::LlamaCpp(crate::provider::LlamaCppSettings {
+            url: "not-a-url".to_string(),
+            api_key: String::new(),
+        });
+    assert!(config.validate().is_err());
 }
 
 // ---------------------------------------------------------------------------

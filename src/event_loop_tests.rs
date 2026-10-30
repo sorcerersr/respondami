@@ -350,7 +350,9 @@ async fn poll_launches_pending_turn_when_compaction_finishes() {
     let mut config = crate::config::Config::default();
     // Unreachable provider with retries disabled → the launched agent
     // fails fast on connect, so the turn ends quickly without a live LLM.
-    let crate::provider::ProviderSettings::LlamaCpp(settings) = &mut config.provider.settings;
+    let crate::provider::ProviderSettings::OpenAI(settings) = &mut config.provider.settings else {
+        panic!("expected OpenAI settings");
+    };
     settings.url = "http://127.0.0.1:1".to_string();
     config.retry.enabled = false;
     let mut app = App::new(config, std::path::PathBuf::from("."));
