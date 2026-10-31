@@ -363,37 +363,56 @@ use super::{build_context_from_entries, SessionStore, SessionEntry, AgentMessage
     }
 
     // ---------------------------------------------------------------------------
-    // total_usage
+    // cumulative_usage
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn total_usage_sums_assistant_usage_separately() {
+    fn cumulative_usage_zero_on_fresh_store() {
+        let dir = temp_dir();
+        let manager = SessionStore::new(&dir);
+
+        assert_eq!(manager.cumulative_usage(), (0, 0));
+    }
+
+    #[test]
+    fn cumulative_usage_max_prompt_sum_completions() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
         manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
 
-        // Add assistant message with usage
-        let msg = AgentMessage::assistant(
-            "response".to_string(),
-            String::new(),
-            Vec::new(),
-            Some(Usage { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }),
-        );
-        manager.append_message(None, msg).unwrap();
+        // Growing prompts across requests: the input side must be the max
+        // (1000), not the sum (1500) — the live counter's semantics.
+        for (prompt, completion) in [(100, 10), (400, 20), (1000, 30)] {
+            manager
+                .append_message(
+                    None,
+                    AgentMessage::assistant(
+                        "response".to_string(),
+                        String::new(),
+                        Vec::new(),
+                        Some(Usage {
+                            prompt_tokens: prompt,
+                            completion_tokens: completion,
+                            total_tokens: prompt + completion,
+                        }),
+                    ),
+                )
+                .unwrap();
+        }
 
-        let (input, output) = manager.total_usage();
-        assert_eq!(input, 100);
-        assert_eq!(output, 50);
+        let (input, output) = manager.cumulative_usage();
+        assert_eq!(input, 1000, "input must be the max prompt, not the sum");
+        assert_eq!(output, 60, "output must be the sum of completions");
     }
 
     #[test]
-    fn total_usage_ignores_non_assistant() {
+    fn cumulative_usage_ignores_non_assistant() {
         let dir = temp_dir();
         let mut manager = SessionStore::new(&dir);
         manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
         manager.append_message(None, AgentMessage::user("hello".to_string())).unwrap();
 
-        let (input, output) = manager.total_usage();
+        let (input, output) = manager.cumulative_usage();
         assert_eq!(input, 0);
         assert_eq!(output, 0);
     }

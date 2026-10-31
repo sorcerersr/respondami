@@ -113,6 +113,18 @@ The bottom bar shows the current state, working directory, model, context usage,
 | `⌘` | CommandPalette | Command palette overlay |
 | `✎` | PromptEditor | Prompt editor overlay |
 
+### Token Counters
+
+The `↑` and `↓` segments track cumulative token usage for the session:
+
+- `↑` (input) is the largest prompt size observed in the session — context growth. It estimates the tokens the model actually processes, assuming the provider's prompt cache serves the repeated prefix. The raw sum of all requests would be many times larger, so this is the useful number.
+- `↓` (output) is the sum of all generated tokens.
+- The counter is restored when you resume a session, so it stays stable across close/reopen.
+
+The **Project Token Statistics** dialog (command palette) shows both the raw sum and the `Est. real input` / `Est. real total` lines, which use the same cache-aware math as the status bar.
+
+**Caveat:** the estimate assumes 100% prefix cache hits. A cold cache — the first request of a session, right after compaction, or resuming on another machine or a restarted server — processes more tokens than the estimate. The raw sum is the upper bound.
+
 ## Next Steps
 
 - See [configuration.md](./configuration.md) for all config options

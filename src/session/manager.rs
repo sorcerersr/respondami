@@ -457,10 +457,16 @@ impl SessionStore {
         None
     }
 
-    /// Sum token usage from all saved Assistant messages in the session.
-    /// Returns `(total_input_tokens, total_output_tokens)` for tracker restoration.
+    /// Cumulative token usage matching the live status-bar counter.
+    ///
+    /// Returns `(max prompt_tokens, sum completion_tokens)`. The input side
+    /// is the max, not the sum: the live counter (`App::accumulate_token_usage`)
+    /// uses a max+delta pattern that converges to the largest prompt observed,
+    /// implicitly assuming the provider's prompt cache serves the entire prior
+    /// prefix. Restoring the raw sum on resume would show a many-times-larger
+    /// value than the pre-close counter.
     #[must_use]
-    pub fn total_usage(&self) -> (u32, u32) {
+    pub fn cumulative_usage(&self) -> (u32, u32) {
         let mut input: u32 = 0;
         let mut output: u32 = 0;
         for entry in &self.entries {
@@ -468,7 +474,7 @@ impl SessionStore {
                 && let AgentMessage::Assistant { usage, .. } = message
                 && let Some(u) = usage.as_ref()
             {
-                input += u.prompt_tokens;
+                input = input.max(u.prompt_tokens);
                 output += u.completion_tokens;
             }
         }

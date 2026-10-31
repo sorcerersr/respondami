@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1321 total)
+cargo test --workspace                         # all tests (1360 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1321 tests** (1096 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1360 tests** (1132 root + 44 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -149,7 +149,8 @@ cargo test --workspace                       # all tests pass
 
 ### Token Usage Accumulation
 
-- Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests.
+- Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests. The live `↑` counter therefore converges to the **max `prompt_tokens`** of the session (it assumes the prompt cache serves the full prior prefix), not the raw sum of all requests.
+- Resume restores `cumulative_usage` from `SessionStore::cumulative_usage()` = (max prompt, sum completions) — the live counter's semantics, so the status bar shows the pre-close value after resume. The stats dialog's `Est. real input/total` lines use the same per-session max math (sum of per-session maxes). Real `cached_tokens` from the provider is a deferred improvement (see `todo.md`).
 - `reset_request_usage()` is turn-level (preserves `input_tokens` for within-turn delta accounting); session boundaries (new session, resume) must use `SessionState::reset_for_new_session()` which zeroes everything — reusing the turn-level reset leaks stale context percentages into a fresh session (the `max()` never corrects it).
 - `estimate_context_tokens()` prefers actual LLM `prompt_tokens` from last Assistant message, falls back to char estimates + system overhead.
 - The calibrated `TokenEstimator` (`src/agent/token_estimation.rs`) is the single source of truth for all token estimation (status bar, streaming fallback, tok/s tracker, VCC compaction). It calibrates `chars_per_token` from the last assistant `prompt_tokens` (clamped [2.0, 8.0]). The LLM compaction path is the one exception — it keeps the `len/4` heuristic for byte-stable behavior.

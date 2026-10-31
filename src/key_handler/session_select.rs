@@ -20,8 +20,10 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     let selected = &app.modal.session_select_matches[app.modal.session_select_index];
     app.session.session_store.load_session(&selected.path)?;
     app.chat.chat_messages.clear();
-    // Restore cumulative token usage from saved session data
-    let (input_tokens, output_tokens) = app.session.session_store.total_usage();
+    // Restore cumulative token usage from saved session data (max prompt,
+    // sum completions — the live counter's semantics, so the status bar
+    // shows the pre-close value after resume)
+    let (input_tokens, output_tokens) = app.session.session_store.cumulative_usage();
     app.session.cumulative_usage = crate::session::RequestTokenUsage {
         input_tokens,
         output_tokens,

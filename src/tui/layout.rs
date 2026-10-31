@@ -790,6 +790,15 @@ impl LayoutRenderer {
             )),
             Line::from(""),
             Line::from(Span::styled(
+                format!("  Est. real input: {}", m(stats.effective_input_tokens)),
+                theme.panel_content_style(),
+            )),
+            Line::from(Span::styled(
+                format!("  Est. real total: {}", m(stats.effective_total_tokens())),
+                theme.panel_content_style(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
                 "  Press Esc to close",
                 Style::default().fg(theme.text_dim).bg(theme.bg_light),
             )),

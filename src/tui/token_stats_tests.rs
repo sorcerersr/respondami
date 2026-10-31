@@ -68,6 +68,41 @@ fn computes_stats_from_single_session() {
     assert_eq!(stats.total_input_tokens, 500_000);
     assert_eq!(stats.total_output_tokens, 200_000);
     assert_eq!(stats.total_tokens(), 700_000);
+    // Single request: the effective estimate equals the raw input.
+    assert_eq!(stats.effective_input_tokens, 500_000);
+    assert_eq!(stats.effective_total_tokens(), 700_000);
+}
+
+#[test]
+fn effective_input_is_max_prompt_not_sum() {
+    let dir = temp_dir();
+    let mut store = SessionStore::new(&dir);
+    store.create_session("test-model".to_string(), 8192, "/test".to_string()).unwrap();
+
+    // Growing prompts across requests: effective input must be the max
+    // (1000), not the sum (1500) — the live counter's semantics.
+    for (prompt, completion) in [(100, 10), (400, 20), (1000, 30)] {
+        store
+            .append_message(
+                None,
+                AgentMessage::assistant(
+                    "response".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    Some(Usage {
+                        prompt_tokens: prompt,
+                        completion_tokens: completion,
+                        total_tokens: prompt + completion,
+                    }),
+                ),
+            )
+            .unwrap();
+    }
+
+    let stats = compute_project_stats(&dir).unwrap();
+    assert_eq!(stats.total_input_tokens, 1500, "raw sum stays the sum");
+    assert_eq!(stats.effective_input_tokens, 1000, "effective must be the max");
+    assert_eq!(stats.effective_total_tokens(), 1060);
 }
 
 #[test]
@@ -111,6 +146,10 @@ fn aggregates_across_multiple_sessions() {
     assert_eq!(stats.total_output_tokens, 1_500_000);
     assert_eq!(stats.avg_input_per_session(), 1_500_000);
     assert_eq!(stats.avg_output_per_session(), 750_000);
+    // Per-session maxes summed (1M + 2M), not the global max (2M) — each
+    // session has its own cache prefix.
+    assert_eq!(stats.effective_input_tokens, 3_000_000);
+    assert_eq!(stats.effective_total_tokens(), 4_500_000);
 }
 
 #[test]
@@ -127,6 +166,8 @@ fn skips_assistant_messages_without_usage() {
     assert_eq!(stats.session_count, 1);
     assert_eq!(stats.total_input_tokens, 0);
     assert_eq!(stats.total_output_tokens, 0);
+    assert_eq!(stats.effective_input_tokens, 0, "no usage data contributes 0");
+    assert_eq!(stats.effective_total_tokens(), 0);
 }
 
 #[test]
@@ -182,6 +223,7 @@ fn io_ratio_computes_correctly() {
         session_count: 3,
         total_input_tokens: 750_000,
         total_output_tokens: 250_000,
+        effective_input_tokens: 0,
     };
     assert_eq!(stats.input_ratio(), 75);
     assert_eq!(stats.output_ratio(), 25);
@@ -193,6 +235,7 @@ fn io_ratio_is_zero_when_no_tokens() {
         session_count: 1,
         total_input_tokens: 0,
         total_output_tokens: 0,
+        effective_input_tokens: 0,
     };
     assert_eq!(stats.input_ratio(), 0);
     assert_eq!(stats.output_ratio(), 0);
@@ -204,6 +247,7 @@ fn averages_are_zero_when_no_sessions() {
         session_count: 0,
         total_input_tokens: 100,
         total_output_tokens: 50,
+        effective_input_tokens: 0,
     };
     assert_eq!(stats.avg_input_per_session(), 0);
     assert_eq!(stats.avg_output_per_session(), 0);
