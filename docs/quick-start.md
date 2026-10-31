@@ -121,7 +121,7 @@ The `↑` and `↓` segments track cumulative token usage for the session:
 - `↓` (output) is the sum of all generated tokens.
 - The counter is restored when you resume a session, so it stays stable across close/reopen.
 
-The **Project Token Statistics** dialog (command palette) shows both the raw sum and the `Est. real input` / `Est. real total` lines, which use the same cache-aware math as the status bar.
+The **Project Token Statistics** dialog (command palette) shows two sections: **With prompt caching** (the cache-aware input, output, total, per-session average, and I/O ratio — the numbers that approximate real processing) and **Raw (no caching)** (the raw input and total sums, the theoretical upper bound). Both use the same per-session max math as the status bar.
 
 **Caveat:** the estimate assumes 100% prefix cache hits. A cold cache — the first request of a session, right after compaction, or resuming on another machine or a restarted server — processes more tokens than the estimate. The raw sum is the upper bound.
 

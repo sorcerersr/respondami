@@ -144,8 +144,8 @@ fn aggregates_across_multiple_sessions() {
     assert_eq!(stats.session_count, 2);
     assert_eq!(stats.total_input_tokens, 3_000_000);
     assert_eq!(stats.total_output_tokens, 1_500_000);
+    // One request per session, so the cache-aware average equals the raw one.
     assert_eq!(stats.avg_input_per_session(), 1_500_000);
-    assert_eq!(stats.avg_output_per_session(), 750_000);
     // Per-session maxes summed (1M + 2M), not the global max (2M) — each
     // session has its own cache prefix.
     assert_eq!(stats.effective_input_tokens, 3_000_000);
@@ -223,10 +223,28 @@ fn io_ratio_computes_correctly() {
         session_count: 3,
         total_input_tokens: 750_000,
         total_output_tokens: 250_000,
-        effective_input_tokens: 0,
+        effective_input_tokens: 600_000,
     };
-    assert_eq!(stats.input_ratio(), 75);
-    assert_eq!(stats.output_ratio(), 25);
+    // The ratio is cache-aware: 600k / (600k + 250k) = 70%, not the raw 75%.
+    // (Output is 29% — independent integer division, 70 + 29 = 99.)
+    assert_eq!(stats.input_ratio(), 70);
+    assert_eq!(stats.output_ratio(), 29);
+}
+
+#[test]
+fn displayed_metrics_track_effective_input() {
+    let stats = ProjectTokenStats {
+        session_count: 4,
+        total_input_tokens: 4_000_000,
+        total_output_tokens: 1_000_000,
+        effective_input_tokens: 1_000_000,
+    };
+    // The dialog's primary-section numbers must derive from the cache-aware
+    // input, so they can't silently diverge from effective_input_tokens.
+    assert_eq!(stats.effective_total_tokens(), 2_000_000);
+    assert_eq!(stats.avg_input_per_session(), 250_000);
+    assert_eq!(stats.input_ratio(), 50);
+    assert_eq!(stats.output_ratio(), 50);
 }
 
 #[test]
@@ -247,8 +265,7 @@ fn averages_are_zero_when_no_sessions() {
         session_count: 0,
         total_input_tokens: 100,
         total_output_tokens: 50,
-        effective_input_tokens: 0,
+        effective_input_tokens: 100,
     };
     assert_eq!(stats.avg_input_per_session(), 0);
-    assert_eq!(stats.avg_output_per_session(), 0);
 }

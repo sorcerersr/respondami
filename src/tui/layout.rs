@@ -751,6 +751,9 @@ impl LayoutRenderer {
 
         let m = |tokens: u64| super::token_stats::ProjectTokenStats::format_millions(tokens);
 
+        // Two sections: the cache-aware numbers are primary (what the model
+        // actually processed); the raw sum is a dimmed secondary reference
+        // (the theoretical upper bound without prompt caching).
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -758,28 +761,23 @@ impl LayoutRenderer {
                 theme.panel_content_style(),
             )),
             Line::from(""),
+            Line::from(Span::styled("  With prompt caching:", Style::default().fg(theme.accent).bg(theme.bg_light))),
             Line::from(Span::styled(
-                format!("  Input tokens:    {}", m(stats.total_input_tokens)),
+                format!("  Input:           {}", m(stats.effective_input_tokens)),
                 theme.panel_content_style(),
             )),
             Line::from(Span::styled(
-                format!("  Output tokens:   {}", m(stats.total_output_tokens)),
+                format!("  Output:          {}", m(stats.total_output_tokens)),
                 theme.panel_content_style(),
             )),
             Line::from(Span::styled(
-                format!("  Total tokens:    {}", m(stats.total_tokens())),
+                format!("  Total:           {}", m(stats.effective_total_tokens())),
                 theme.panel_content_style(),
             )),
-            Line::from(""),
             Line::from(Span::styled(
                 format!("  Avg input/sess:  {}", m(stats.avg_input_per_session())),
                 theme.panel_content_style(),
             )),
-            Line::from(Span::styled(
-                format!("  Avg output/sess: {}", m(stats.avg_output_per_session())),
-                theme.panel_content_style(),
-            )),
-            Line::from(""),
             Line::from(Span::styled(
                 format!(
                     "  I/O ratio:       {}% / {}%",
@@ -789,13 +787,14 @@ impl LayoutRenderer {
                 theme.panel_content_style(),
             )),
             Line::from(""),
+            Line::from(Span::styled("  Raw (no caching):", Style::default().fg(theme.accent).bg(theme.bg_light))),
             Line::from(Span::styled(
-                format!("  Est. real input: {}", m(stats.effective_input_tokens)),
-                theme.panel_content_style(),
+                format!("  Input:           {}", m(stats.total_input_tokens)),
+                Style::default().fg(theme.text_dim).bg(theme.bg_light),
             )),
             Line::from(Span::styled(
-                format!("  Est. real total: {}", m(stats.effective_total_tokens())),
-                theme.panel_content_style(),
+                format!("  Total:           {}", m(stats.total_tokens())),
+                Style::default().fg(theme.text_dim).bg(theme.bg_light),
             )),
             Line::from(""),
             Line::from(Span::styled(

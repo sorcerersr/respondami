@@ -87,7 +87,7 @@ diagnosable, so these are hardening, not urgent.
 
 ## Future: Real `cached_tokens` from provider (Option B)
 
-Deferred from the token counter design (2026-10-31, `docs/plans/2026-10-31-token-counter-cache-aware-design.md`). The status-bar counter and the stats dialog's `Est. real` lines use a structural estimate (per-session max `prompt_tokens`), which assumes the prompt cache serves the full prior prefix on every request. Option B replaces that with the provider's actual cache data:
+Deferred from the token counter design (2026-10-31, `docs/plans/2026-10-31-token-counter-cache-aware-design.md`). The status-bar counter and the stats dialog's `With prompt caching` section use a structural estimate (per-session max `prompt_tokens`), which assumes the prompt cache serves the full prior prefix on every request. Option B replaces that with the provider's actual cache data:
 
 - Parse `usage.prompt_tokens_details.cached_tokens` from the OpenAI-compatible response (SSE `SseUsage` + non-streaming `parse_completion_response`).
 - Persist it in the JSONL `Usage` struct (schema addition, backward-compatible with `#[serde(default)]`).

@@ -37,38 +37,32 @@ impl ProjectTokenStats {
         self.effective_input_tokens + self.total_output_tokens
     }
 
-    /// Average input tokens per session. Returns 0 if no sessions.
+    /// Average effective (cache-aware) input tokens per session. Returns 0 if
+    /// no sessions.
     #[must_use]
     pub fn avg_input_per_session(&self) -> u64 {
         if self.session_count == 0 {
             return 0;
         }
-        self.total_input_tokens / self.session_count as u64
+        self.effective_input_tokens / self.session_count as u64
     }
 
-    /// Average output tokens per session. Returns 0 if no sessions.
-    #[must_use]
-    pub fn avg_output_per_session(&self) -> u64 {
-        if self.session_count == 0 {
-            return 0;
-        }
-        self.total_output_tokens / self.session_count as u64
-    }
-
-    /// Input percentage of total tokens. Returns 0 if no tokens.
+    /// Input percentage of the effective (cache-aware) total tokens. Returns 0
+    /// if no tokens.
     #[must_use]
     pub fn input_ratio(&self) -> u64 {
-        let total = self.total_tokens();
+        let total = self.effective_total_tokens();
         if total == 0 {
             return 0;
         }
-        (self.total_input_tokens * 100) / total
+        (self.effective_input_tokens * 100) / total
     }
 
-    /// Output percentage of total tokens. Returns 0 if no tokens.
+    /// Output percentage of the effective (cache-aware) total tokens. Returns 0
+    /// if no tokens.
     #[must_use]
     pub fn output_ratio(&self) -> u64 {
-        let total = self.total_tokens();
+        let total = self.effective_total_tokens();
         if total == 0 {
             return 0;
         }
