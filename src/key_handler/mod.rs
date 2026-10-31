@@ -26,6 +26,9 @@ mod token_stats;
 #[cfg(test)]
 mod command_palette_tests;
 
+#[cfg(test)]
+mod model_select_tests;
+
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
 use ratatui::Terminal;

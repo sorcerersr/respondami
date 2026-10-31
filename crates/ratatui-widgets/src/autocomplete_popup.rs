@@ -277,7 +277,7 @@ impl AutocompletePopup {
 
     /// Truncate a string from the front if it exceeds `max_width`, preserving
     /// the rightmost characters. Prepends `…` to indicate truncation.
-    fn truncate_front_str(s: &str, max_width: usize) -> String {
+    pub fn truncate_front_str(s: &str, max_width: usize) -> String {
         let display_width = s.width();
         if display_width <= max_width {
             return s.to_string();

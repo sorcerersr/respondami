@@ -53,3 +53,258 @@ use super::layout::LayoutRenderer;
         // width 1 → 5 visual lines (h,e,l,l,o) → capped at 5
         assert_eq!(result, 5);
     }
+
+// Model select 3-column table tests
+
+use crate::config::{Config, ModelConfig};
+use crate::provider::{DiscoveredModel, LlamaCppSettings, ProviderSettings};
+use crate::tui::App;
+use crate::tui::theme::Theme;
+use ratatui::backend::TestBackend;
+use ratatui::layout::Rect;
+use ratatui::Terminal;
+
+/// Build an llamacpp app with the given discovered models and picker list.
+fn llamacpp_app(discovered: Vec<DiscoveredModel>, models: Vec<String>, index: usize) -> App {
+    let mut config = Config::default();
+    config.provider.settings = ProviderSettings::LlamaCpp(LlamaCppSettings {
+        url: "http://127.0.0.1:8080".to_string(),
+        api_key: "k".to_string(),
+    });
+    let mut app = App::new(config, std::path::PathBuf::from("."));
+    app.config.discovered_models = discovered;
+    app.modal.model_select_models = models;
+    app.modal.model_select_index = index;
+    app.modal.model_select_scroll_offset = 0;
+    app
+}
+
+/// Build an openai app with the given models and per-model vision flags.
+fn openai_app(models: Vec<String>, vision: Vec<bool>, index: usize) -> App {
+    let mut config = Config::default();
+    for (i, name) in models.iter().enumerate() {
+        config.provider.models.push(ModelConfig {
+            name: name.clone(),
+            context_window: 4096,
+            vision: vision.get(i).copied().unwrap_or(false),
+        });
+    }
+    let mut app = App::new(config, std::path::PathBuf::from("."));
+    app.modal.model_select_models = models;
+    app.modal.model_select_index = index;
+    app.modal.model_select_scroll_offset = 0;
+    app
+}
+
+/// Render the model select popup into a `TestBackend` and return the grid of
+/// row strings (each row is the concatenated cell symbols across the width).
+fn render_grid(app: &mut App) -> Vec<String> {
+    let width = 100u16;
+    let height = 20u16;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            LayoutRenderer::render_model_select_popup(
+                frame,
+                Rect::new(0, 0, width, height),
+                app,
+                &Theme::gh_dark(),
+            );
+        })
+        .expect("render");
+    let buf = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+#[test]
+fn model_select_header_row_present() {
+    let mut app = llamacpp_app(
+        vec![DiscoveredModel {
+            name: "coder-27b".into(),
+            context_length: Some(4096),
+            loaded: Some(true),
+            vision: Some(true),
+        }],
+        vec!["coder-27b".into()],
+        0,
+    );
+    let grid = render_grid(&mut app);
+    // The header row contains the three column labels.
+    let header = grid
+        .iter()
+        .find(|row| row.contains("Loaded"))
+        .expect("header row with 'Loaded' present");
+    assert!(header.contains("Name"), "header has 'Name': {header}");
+    assert!(header.contains("Vision"), "header has 'Vision': {header}");
+}
+
+#[test]
+fn model_select_name_column_aligned() {
+    // Two models of different lengths; the Name column must start at the same
+    // x on the header row and on every model row.
+    let mut app = llamacpp_app(
+        vec![
+            DiscoveredModel {
+                name: "alpha".into(),
+                context_length: None,
+                loaded: Some(true),
+                vision: None,
+            },
+            DiscoveredModel {
+                name: "bravo-longer-model-name".into(),
+                context_length: None,
+                loaded: Some(false),
+                vision: Some(true),
+            },
+        ],
+        vec!["alpha".into(), "bravo-longer-model-name".into()],
+        0,
+    );
+    let grid = render_grid(&mut app);
+    let header = grid.iter().find(|r| r.contains("Name")).unwrap();
+    // Visual (char) column of the Name header — byte offsets differ between
+    // rows because the model rows carry multi-byte `→`/`●` before the column.
+    let name_col_x = header
+        .find("Name")
+        .map(|b| header[..b].chars().count())
+        .unwrap();
+    for name in ["alpha", "bravo-longer-model-name"] {
+        let row = grid.iter().find(|r| r.contains(name)).unwrap();
+        let row_chars: Vec<char> = row.chars().collect();
+        // The first char of the name cell sits at the Name column start.
+        assert_eq!(
+            row_chars[name_col_x],
+            name.chars().next().unwrap(),
+            "name starts at visual col {name_col_x} on row: {row}"
+        );
+    }
+}
+
+#[test]
+fn model_select_loaded_icons_llamacpp() {
+    let mut app = llamacpp_app(
+        vec![
+            DiscoveredModel {
+                name: "loaded".into(),
+                context_length: None,
+                loaded: Some(true),
+                vision: None,
+            },
+            DiscoveredModel {
+                name: "unloaded".into(),
+                context_length: None,
+                loaded: Some(false),
+                vision: None,
+            },
+            DiscoveredModel {
+                name: "unknown".into(),
+                context_length: None,
+                loaded: None,
+                vision: None,
+            },
+        ],
+        vec!["loaded".into(), "unloaded".into(), "unknown".into()],
+        0,
+    );
+    let grid = render_grid(&mut app);
+    let loaded_row = grid.iter().find(|r| r.contains("loaded")).unwrap();
+    assert!(loaded_row.contains('●'), "loaded row has ●: {loaded_row}");
+    let unloaded_row = grid.iter().find(|r| r.contains("unloaded")).unwrap();
+    assert!(unloaded_row.contains('○'), "unloaded row has ○: {unloaded_row}");
+    let unknown_row = grid.iter().find(|r| r.contains("unknown")).unwrap();
+    assert!(unknown_row.contains('?'), "unknown row has ?: {unknown_row}");
+}
+
+#[test]
+fn model_select_loaded_dash_openai() {
+    let mut app = openai_app(vec!["m1".into(), "m2".into()], vec![true, false], 0);
+    let grid = render_grid(&mut app);
+    for name in ["m1", "m2"] {
+        let row = grid.iter().find(|r| r.contains(name)).unwrap();
+        // The Loaded column shows a dash for openai (no loaded report).
+        assert!(row.contains('-'), "openai row has '-' loaded: {row}");
+    }
+}
+
+#[test]
+fn model_select_vision_column() {
+    let mut app = openai_app(vec!["vision".into(), "text".into()], vec![true, false], 0);
+    let grid = render_grid(&mut app);
+    let vision_row = grid.iter().find(|r| r.contains("vision")).unwrap();
+    assert!(vision_row.contains('◉'), "vision row has ◉: {vision_row}");
+    let text_row = grid.iter().find(|r| r.contains("text")).unwrap();
+    // The Vision column shows a dash when not supported.
+    assert!(text_row.contains('-'), "text row has '-' vision: {text_row}");
+}
+
+#[test]
+fn model_select_selected_row_arrow() {
+    let mut app = llamacpp_app(
+        vec![
+            DiscoveredModel {
+                name: "first".into(),
+                context_length: None,
+                loaded: Some(true),
+                vision: None,
+            },
+            DiscoveredModel {
+                name: "second".into(),
+                context_length: None,
+                loaded: Some(true),
+                vision: None,
+            },
+        ],
+        vec!["first".into(), "second".into()],
+        1, // select the second row
+    );
+    let grid = render_grid(&mut app);
+    let selected_row = grid.iter().find(|r| r.contains("second")).unwrap();
+    assert!(selected_row.contains('→'), "selected row has →: {selected_row}");
+    let other_row = grid.iter().find(|r| r.contains("first")).unwrap();
+    assert!(!other_row.contains('→'), "unselected row has no →: {other_row}");
+}
+
+#[test]
+fn model_select_long_name_truncated() {
+    // A name far longer than the clamped popup width must be front-truncated.
+    let long = "x".repeat(200);
+    let mut app = llamacpp_app(
+        vec![DiscoveredModel {
+            name: long.clone(),
+            context_length: None,
+            loaded: Some(true),
+            vision: None,
+        }],
+        vec![long.clone()],
+        0,
+    );
+    let grid = render_grid(&mut app);
+    let row = grid
+        .iter()
+        .find(|r| r.contains('…'))
+        .expect("truncated row has …");
+    assert!(row.contains('…'), "row has ellipsis: {row}");
+    // The full 200-char name must not fit in a 100-wide terminal.
+    assert!(
+        !row.contains(&long),
+        "full name must not appear untruncated"
+    );
+}
+
+#[test]
+fn model_select_truncate_front_helper() {
+    use ratatui_widgets::AutocompletePopup;
+    assert_eq!(AutocompletePopup::truncate_front_str("short", 10), "short");
+    let t = AutocompletePopup::truncate_front_str("abcdefghij", 5);
+    assert!(t.starts_with('…'), "starts with ellipsis: {t}");
+    assert!(t.ends_with("hij"), "keeps rightmost chars: {t}");
+    assert_eq!(t.chars().count(), 5);
+}
+

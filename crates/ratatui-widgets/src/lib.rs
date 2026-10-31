@@ -21,6 +21,8 @@ pub use filled_header_bar::FilledHeaderBar;
 #[doc(inline)]
 pub use panel_overlay::PanelOverlay;
 #[doc(inline)]
+pub use panel_overlay::PANEL_BORDER;
+#[doc(inline)]
 pub use command_palette_overlay::CommandPaletteOverlay;
 #[doc(inline)]
 pub use autocomplete_popup::AutocompletePopup;

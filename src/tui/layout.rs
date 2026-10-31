@@ -966,24 +966,53 @@ impl LayoutRenderer {
         frame.render_widget(overlay, popup_area);
     }
 
-    /// Render the model select popup as a centered overlay.
+    /// Render the model select popup as a centered 3-column table.
     ///
-    /// Shows a list of configured models with the selected one highlighted.
-    fn render_model_select_popup(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
+    /// Columns: `Loaded` | `Name` | `Vision`. A fixed header row sits above the
+    /// (scrollable) model rows; the header is decorative and never navigable. The
+    /// `Name` column is sized to the longest model name and front-truncated with
+    /// `…` if the clamped popup width can't fit it. `Loaded` shows `●`/`○`/`?`
+    /// for llamacpp and `-` for openai; `Vision` shows `◉` when supported, `-`
+    /// otherwise.
+    pub(crate) fn render_model_select_popup(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         use super::editor::FILE_POPUP_PAGE_SIZE;
         use ratatui::style::Modifier;
+        use ratatui::text::Text;
+        use ratatui::widgets::{Block, Borders, Paragraph};
+        use ratatui_widgets::PANEL_BORDER;
+        use unicode_width::UnicodeWidthStr;
 
         let models = app.modal.model_select_models.clone();
         if models.is_empty() {
             return;
         }
 
+        let is_llamacpp = matches!(
+            app.config.config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        );
+
+        // Column widths (display columns). The Name column is dynamic.
+        const ARROW_W: usize = 2;
+        const LOADED_W: usize = 6; // max("Loaded", 1)
+        const VISION_W: usize = 6; // max("Vision", 1)
+        const GAP: usize = 1;
+        const RIGHT_PAD: usize = 1;
+        const FIXED_W: usize = ARROW_W + LOADED_W + GAP + GAP + VISION_W + RIGHT_PAD;
+
+        // Name column = max of the "Name" header and the longest model name.
+        let longest = models.iter().map(|m| m.width()).max().unwrap_or(0);
+        let name_w = longest.max(4);
+
+        // Popup width from the required table width, clamped 40–100 & area.
+        let required_width = (FIXED_W + name_w + 2) as u16; // +2 borders
+        let popup_width = required_width.clamp(40, 100).min(area.width);
+        let inner_width = popup_width as usize - 2;
+        // If the clamp shrank the width, the Name column absorbs the loss.
+        let name_w = inner_width.saturating_sub(FIXED_W).max(1);
+
         let visible_count = models.len().min(FILE_POPUP_PAGE_SIZE);
-        let popup_height = (visible_count + 2) as u16; // +2 for borders
-
-        let popup_width = (f64::from(area.width) * 0.6) as u16;
-        let popup_width = popup_width.clamp(40, 100).min(area.width);
-
+        let popup_height = (visible_count + 3) as u16; // header + rows + 2 borders
         let popup_height = popup_height.min(area.height);
         if popup_height < 4 {
             return;
@@ -991,7 +1020,6 @@ impl LayoutRenderer {
 
         let popup_x = area.x + (area.width - popup_width) / 2;
         let popup_y = area.y + (area.height - popup_height) / 2;
-
         let popup_area = Rect {
             x: popup_x,
             y: popup_y,
@@ -1004,101 +1032,142 @@ impl LayoutRenderer {
         let selected = app.modal.model_select_index;
         let scroll_offset = app.modal.model_select_scroll_offset;
 
-        let is_llamacpp = matches!(
-            app.config.config.provider.settings,
-            crate::provider::ProviderSettings::LlamaCpp(_)
-        );
+        // Virtual scroll window over the model rows (the header is fixed above).
+        let page_size = (popup_height as usize - 2 - 1).max(1); // content rows - header
+        let mut offset = scroll_offset;
+        if selected >= offset + page_size {
+            offset = selected - page_size + 1;
+        } else if selected < offset {
+            offset = selected;
+        }
+        let visible_end = (offset + page_size).min(models.len());
 
-        // Build styled rows: selection arrow + optional loaded icon (llamacpp
-        // only) + model name + optional vision icon. The loaded icon comes
-        // from `discovered_models`; the vision icon from `discovered_models`
-        // (llamacpp) or the per-model config flag (openai).
-        let mut styled: Vec<Line<'static>> = Vec::new();
-        for (i, model) in models.iter().enumerate() {
+        // Right-pad a string to `w` display columns.
+        let pad = |s: &str, w: usize| -> String {
+            let cur = s.width();
+            if cur >= w {
+                s.to_string()
+            } else {
+                format!("{s}{}", " ".repeat(w - cur))
+            }
+        };
+
+        // Header row (muted), fixed at the top of the content.
+        let header_bg = theme.bg_light;
+        let header = Line::from(vec![
+            Span::styled("  ", Style::default().fg(theme.text_muted).bg(header_bg)),
+            Span::styled(
+                pad("Loaded", LOADED_W),
+                Style::default().fg(theme.text_muted).bg(header_bg),
+            ),
+            Span::styled(" ", Style::default().bg(header_bg)),
+            Span::styled(
+                pad("Name", name_w),
+                Style::default().fg(theme.text_muted).bg(header_bg),
+            ),
+            Span::styled(" ", Style::default().bg(header_bg)),
+            Span::styled(
+                pad("Vision", VISION_W),
+                Style::default().fg(theme.text_muted).bg(header_bg),
+            ),
+            Span::styled(" ", Style::default().bg(header_bg)),
+        ]);
+
+        let mut lines: Vec<Line> = vec![header];
+        for (i, model) in models.iter().enumerate().skip(offset).take(visible_end - offset) {
             let is_selected = i == selected;
             let bg = if is_selected { theme.accent } else { theme.bg_light };
-            let mut spans: Vec<ratatui::text::Span<'static>> = Vec::new();
-            spans.push(ratatui::text::Span::styled(
-                if is_selected { "→ " } else { "  " },
-                ratatui::style::Style::default()
-                    .fg(theme.text)
-                    .bg(bg)
-                    .add_modifier(if is_selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ));
 
-            // Look up the model's attributes (loaded + vision).
-            let (loaded, vision) = if is_llamacpp {
-                match app
+            // Loaded cell: `●`/`○`/`?` (llamacpp) or `-` (openai).
+            let (loaded_icon, loaded_color) = if is_llamacpp {
+                let loaded = app
                     .config
                     .discovered_models
                     .iter()
                     .find(|m| &m.name == model)
-                {
-                    Some(dm) => (dm.loaded, dm.vision == Some(true)),
-                    None => (None, false),
+                    .and_then(|dm| dm.loaded);
+                match loaded {
+                    Some(true) => ("●", theme.green),
+                    Some(false) => ("○", theme.orange),
+                    None => ("?", theme.text_muted),
                 }
             } else {
-                let vision = app
-                    .config
+                ("-", theme.text_muted)
+            };
+
+            // Vision cell: `◉` when supported, `-` otherwise.
+            let vision = if is_llamacpp {
+                app.config
+                    .discovered_models
+                    .iter()
+                    .find(|m| &m.name == model)
+                    .is_some_and(|dm| dm.vision == Some(true))
+            } else {
+                app.config
                     .config
                     .provider
                     .models
                     .iter()
                     .find(|m| &m.name == model)
-                    .map(|m| m.vision)
-                    .unwrap_or(false);
-                (None, vision)
+                    .is_some_and(|m| m.vision)
+            };
+            let (vision_icon, vision_color) = if vision {
+                ("◉", theme.accent)
+            } else {
+                ("-", theme.text_muted)
             };
 
-            // Loaded icon (llamacpp only): `●` green / `○` orange / `?` muted.
-            if is_llamacpp {
-                let (icon, color) = match loaded {
-                    Some(true) => ("●", theme.green),
-                    Some(false) => ("○", theme.orange),
-                    None => ("?", theme.text_muted),
-                };
-                spans.push(ratatui::text::Span::styled(
-                    icon,
-                    ratatui::style::Style::default().fg(color).bg(bg),
-                ));
-            }
+            let name_display = AutocompletePopup::truncate_front_str(model, name_w);
+            let arrow_style = Style::default()
+                .fg(theme.text)
+                .bg(bg)
+                .add_modifier(if is_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
 
-            spans.push(ratatui::text::Span::styled(
-                model.clone(),
-                ratatui::style::Style::default().fg(theme.text).bg(bg),
-            ));
-
-            // Vision icon: `◉` accent, shown only when supported.
-            if vision {
-                spans.push(ratatui::text::Span::styled(
-                    " ◉",
-                    ratatui::style::Style::default().fg(theme.accent).bg(bg),
-                ));
-            }
-
-            styled.push(Line::from(spans));
+            lines.push(Line::from(vec![
+                Span::styled(if is_selected { "→ " } else { "  " }, arrow_style),
+                Span::styled(
+                    pad(loaded_icon, LOADED_W),
+                    Style::default().fg(loaded_color).bg(bg),
+                ),
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    pad(&name_display, name_w),
+                    Style::default().fg(theme.text).bg(bg),
+                ),
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    pad(vision_icon, VISION_W),
+                    Style::default().fg(vision_color).bg(bg),
+                ),
+                Span::styled(" ", Style::default().bg(bg)),
+            ]));
         }
 
-        let popup = AutocompletePopup::new()
-            .items(models)
-            .items_styled(styled)
-            .selected(selected)
-            .scroll_offset(scroll_offset)
-            .max_height(FILE_POPUP_PAGE_SIZE)
-            .centered(true)
+        // Fill remaining content rows with blank (bg_light) lines.
+        let content_rows = popup_height as usize - 2;
+        while lines.len() < content_rows {
+            lines.push(Line::from(Span::styled(
+                " ".repeat(inner_width),
+                Style::default().bg(theme.bg_light),
+            )));
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(PANEL_BORDER)
             .border_style(theme.panel_border_style())
-            .title_style(theme.panel_title_style())
-            .content_bg(theme.bg_light)
-            .text_color(theme.text)
-            .accent_color(theme.accent)
-            .title(" Select Model ");
+            .title(Span::styled(" Select Model ", theme.panel_title_style()));
+
+        let paragraph = Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(Style::default().bg(theme.bg_light));
 
         frame.render_widget(Clear, popup_area);
-        frame.render_widget(popup, popup_area);
+        frame.render_widget(paragraph, popup_area);
     }
 
     fn render_chat_area(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {

@@ -37,30 +37,33 @@ use ratatui::style::Color;
     fn model_spans_llamacpp_loaded_no_vision() {
         let app = llamacpp_app(Some(true), false);
         let spans = build_model_spans(&app, &Theme::gh_dark());
-        // " ", "●", "coder-27b", " │"
-        assert_eq!(spans.len(), 4);
+        // " ", "●", " ", "coder-27b", " │"
+        assert_eq!(spans.len(), 5);
         assert_eq!(span_text(&spans[1]), "●");
         assert_eq!(spans[1].style.fg, Some(Color::Rgb(0x3e, 0x8a, 0x41))); // green
-        assert_eq!(span_text(&spans[2]), "coder-27b");
-        assert_eq!(span_text(&spans[3]), " │");
+        assert_eq!(span_text(&spans[2]), " ");
+        assert_eq!(span_text(&spans[3]), "coder-27b");
+        assert_eq!(span_text(&spans[4]), " │");
     }
 
     #[test]
     fn model_spans_llamacpp_not_loaded_vision() {
         let app = llamacpp_app(Some(false), true);
         let spans = build_model_spans(&app, &Theme::gh_dark());
-        // " ", "○", "coder-27b", " ◉", " │"
-        assert_eq!(spans.len(), 5);
+        // " ", "○", " ", "coder-27b", " ◉", " │"
+        assert_eq!(spans.len(), 6);
         assert_eq!(span_text(&spans[1]), "○");
-        assert_eq!(span_text(&spans[3]), " ◉");
+        assert_eq!(span_text(&spans[2]), " ");
+        assert_eq!(span_text(&spans[4]), " ◉");
     }
 
     #[test]
     fn model_spans_llamacpp_unknown_loaded() {
         let app = llamacpp_app(None, false);
         let spans = build_model_spans(&app, &Theme::gh_dark());
-        assert_eq!(spans.len(), 4);
+        assert_eq!(spans.len(), 5);
         assert_eq!(span_text(&spans[1]), "?");
+        assert_eq!(span_text(&spans[2]), " ");
     }
 
     #[test]

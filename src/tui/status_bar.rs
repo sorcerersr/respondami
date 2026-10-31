@@ -160,10 +160,10 @@ pub fn get_activity(state: &AppState, theme: &Theme) -> (&'static str, Color, bo
 }
 /// Build the model segment spans for the status bar.
 ///
-/// Optional loaded icon (llamacpp only) + model name + optional vision icon.
+/// Optional loaded icon (llamacpp only) + space + model name + optional vision icon.
 /// Loaded: `●` green / `○` orange / `?` muted. Vision: `◉` accent, shown only
 /// when supported. The loaded icon is omitted for `openai` (the concept
-/// doesn't apply; `loaded` is `None`).
+/// doesn't apply; `loaded` is `None`), so the leading space is the only gap there.
 #[must_use]
 pub fn build_model_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
     let is_llamacpp = matches!(
@@ -178,6 +178,7 @@ pub fn build_model_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
             None => ("?", theme.text_muted),
         };
         spans.push(Span::styled(icon, Style::default().fg(color)));
+        spans.push(Span::raw(" "));
     }
     spans.push(Span::styled(
         app.config.model_name.clone(),

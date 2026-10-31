@@ -28,6 +28,13 @@ fn do_select_model(app: &mut App) {
     app.switch_model(&name);
 }
 
+/// Cancel the model select: return to Idle. Cancelling changes nothing, so no
+/// system message is emitted (one would clobber the welcome screen and add no
+/// information to an existing conversation).
+pub(crate) fn do_cancel_model_select(app: &mut App) {
+    app.modal.state = AppState::Idle;
+}
+
 /// Handler for the model select modal.
 #[derive(Debug)]
 pub struct ModelSelectHandler;
@@ -49,9 +56,7 @@ impl KeyHandler for ModelSelectHandler {
                 TransitionAction::None
             }))
             .with_esc(Box::new(|app| {
-                app.modal.state = AppState::Idle;
-                app.add_system_message("Model selection cancelled.");
-                app.chat.auto_scroll = true;
+                do_cancel_model_select(app);
             }));
 
         if let Some(action) = transitions.handle(app, key) {
