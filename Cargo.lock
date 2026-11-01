@@ -1355,9 +1355,9 @@ dependencies = [
 
 [[package]]
 name = "ignore"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b69833ed729dc5aa7d19541d96d6cf8e9137194207a04916d658e43168402f"
+checksum = "484be5657551d7868d67587df967fb4fcbe9d266a761cc855aaa148fda0b3cc7"
 dependencies = [
  "crossbeam-deque",
  "globset",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "ratatui-md"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pulldown-cmark",
  "ratatui",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "ratatui-widgets"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ratatui",
  "unicode-width",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "respondami"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2516,7 +2516,7 @@ dependencies = [
  "partial-json-fixer",
  "ratatui",
  "ratatui-md",
- "ratatui-widgets 0.2.0",
+ "ratatui-widgets 0.2.1",
  "regex",
  "reqwest",
  "serde",
