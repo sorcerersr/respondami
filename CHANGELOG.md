@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-01
+
+### Features
+
+- Provider: multi-model support with a `/model` picker — per-model `context_window`/`vision`, legacy single-model configs auto-migrate on load
+- Provider: llamacpp model autodetection — loaded/vision state from `/v1/models` resolves the active model at runtime; the old LlamaCpp provider is renamed to the generic OpenAI-compatible one, legacy `type: llamacpp` configs migrate on load; the spurious startup "LLM endpoint unreachable" error is gone (model fetch is the reachability check)
+- TUI: model select is now a 3-column table (Loaded/Name/Vision); status bar adds a space between the model icon and name; Esc on the picker no longer posts a system message
+- Provider: new `strip_images_after_view` option swaps an image for a removal note in live context and session file after the model has seen it, protecting prefix-cache hits on vLLM
+
+### Bug Fixes
+
+- Hooks: skill hooks now survive compaction and no longer double-fire on re-activation
+- TUI: the ↑ token counter now restores from max prompt on resume instead of the raw sum, so it stays stable across close/reopen
+- TUI: the statistics dialog now leads with cache-aware numbers; the raw sum is a dimmed secondary reference
+
+### Security
+
+- uuid 1.28.0 → 1.29.0
+- ignore 0.4.33 → 0.4.34
+- similar 3.2.0 → 3.2.1
+- unicode-width 0.2.2 → 0.2.3
+- rustls 0.23.45 → 0.23.46
+
 ## [0.2.1] - 2026-10-25
 
 ### Security

@@ -1,6 +1,6 @@
 # Respondami
 
-> **v0.2.0** — privacy-first coding agent. One binary, no telemetry, skills-driven.
+> Privacy-first coding agent. One binary, no telemetry, skills-driven.
 
 Changelog: [CHANGELOG.md](CHANGELOG.md)
 
