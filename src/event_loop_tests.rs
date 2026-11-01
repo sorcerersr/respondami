@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::event_loop::{CompactionPollResult, CompactionResult, handle_compaction_result, join_panic_message, poll_compaction_task, transition_to_idle};
-use crate::session::{CompactionPlan, RequestTokenUsage};
+use crate::session::{CompactionPlan, RequestTokenUsage, SessionStore};
 use crate::turn::PendingTurn;
 use crate::tui::{App, AppState, ChatMessage};
 
@@ -350,7 +350,9 @@ async fn poll_launches_pending_turn_when_compaction_finishes() {
     let mut config = crate::config::Config::default();
     // Unreachable provider with retries disabled → the launched agent
     // fails fast on connect, so the turn ends quickly without a live LLM.
-    let crate::provider::ProviderSettings::LlamaCpp(settings) = &mut config.provider.settings;
+    let crate::provider::ProviderSettings::OpenAI(settings) = &mut config.provider.settings else {
+        panic!("expected OpenAI settings");
+    };
     settings.url = "http://127.0.0.1:1".to_string();
     config.retry.enabled = false;
     let mut app = App::new(config, std::path::PathBuf::from("."));
@@ -389,6 +391,9 @@ async fn poll_launches_pending_turn_when_compaction_finishes() {
 #[tokio::test]
 async fn handle_compaction_result_appends_pending_precompact_context() {
     let mut app = make_poll_app();
+    // Keep the test session out of the real `.respondami/sessions/`.
+    let dir = tempfile::TempDir::new().unwrap();
+    app.session.session_store = SessionStore::new(dir.path());
     app.session
         .session_store
         .create_session("model".to_string(), 32768, ".".to_string())
@@ -425,6 +430,9 @@ async fn handle_compaction_result_appends_pending_precompact_context() {
 #[tokio::test]
 async fn handle_compaction_result_no_pending_context_is_noop() {
     let mut app = make_poll_app();
+    // Keep the test session out of the real `.respondami/sessions/`.
+    let dir = tempfile::TempDir::new().unwrap();
+    app.session.session_store = SessionStore::new(dir.path());
     app.session
         .session_store
         .create_session("model".to_string(), 32768, ".".to_string())
@@ -462,4 +470,108 @@ async fn handle_compaction_result_clears_pending_context_on_failure() {
     assert!(matches!(result, CompactionResult::Failed(_)));
     // Cleared even on failure so stale context never leaks to the next run.
     assert!(app.pending_precompact_context.is_none());
+}
+
+// ---- handle_compaction_result strip_images_after_view tests ----
+
+/// Seed a session whose kept tail contains an image tool result. The caller
+/// owns `cwd` (a `TempDir`) so the session files stay on disk for the rewrite.
+fn app_with_image_tail(cwd: &std::path::Path) -> App {
+    let mut app = App::new(crate::config::Config::default(), cwd.to_path_buf());
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, "/".to_string())
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(None, crate::session::AgentMessage::user("look".to_string()))
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(
+            None,
+            crate::session::AgentMessage::tool(
+                "call_img".to_string(),
+                "read".to_string(),
+                serde_json::json!({ "path": "/tmp/pic.png" }),
+                "Image: /tmp/pic.png (100x50, image/png)".to_string(),
+                vec![crate::image::ImageContent {
+                    data: "aW1hZ2U=".to_string(),
+                    mime_type: "image/png".to_string(),
+                    width: 100,
+                    height: 50,
+                }],
+            ),
+        )
+        .unwrap();
+    app
+}
+
+/// A plan that keeps the tail from the tool message onward (index 2), so the
+/// image entry survives the compaction rewrite.
+fn keep_tail_plan() -> CompactionPlan {
+    CompactionPlan {
+        summary: "summary".to_string(),
+        cut_index: 2,
+        tokens_before: 1000,
+    }
+}
+
+/// `strip_images_after_view` on: the compaction rewrite also strips the image
+/// from the kept entries (the summary is text, so the image can't survive).
+#[tokio::test]
+async fn handle_compaction_result_strips_images_when_flag_on() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = app_with_image_tail(dir.path());
+    app.config.config.provider.strip_images_after_view = true;
+    let handle = tokio::spawn(async move {
+        Ok::<_, anyhow::Error>(keep_tail_plan())
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Success { .. }));
+    let context = app.session.session_store.build_context();
+    let tool = context
+        .iter()
+        .find(|m| matches!(m, crate::session::AgentMessage::Tool { .. }))
+        .expect("kept tool message must survive compaction");
+    match tool {
+        crate::session::AgentMessage::Tool { images, result, .. } => {
+            assert!(images.is_empty(), "image must be stripped post-compaction");
+            assert!(
+                result.contains("[image removed: /tmp/pic.png (100x50). Re-read to view again.]"),
+                "removal note must be appended: {result}"
+            );
+        }
+        other => panic!("expected Tool message, got {other:?}"),
+    }
+}
+
+/// `strip_images_after_view` off (default): the compaction rewrite leaves the
+/// image untouched (the workaround is opt-in).
+#[tokio::test]
+async fn handle_compaction_result_keeps_images_when_flag_off() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = app_with_image_tail(dir.path());
+    // Default config: strip_images_after_view is false.
+    assert!(!app.config.config.provider.strip_images_after_view);
+    let handle = tokio::spawn(async move {
+        Ok::<_, anyhow::Error>(keep_tail_plan())
+    });
+
+    let result = handle_compaction_result(&mut app, handle, false).await;
+
+    assert!(matches!(result, CompactionResult::Success { .. }));
+    let context = app.session.session_store.build_context();
+    let tool = context
+        .iter()
+        .find(|m| matches!(m, crate::session::AgentMessage::Tool { .. }))
+        .expect("kept tool message must survive compaction");
+    match tool {
+        crate::session::AgentMessage::Tool { images, .. } => {
+            assert_eq!(images.len(), 1, "flag off → image must be kept");
+        }
+        other => panic!("expected Tool message, got {other:?}"),
+    }
 }

@@ -84,3 +84,13 @@ If we later want to eliminate *every* panic path (Option B), address these:
 
 Note: the global panic hook (Option A) is the safety net that makes any residual panic
 diagnosable, so these are hardening, not urgent.
+
+## Future: Real `cached_tokens` from provider (Option B)
+
+Deferred from the token counter design (2026-10-31, `docs/plans/2026-10-31-token-counter-cache-aware-design.md`). The status-bar counter and the stats dialog's `With prompt caching` section use a structural estimate (per-session max `prompt_tokens`), which assumes the prompt cache serves the full prior prefix on every request. Option B replaces that with the provider's actual cache data:
+
+- Parse `usage.prompt_tokens_details.cached_tokens` from the OpenAI-compatible response (SSE `SseUsage` + non-streaming `parse_completion_response`).
+- Persist it in the JSONL `Usage` struct (schema addition, backward-compatible with `#[serde(default)]`).
+- Compute `sum(prompt − cached) + sum(completion)` for the estimate, falling back to the structural estimate for sessions without the field.
+
+Not done now to avoid changing the session schema. The structural estimate is slightly optimistic when the cache is cold (first request of a session, right after compaction, cross-machine resume); the raw sum remains the upper bound.

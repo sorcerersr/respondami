@@ -266,6 +266,9 @@ pub async fn process_agent_events(
                     }
                 }
             }
+            Ok(Some(AgentEvent::StripImages { tool_call_ids })) => {
+                handle_strip_images_event(app, tool_call_ids);
+            }
             Ok(Some(AgentEvent::HookMessage {
                 event,
                 hook_name,
@@ -290,22 +293,7 @@ pub async fn process_agent_events(
                 }
             }
             Ok(Some(AgentEvent::SkillActivation { skill_name })) => {
-                // Update active skills set; register the skill's frontmatter
-                // hooks only on first activation (activation-scoped firing).
-                if app.active_skills.insert(skill_name.clone())
-                    && let Some(skill) = app.config.skills.iter().find(|s| s.name == skill_name)
-                {
-                    crate::hooks::register_skill_hooks(&mut app.config.hook_registry, skill);
-                }
-                // Persist to session
-                app.session.session_store.add_activated_skill(&skill_name);
-                // Display the skill activation message (only this, no system message)
-                app.chat
-                    .chat_messages
-                    .push(crate::tui::ChatMessage::SkillActivation(
-                        crate::tui::messages::SkillActivationMessage { skill_name },
-                    ));
-                app.maybe_auto_scroll();
+                handle_skill_activation_event(app, &skill_name);
             }
             Ok(Some(AgentEvent::NeedsCompaction {
                 reason,
@@ -350,8 +338,9 @@ pub async fn process_agent_events(
                 // Spawn compaction LLM call as a background task (spawn-and-poll pattern).
                 // This keeps the event loop responsive — the UI draws, animates, and
                 // processes terminal events while compaction runs.
-                let engine = CompactionEngine::from_config(&app.config.config);
-                let provider = match build_provider(&app.config.config) {
+                let live_config = app.config.live_config();
+                let engine = CompactionEngine::from_config(&live_config);
+                let provider = match build_provider(&live_config) {
                     Ok(p) => p,
                     Err(e) => {
                         app.add_system_message(&format!(
@@ -364,7 +353,7 @@ pub async fn process_agent_events(
                     }
                 };
                 let entries = app.session.session_store.entries().to_vec();
-                let config = app.config.config.clone();
+                let config = live_config;
                 let cwd = app.config.cwd.clone();
                 let skills = app.config.skills.clone();
 
@@ -551,6 +540,41 @@ pub async fn process_agent_events(
     // The SSE capture guard lives until the very end of the turn (the
     // provider writes captures during every request of the agent task).
     drop(sse_guard);
+}
+
+/// Handle a `SkillActivation` event: update the active skills set, register
+/// the skill's frontmatter hooks (idempotent — a re-activation refreshes them
+/// from the skill file; activation-scoped firing), persist the activation to
+/// the session, and display the activation message.
+pub(crate) fn handle_skill_activation_event(app: &mut App, skill_name: &str) {
+    app.active_skills.insert(skill_name.to_string());
+    if let Some(skill) = app.config.skills.iter().find(|s| s.name == skill_name) {
+        crate::hooks::register_skill_hooks(&mut app.config.hook_registry, skill);
+    }
+    // Persist to session
+    app.session.session_store.add_activated_skill(skill_name);
+    // Display the skill activation message (only this, no system message)
+    app.chat
+        .chat_messages
+        .push(crate::tui::ChatMessage::SkillActivation(
+            crate::tui::messages::SkillActivationMessage {
+                skill_name: skill_name.to_string(),
+            },
+        ));
+    app.maybe_auto_scroll();
+}
+
+/// `StripImages` handler (`strip_images_after_view` workaround): the agent
+/// loop already stripped the live context; apply the identical transform to
+/// the session and rewrite the JSONL (atomic). Failure is logged, not fatal
+/// — the live session stays correct in memory; a later resume re-strips
+/// (one re-prefill).
+pub(crate) fn handle_strip_images_event(app: &mut App, tool_call_ids: Vec<String>) {
+    if app.session.session_store.has_active_session()
+        && let Err(e) = app.session.session_store.strip_tool_images(&tool_call_ids)
+    {
+        tracing::error!("Failed to strip images from session: {e}");
+    }
 }
 
 /// Calculate the visible height of the chat area in lines.

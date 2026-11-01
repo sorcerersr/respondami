@@ -12,23 +12,27 @@
 //! 3. Runs autocomplete handling (when active in appropriate states)
 //! 4. Delegates to the state-specific handler via `StateHandler` enum
 
+mod command_palette;
+mod compact_keep_prompt;
 mod global;
+mod help_popup;
 mod idle;
 mod init_popup;
-mod session_select;
-mod command_palette;
-mod help_popup;
-mod token_stats;
-mod compact_keep_prompt;
 pub mod layers;
+mod model_select;
+mod session_select;
+mod token_stats;
 
 #[cfg(test)]
 mod command_palette_tests;
 
+#[cfg(test)]
+mod model_select_tests;
+
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::tui::{App, AppState, AutocompleteMode};
 
@@ -68,6 +72,7 @@ pub enum StateHandler {
     HelpPopup,
     TokenStats,
     CompactKeepPrompt,
+    ModelSelect,
 }
 
 impl StateHandler {
@@ -85,13 +90,40 @@ impl StateHandler {
     ) -> anyhow::Result<bool> {
         match self {
             StateHandler::Idle => idle::IdleHandler.handle(app, key, terminal).await,
-            StateHandler::SessionSelect => session_select::SessionSelectHandler.handle(app, key, terminal).await,
-            StateHandler::InitPopup => init_popup::InitPopupHandler.handle(app, key, terminal).await,
-            StateHandler::CommandPalette => command_palette::CommandPaletteHandler.handle(app, key, terminal).await,
-            StateHandler::HelpPopup => help_popup::HelpPopupHandler.handle(app, key, terminal).await,
-            StateHandler::TokenStats => token_stats::TokenStatsHandler.handle(app, key, terminal).await,
+            StateHandler::SessionSelect => {
+                session_select::SessionSelectHandler
+                    .handle(app, key, terminal)
+                    .await
+            }
+            StateHandler::InitPopup => {
+                init_popup::InitPopupHandler
+                    .handle(app, key, terminal)
+                    .await
+            }
+            StateHandler::CommandPalette => {
+                command_palette::CommandPaletteHandler
+                    .handle(app, key, terminal)
+                    .await
+            }
+            StateHandler::HelpPopup => {
+                help_popup::HelpPopupHandler
+                    .handle(app, key, terminal)
+                    .await
+            }
+            StateHandler::TokenStats => {
+                token_stats::TokenStatsHandler
+                    .handle(app, key, terminal)
+                    .await
+            }
             StateHandler::CompactKeepPrompt => {
-                compact_keep_prompt::CompactKeepPromptHandler.handle(app, key, terminal).await
+                compact_keep_prompt::CompactKeepPromptHandler
+                    .handle(app, key, terminal)
+                    .await
+            }
+            StateHandler::ModelSelect => {
+                model_select::ModelSelectHandler
+                    .handle(app, key, terminal)
+                    .await
             }
         }
     }
@@ -124,7 +156,9 @@ pub async fn handle_key_event(
     if app.modal.state == AppState::Compacting
         && (key.code == crossterm::event::KeyCode::Esc
             || (key.code == crossterm::event::KeyCode::Char('c')
-                && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)))
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)))
     {
         app.editor.autocomplete_mode = AutocompleteMode::None;
         app.modal.state = AppState::Idle;
@@ -153,33 +187,46 @@ pub async fn handle_key_event(
 /// Returns `true` if autocomplete handled the key and the event loop should return early.
 ///
 /// Only active in Idle state.
-fn handle_autocomplete(
-    app: &mut App,
-    key: &KeyEvent,
-) -> anyhow::Result<bool> {
+fn handle_autocomplete(app: &mut App, key: &KeyEvent) -> anyhow::Result<bool> {
     // Clone data to avoid borrow conflict with mutable app reference.
     let skill_data = match &app.editor.autocomplete_mode {
-        AutocompleteMode::Skill { matches, selected, scroll_offset } => {
-            Some((matches.clone(), *selected, *scroll_offset))
-        }
+        AutocompleteMode::Skill {
+            matches,
+            selected,
+            scroll_offset,
+        } => Some((matches.clone(), *selected, *scroll_offset)),
         _ => None,
     };
     if let Some((matches, selected, scroll_offset)) = skill_data {
         return crate::tui::autocomplete::handle_skill_autocomplete(
-            app, key, &matches, &selected, &scroll_offset,
+            app,
+            key,
+            &matches,
+            &selected,
+            &scroll_offset,
         );
     }
 
     // File autocomplete — only when non-empty.
     let file_data = match &app.editor.autocomplete_mode {
-        AutocompleteMode::File { matches, selected, scroll_offset, show_hidden } if !matches.is_empty() => {
+        AutocompleteMode::File {
+            matches,
+            selected,
+            scroll_offset,
+            show_hidden,
+        } if !matches.is_empty() => {
             Some((matches.clone(), *selected, *scroll_offset, *show_hidden))
         }
         _ => None,
     };
     if let Some((matches, selected, scroll_offset, show_hidden)) = file_data {
         return crate::tui::autocomplete::handle_file_autocomplete(
-            app, key, &matches, &selected, &scroll_offset, &show_hidden,
+            app,
+            key,
+            &matches,
+            &selected,
+            &scroll_offset,
+            &show_hidden,
         );
     }
 

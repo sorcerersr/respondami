@@ -10,8 +10,22 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-use crate::provider::{LlamaCppSettings, ProviderSettings};
+use crate::provider::{LlamaCppSettings, OpenAISettings, ProviderSettings};
 use crate::tui::{HookDisplay, ThinkingDisplay};
+
+/// Per-model configuration: the model name plus its context window and
+/// vision support. A provider can expose many models; each carries its own
+/// `context_window` and `vision` so switching models updates both.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelConfig {
+    /// The exact model name sent in requests.
+    pub name: String,
+    /// The model's context window in tokens.
+    pub context_window: u32,
+    /// Whether this model supports vision (images). When false, the `read`
+    /// tool returns a text note instead of an image attachment.
+    pub vision: bool,
+}
 
 /// Provider configuration for connecting to an LLM.
 ///
@@ -21,11 +35,15 @@ use crate::tui::{HookDisplay, ThinkingDisplay};
 pub struct ProviderConfig {
     /// Provider-specific settings (url, `api_key`, etc.).
     pub settings: ProviderSettings,
-    pub model: String,
-    pub context_window: u32,
-    /// Whether this model supports vision (images). When false, the `read`
-    /// tool returns a text note instead of an image attachment.
-    pub vision: bool,
+    /// Last-used model; the default for new sessions. Updated by the picker.
+    pub active_model: String,
+    /// Known models and their per-model config, keyed by `name`.
+    pub models: Vec<ModelConfig>,
+    /// Workaround for server/provider environments where images in the
+    /// conversation interfere with prompt caching. When true, an image is
+    /// removed from the context after the model has seen it (a text note is
+    /// left in its place; the file can be re-read).
+    pub strip_images_after_view: bool,
 }
 
 impl ProviderConfig {
@@ -33,7 +51,46 @@ impl ProviderConfig {
     #[must_use]
     pub fn provider_type(&self) -> &str {
         match &self.settings {
+            ProviderSettings::OpenAI(_) => "openai",
             ProviderSettings::LlamaCpp(_) => "llamacpp",
+        }
+    }
+
+    /// Look up a model's config by name. `None` if not in the list.
+    #[must_use]
+    pub fn model_config(&self, name: &str) -> Option<&ModelConfig> {
+        self.models.iter().find(|m| m.name == name)
+    }
+
+    /// The active model's config, falling back to the first model.
+    #[must_use]
+    pub fn active_model_config(&self) -> Option<&ModelConfig> {
+        self.model_config(&self.active_model)
+            .or_else(|| self.models.first())
+    }
+
+    /// The active model's context window (falls back to the first model, then 32768).
+    #[must_use]
+    pub fn active_context_window(&self) -> u32 {
+        self.active_model_config()
+            .map(|m| m.context_window)
+            .unwrap_or(32768)
+    }
+
+    /// The active model's vision flag (falls back to the first model, then true).
+    #[must_use]
+    pub fn active_vision(&self) -> bool {
+        self.active_model_config().map(|m| m.vision).unwrap_or(true)
+    }
+
+    /// Resolve a model's `(context_window, vision)` by name, falling back to
+    /// the given defaults when the model is not configured (e.g. a newly
+    /// discovered model that has not been added to `models` yet).
+    #[must_use]
+    pub fn model_config_or(&self, name: &str, default_ctx: u32) -> (u32, bool) {
+        match self.model_config(name) {
+            Some(m) => (m.context_window, m.vision),
+            None => (default_ctx, true),
         }
     }
 }
@@ -60,46 +117,114 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let model = obj
-            .get("model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("llama3.2")
-            .to_string();
-        let context_window = obj
-            .get("context_window")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(32768, |v| u32::try_from(v).unwrap_or(u32::MAX));
-        let vision = obj
-            .get("vision")
+        let strip_images_after_view = obj
+            .get("strip_images_after_view")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(false);
 
-        // Build settings based on `type` field (or default to llamacpp for legacy)
-        let settings = match obj
-            .get("type")
-            .and_then(|v| v.as_str())
-        {
+        // Determine the provider type and whether a legacy model block is
+        // present. A `type: llamacpp` config that still carries a model block
+        // (`models`/`active_model`/`model`/`context_window`/`vision`) is legacy
+        // and is migrated to `openai`. A `type: llamacpp` config with no model
+        // block is the new autodetecting provider. A no-type config is the
+        // oldest legacy shape and also migrates to `openai`.
+        let has_model_block = ["models", "active_model", "model", "context_window", "vision"]
+            .iter()
+            .any(|k| obj.get(*k).is_some());
+
+        let provider_is_llamacpp = match obj.get("type").and_then(|v| v.as_str()) {
+            Some("llamacpp") => !has_model_block,
+            _ => false,
+        };
+
+        // Build the models list. For the new `llamacpp` provider there is no
+        // model block — models are autodetected at runtime, so the list stays
+        // empty. For `openai`, prefer the `models` array; fall back to a single
+        // legacy `model`/`context_window`/`vision` entry for backward
+        // compatibility with pre-multi-model configs.
+        let models: Vec<ModelConfig> = if provider_is_llamacpp {
+            Vec::new()
+        } else if let Some(arr) = obj.get("models").and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|m| {
+                    let name = m.get("name")?.as_str()?.to_string();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let context_window = m
+                        .get("context_window")
+                        .and_then(serde_json::Value::as_u64)
+                        .map_or(32768, |v| u32::try_from(v).unwrap_or(u32::MAX));
+                    let vision = m
+                        .get("vision")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true);
+                    Some(ModelConfig {
+                        name,
+                        context_window,
+                        vision,
+                    })
+                })
+                .collect()
+        } else {
+            // Legacy: single top-level model entry.
+            let legacy_model = obj
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("llama3.2");
+            let legacy_ctx = obj
+                .get("context_window")
+                .and_then(serde_json::Value::as_u64)
+                .map_or(32768, |v| u32::try_from(v).unwrap_or(u32::MAX));
+            let legacy_vision = obj
+                .get("vision")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            vec![ModelConfig {
+                name: legacy_model.to_string(),
+                context_window: legacy_ctx,
+                vision: legacy_vision,
+            }]
+        };
+
+        // The active model: prefer the new `active_model` key, fall back to the
+        // legacy `model` key, then to the first configured model. For the new
+        // `llamacpp` provider this stays empty (resolved at startup from the
+        // server's loaded model).
+        let active_model = if provider_is_llamacpp {
+            String::new()
+        } else {
+            obj.get("active_model")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("model").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .unwrap_or_else(|| models.first().map(|m| m.name.clone()).unwrap_or_default())
+        };
+
+        // Build settings based on `type` field. `llamacpp` with a model block
+        // (or no type) migrates to `openai`; a bare `llamacpp` is the new
+        // autodetecting provider.
+        let settings = match obj.get("type").and_then(|v| v.as_str()) {
             Some("anthropic") => {
                 // Future: parse AnthropicSettings
-                return Err(D::Error::custom(
-                    "anthropic provider not yet implemented",
-                ));
+                return Err(D::Error::custom("anthropic provider not yet implemented"));
             }
-            Some("llamacpp") | None => {
+            Some("llamacpp") if provider_is_llamacpp => {
                 ProviderSettings::LlamaCpp(LlamaCppSettings { url, api_key })
             }
+            Some("openai" | "llamacpp") | None => {
+                ProviderSettings::OpenAI(OpenAISettings { url, api_key })
+            }
             Some(other) => {
-                return Err(D::Error::custom(format!(
-                    "unknown provider type: {other}"
-                )));
+                return Err(D::Error::custom(format!("unknown provider type: {other}")));
             }
         };
 
         Ok(ProviderConfig {
             settings,
-            model,
-            context_window,
-            vision,
+            active_model,
+            models,
+            strip_images_after_view,
         })
     }
 }
@@ -111,26 +236,39 @@ impl Serialize for ProviderConfig {
     {
         // Serialize as a flat object with `type` tag from the settings enum
         let mut map = serde_json::Map::new();
-        map.insert("type".to_string(), serde_json::Value::String(self.provider_type().to_string()));
+        map.insert(
+            "type".to_string(),
+            serde_json::Value::String(self.provider_type().to_string()),
+        );
 
-        // Add provider-specific fields
-        match &self.settings {
-            ProviderSettings::LlamaCpp(s) => {
-                let s_val = serde_json::to_value(s).map_err(S::Error::custom)?;
-                if let Some(obj) = s_val.as_object() {
-                    for (k, v) in obj {
-                        map.insert(k.clone(), v.clone());
-                    }
-                }
+        // Add provider-specific fields (both variants carry url + api_key).
+        let s_val = match &self.settings {
+            ProviderSettings::OpenAI(s) => serde_json::to_value(s),
+            ProviderSettings::LlamaCpp(s) => serde_json::to_value(s),
+        }
+        .map_err(S::Error::custom)?;
+        if let Some(obj) = s_val.as_object() {
+            for (k, v) in obj {
+                map.insert(k.clone(), v.clone());
             }
         }
 
-        map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
+        // The `llamacpp` provider autodetects its models at runtime, so it has
+        // no `active_model`/`models` in the config file. The `openai` provider
+        // persists them.
+        let is_llamacpp = matches!(self.settings, ProviderSettings::LlamaCpp(_));
+        if !is_llamacpp {
+            map.insert(
+                "active_model".to_string(),
+                serde_json::Value::String(self.active_model.clone()),
+            );
+            let models_val = serde_json::to_value(&self.models).map_err(S::Error::custom)?;
+            map.insert("models".to_string(), models_val);
+        }
         map.insert(
-            "context_window".to_string(),
-            serde_json::Value::Number(self.context_window.into()),
+            "strip_images_after_view".to_string(),
+            serde_json::Value::Bool(self.strip_images_after_view),
         );
-        map.insert("vision".to_string(), serde_json::Value::Bool(self.vision));
 
         map.serialize(serializer)
     }
@@ -342,13 +480,17 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             provider: ProviderConfig {
-                settings: ProviderSettings::LlamaCpp(LlamaCppSettings {
+                settings: ProviderSettings::OpenAI(OpenAISettings {
                     url: "http://localhost:8080".to_string(),
                     api_key: String::new(),
                 }),
-                model: "llama3.2".to_string(),
-                context_window: 32768,
-                vision: true,
+                active_model: "llama3.2".to_string(),
+                models: vec![ModelConfig {
+                    name: "llama3.2".to_string(),
+                    context_window: 32768,
+                    vision: true,
+                }],
+                strip_images_after_view: false,
             },
             compaction: CompactionConfig {
                 enabled: default_compaction_enabled(),
@@ -411,8 +553,22 @@ impl Config {
             .with_context(|| format!("Failed to parse config {}", path.display()))?;
         let needs_migration = raw.get("ui").is_none()
             || raw.get("rtk").is_none()
-            || raw.get("provider").and_then(|p| p.get("vision")).is_none()
-            || raw.get("compaction").and_then(|c| c.get("mode")).is_none();
+            || raw.get("provider").and_then(|p| p.get("models")).is_none()
+            || raw
+                .get("provider")
+                .and_then(|p| p.get("strip_images_after_view"))
+                .is_none()
+            || raw.get("compaction").and_then(|c| c.get("mode")).is_none()
+            // A `type: llamacpp` config that still carries a `models` block is
+            // legacy — it loads as `openai` and must be re-saved with the new
+            // `type`.
+            || {
+                let p = raw.get("provider");
+                p.and_then(|p| p.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("llamacpp")
+                    && p.and_then(|p| p.get("models")).is_some()
+            };
 
         let config: Self = serde_json::from_value(raw)
             .with_context(|| format!("Failed to parse config {}", path.display()))?;
@@ -439,11 +595,9 @@ impl Config {
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create config dir")?;
+            fs::create_dir_all(parent).context("Failed to create config dir")?;
         }
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = serde_json::to_string_pretty(self).context("Failed to serialize config")?;
         fs::write(&path, content)
             .with_context(|| format!("Failed to write config {}", path.display()))?;
         Ok(())
@@ -451,22 +605,35 @@ impl Config {
 
     /// Validate configuration values.
     ///
-    /// Checks that the provider URL starts with `http://` or `https://` and
-    /// that `context_window` is greater than zero.
+    /// Checks that the provider URL starts with `http://` or `https://`, that
+    /// at least one model is configured, and that every model has a context
+    /// window greater than zero. The `llamacpp` provider autodetects its
+    /// models, so it only requires a valid URL (no model check).
     ///
     /// # Errors
     ///
-    /// - Returns an error if `context_window` is zero.
+    /// - Returns an error if no models are configured (openai only).
+    /// - Returns an error if any model's `context_window` is zero (openai only).
     /// - Returns an error if the provider URL does not start with `http://` or `https://`.
     pub fn validate(&self) -> anyhow::Result<()> {
+        let is_llamacpp = matches!(self.provider.settings, ProviderSettings::LlamaCpp(_));
         let url = match &self.provider.settings {
+            ProviderSettings::OpenAI(s) => &s.url,
             ProviderSettings::LlamaCpp(s) => &s.url,
         };
 
-        if self.provider.context_window == 0 {
-            return Err(anyhow::anyhow!(
-                "context_window must be greater than 0"
-            ));
+        if !is_llamacpp {
+            if self.provider.models.is_empty() {
+                return Err(anyhow::anyhow!("at least one model must be configured"));
+            }
+            for model in &self.provider.models {
+                if model.context_window == 0 {
+                    return Err(anyhow::anyhow!(
+                        "model '{}' context_window must be greater than 0",
+                        model.name
+                    ));
+                }
+            }
         }
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(anyhow::anyhow!(
@@ -476,5 +643,3 @@ impl Config {
         Ok(())
     }
 }
-
-

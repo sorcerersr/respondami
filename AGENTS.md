@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1289 total)
+cargo test --workspace                         # all tests (1361 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1289 tests** (1064 root + 41 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1361 tests** (1133 root + 44 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -97,7 +97,7 @@ cargo test --workspace                       # all tests pass
 ### Skill Hooks (frontmatter `hooks:`)
 
 - Skill frontmatter `hooks:` load into `Skill.hooks` (`src/skills.rs`). Malformed entries → `SkillDiagnostic` warning, entry skipped; a bad hook never fails skill loading.
-- Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
+- Skill hooks fire **only while the skill is active**. They are registered on activation (agent-loop `activate_skill` into the local registry; TUI `SkillActivation` into `app.config.hook_registry`; `/skillname` via `App::activate_skill`) and re-derived from the skill files on session resume via `rebuild_hook_registry`. `register_skill_hooks` is idempotent (remove-then-add), so re-activation never double-fires and the TUI registry — the source every agent launch clones — always carries the active skills' hooks across compaction. `undo_turn_setup` re-syncs the registry to the restored skill set on rollback. `/new` clears them (directory hooks only); `reload_hooks` preserves them for the active set.
 - `ToolMatcher` (loader.rs) filters `PreToolUse`/`PostToolUse` skill hooks by tool name (case-insensitive regex). `None`/`*`/empty → `All`; a regex that fails to compile → `Never` (logged). A non-matching tool skips the hook entirely (no shell spawn, no TUI entry). Directory hooks are always `All`.
 - `execute_hook` sets `SKILL_NAME`/`SKILL_DIR` env vars for skill hooks only.
 - Model-context injection (G2): `UserPromptSubmit` and `PreToolUse` stdout are tail-appended to the user message / tool result the model sees (TUI stays clean; the augmented form is what's saved to the session and pushed to live context, so the byte-identical invariant holds). `PreCompact` stdout is captured into `App.pending_precompact_context` and appended to the compaction summary in `handle_compaction_result` (taken once, cleared on every outcome). `PostToolUse` stdout is injected as a separate, salient `user` message after the tool result (framed `[Hook instruction — <name>]`, persisted via `SaveHookInstruction`) — a blocked hook (exit 2) uses its stderr as the body, and a failed hook (other exit) injects nothing and logs a `warn!`. `format_hook_context` builds the `[hook: <name>]` blocks and skips empty stdout.
@@ -149,7 +149,8 @@ cargo test --workspace                       # all tests pass
 
 ### Token Usage Accumulation
 
-- Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests.
+- Uses max+delta pattern: takes max of each field within a request (deduplicates SSE usage events), adds only delta between requests. The live `↑` counter therefore converges to the **max `prompt_tokens`** of the session (it assumes the prompt cache serves the full prior prefix), not the raw sum of all requests.
+- Resume restores `cumulative_usage` from `SessionStore::cumulative_usage()` = (max prompt, sum completions) — the live counter's semantics, so the status bar shows the pre-close value after resume. The stats dialog's `With prompt caching` section uses the same per-session max math (sum of per-session maxes); its `Raw (no caching)` section shows the raw sums. Real `cached_tokens` from the provider is a deferred improvement (see `todo.md`).
 - `reset_request_usage()` is turn-level (preserves `input_tokens` for within-turn delta accounting); session boundaries (new session, resume) must use `SessionState::reset_for_new_session()` which zeroes everything — reusing the turn-level reset leaks stale context percentages into a fresh session (the `max()` never corrects it).
 - `estimate_context_tokens()` prefers actual LLM `prompt_tokens` from last Assistant message, falls back to char estimates + system overhead.
 - The calibrated `TokenEstimator` (`src/agent/token_estimation.rs`) is the single source of truth for all token estimation (status bar, streaming fallback, tok/s tracker, VCC compaction). It calibrates `chars_per_token` from the last assistant `prompt_tokens` (clamped [2.0, 8.0]). The LLM compaction path is the one exception — it keeps the `len/4` heuristic for byte-stable behavior.
@@ -168,6 +169,10 @@ cargo test --workspace                       # all tests pass
 
 - JSONL format with fsync on every append. Session header on line 1, messages appended.
 - `apply_compaction()` rewrites the entire file, clears usage data from kept Assistant messages to prevent stale `prompt_tokens` from triggering double compaction.
+
+### Test Session Pollution
+
+- `App::new(config, cwd)` points the session store at `cwd/.respondami/sessions`. Tests that reach `create_session` (directly, or via `start_turn`/`run_turn_with_input` past the compaction guard) must re-point `app.session.session_store` at a `tempfile` dir after construction, or they write header-only session files into the real project dir. The mtime-sorted `/resume` dialog then shows them on top of real sessions (0 messages, empty name; resuming one lands on the welcome screen).
 
 ## File Map
 
@@ -323,19 +328,19 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (1060 tests)
+### Root Crate Tests (1133 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
-| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing        |
+| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing, image strip (`image_removal_note`/`strip_images_from_tool`/`strip_seen_images`)        |
 | `src/agent/token_estimation_tests.rs`         | Token estimation from messages                          |
-| `src/agent_events_tests.rs`                   | Agent event processing edge cases                       |
+| `src/agent_events_tests.rs`                   | Agent event processing edge cases, `StripImages` handler  |
 | `src/agents_md_tests.rs`                      | AGENTS.md loading and parsing                           |
 | `src/commands_tests.rs`                       | Command palette commands                                |
-| `src/config_tests.rs`                         | Config loading and validation                           |
+| `src/config_tests.rs`                         | Config loading and validation, `strip_images_after_view` default/parse  |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
-| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, `poll_compaction_task` (not finished / idle / pending-turn launch) |
-| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability |
+| `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, post-compaction image strip, `poll_compaction_task` (not finished / idle / pending-turn launch) |
+| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability, strip one-time drift |
 | `src/image_tests.rs`                          | MIME sniff, process_image (png/jpeg/gif/webp), animated-GIF reject, resize, token estimate |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
@@ -359,7 +364,7 @@ cargo test --workspace                       # all tests pass
 | `src/session/compaction/vcc/rank_tests.rs`      | VCC block scoring + ranked selection                   |
 | `src/session/compaction/vcc/merge_tests.rs`     | VCC merge_previous, strip_active_skills                |
 | `src/session/entry_tests.rs`                  | Session entry serialization                             |
-| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage      |
+| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage, `strip_tool_images`  |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
 | `src/sse_debug_tests.rs`                      | SSE debug utilities                                     |
 | `src/tools/activate_skill_tests.rs`           | activate_skill tool                                     |

@@ -457,10 +457,16 @@ impl SessionStore {
         None
     }
 
-    /// Sum token usage from all saved Assistant messages in the session.
-    /// Returns `(total_input_tokens, total_output_tokens)` for tracker restoration.
+    /// Cumulative token usage matching the live status-bar counter.
+    ///
+    /// Returns `(max prompt_tokens, sum completion_tokens)`. The input side
+    /// is the max, not the sum: the live counter (`App::accumulate_token_usage`)
+    /// uses a max+delta pattern that converges to the largest prompt observed,
+    /// implicitly assuming the provider's prompt cache serves the entire prior
+    /// prefix. Restoring the raw sum on resume would show a many-times-larger
+    /// value than the pre-close counter.
     #[must_use]
-    pub fn total_usage(&self) -> (u32, u32) {
+    pub fn cumulative_usage(&self) -> (u32, u32) {
         let mut input: u32 = 0;
         let mut output: u32 = 0;
         for entry in &self.entries {
@@ -468,7 +474,7 @@ impl SessionStore {
                 && let AgentMessage::Assistant { usage, .. } = message
                 && let Some(u) = usage.as_ref()
             {
-                input += u.prompt_tokens;
+                input = input.max(u.prompt_tokens);
                 output += u.completion_tokens;
             }
         }
@@ -702,6 +708,47 @@ impl SessionStore {
 
         let messages_removed = (messages_before.saturating_sub(messages_after)) as u32;
         Ok((tokens_before, self.estimate_token_count(), messages_removed))
+    }
+
+    /// Strip images from the tool results with the given IDs, appending a
+    /// removal note to each result (`strip_images_after_view` workaround).
+    ///
+    /// Uses the same transform as the agent loop's live-context strip
+    /// ([`crate::agent::strip_images_from_tool`]), so session and live
+    /// context stay byte-identical. Rewrites the session file (atomic);
+    /// no-op when none of the IDs carry images.
+    ///
+    /// # Errors
+    ///
+    /// - I/O errors when rewriting the session file to disk.
+    pub fn strip_tool_images(&mut self, tool_call_ids: &[String]) -> anyhow::Result<()> {
+        let mut changed = false;
+        for entry in &mut self.entries {
+            let should_strip = matches!(
+                entry,
+                SessionEntry::Message {
+                    message: AgentMessage::Tool {
+                        tool_call_id, images, ..
+                    },
+                    ..
+                } if !images.is_empty() && tool_call_ids.iter().any(|id| id == tool_call_id)
+            );
+            if should_strip
+                && let SessionEntry::Message { message, .. } = entry
+            {
+                *message = crate::agent::strip_images_from_tool(message);
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        self.recompute_context_cache();
+        if let Some(ref path) = self.current_session_path {
+            self.rewrite_session_file(path)
+        } else {
+            Ok(())
+        }
     }
 
     /// Rewrite the entire session file from memory.

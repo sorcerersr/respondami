@@ -15,6 +15,7 @@ pub enum PopupType {
     Help,
     TokenStats,
     CompactKeepPrompt,
+    ModelSelect,
 }
 
 /// Application states.
@@ -35,6 +36,8 @@ pub enum AppState {
     TokenStatsDialog,
     /// Keep-N prompt for manual compaction (from the command palette).
     CompactKeepPrompt,
+    /// Model selection popup (from the command palette or `/model` command).
+    ModelSelect,
 }
 
 use super::editor::FileMatch;
@@ -56,5 +59,3 @@ pub enum AutocompleteMode {
         scroll_offset: usize,
     },
 }
-
-

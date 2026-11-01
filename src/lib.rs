@@ -11,8 +11,8 @@ pub mod commands;
 pub mod config;
 pub mod context;
 pub mod event_loop;
-pub mod hooks;
 pub mod history_guard;
+pub mod hooks;
 pub mod image;
 pub mod key_handler;
 pub mod logging;
@@ -23,8 +23,8 @@ pub mod session;
 pub mod skills;
 pub mod sse_debug;
 pub mod tools;
-pub mod turn;
 pub mod tui;
+pub mod turn;
 
 #[cfg(test)]
 mod agent_events_tests;
@@ -45,25 +45,25 @@ mod logging_tests;
 #[cfg(test)]
 mod project_dir_tests;
 #[cfg(test)]
-mod sse_debug_tests;
-#[cfg(test)]
 mod skills_tests;
+#[cfg(test)]
+mod sse_debug_tests;
 #[cfg(test)]
 mod turn_tests;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crossterm::event::{Event, KeyEventKind, MouseEventKind, EventStream,
-    KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
+use crossterm::event::{
+    Event, EventStream, KeyEventKind, KeyboardEnhancementFlags, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use futures_util::StreamExt;
-use tokio::time::sleep;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::Terminal;
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::tui::{App, AppState, Theme};
@@ -97,31 +97,51 @@ pub async fn run() -> anyhow::Result<()> {
     let config = Config::load()?;
     tracing::info!("Config loaded");
 
-    // Check endpoint (non-blocking, result shown as system message via oneshot)
-    let provider = crate::provider::Provider::from_settings(&config.provider.settings);
-    let endpoint_model = config.provider.model.clone();
+    // Check endpoint (non-blocking, result shown as system message via oneshot).
+    // `llamacpp` skips the ping: it can't run without a resolved model name, and
+    // the startup model fetch is itself the reachability check (its failure is
+    // surfaced as a system message by the main loop).
+    let is_llamacpp = matches!(
+        config.provider.settings,
+        crate::provider::ProviderSettings::LlamaCpp(_)
+    );
     let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
-    let endpoint_check = tokio::spawn(async move {
-        let result = match provider {
-            Ok(p) => match p.ping(&endpoint_model).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(format!("LLM endpoint unreachable: {e}")),
-            },
-            Err(e) => Err(format!("Provider not configured: {e}")),
-        };
-        if let Err(ref msg) = result {
-            tracing::warn!("{}", msg);
-        }
-        let _ = endpoint_tx.send(result);
-    });
+    let mut endpoint_check: Option<tokio::task::JoinHandle<()>> = None;
+    if is_llamacpp {
+        // No ping for llamacpp; drop the sender so the receiver is `Closed`
+        // (the main loop treats a closed endpoint channel as "no check").
+        drop(endpoint_tx);
+    } else {
+        let provider = crate::provider::Provider::from_settings(&config.provider.settings);
+        let endpoint_model = config.provider.active_model.clone();
+        endpoint_check = Some(tokio::spawn(async move {
+            let result = match provider {
+                Ok(p) => match p.ping(&endpoint_model).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(format!("LLM endpoint unreachable: {e}")),
+                },
+                Err(e) => Err(format!("Provider not configured: {e}")),
+            };
+            if let Err(ref msg) = result {
+                tracing::warn!("{msg}");
+            }
+            let _ = endpoint_tx.send(result);
+        }));
+    }
 
     // Get CWD
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     // Setup terminal — enter raw mode first to disable echo and canonical mode.
     crossterm::terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen,
-        crossterm::style::SetBackgroundColor(crossterm::style::Color::Rgb { r: 0x15, g: 0x1B, b: 0x23 }),
+    execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        crossterm::style::SetBackgroundColor(crossterm::style::Color::Rgb {
+            r: 0x15,
+            g: 0x1B,
+            b: 0x23
+        }),
     )?;
     // Enable bracketed paste — terminal sends paste as structured Event::Paste.
     execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
@@ -147,6 +167,13 @@ pub async fn run() -> anyhow::Result<()> {
     // Store the endpoint-check receiver on the app; the main loop polls it
     // with `try_recv` each iteration so a slow check's result is still shown.
     app.endpoint_rx = Some(endpoint_rx);
+
+    // `llamacpp` autodetection: spawn the non-blocking startup model fetch.
+    // Resolves the active model to the server's loaded model (first loaded,
+    // else first unknown, else first). The result is polled in the main loop
+    // and applied via `apply_fetched_models(keep_current = false)`. No-op for
+    // the `openai` provider.
+    app.spawn_model_fetch(false);
 
     // Async event stream — proper tokio integration, no background threads.
     let mut events = EventStream::new();
@@ -178,9 +205,9 @@ pub async fn run() -> anyhow::Result<()> {
             let handle = app.token_stats_task.take().unwrap();
             match handle.await {
                 Ok(result) => app.modal.token_stats = Some(result),
-                Err(_) => app.modal.token_stats = Some(Err(
-                    "token stats task panicked".to_string(),
-                )),
+                Err(_) => {
+                    app.modal.token_stats = Some(Err("token stats task panicked".to_string()));
+                }
             }
         }
 
@@ -208,6 +235,33 @@ pub async fn run() -> anyhow::Result<()> {
             Some(Err(tokio::sync::oneshot::error::TryRecvError::Empty)) => {
                 // Not yet sent; keep polling next iteration.
             }
+            None => {}
+        }
+
+        // Poll the in-flight model-list fetch (llamacpp autodetection).
+        // `Empty` = not yet sent, keep polling; `Closed` = sender dropped,
+        // stop. The owned result is captured first so the mutable borrow of
+        // `app` is released before we mutate it.
+        let model_outcome = app
+            .model_fetch
+            .as_mut()
+            .map(|(rx, _)| tokio::sync::oneshot::Receiver::try_recv(rx));
+        match model_outcome {
+            Some(Ok(Ok(models))) => {
+                let keep_current = app.model_fetch.as_ref().map(|(_, k)| *k).unwrap_or(false);
+                app.model_fetch = None;
+                app.apply_fetched_models(models, keep_current);
+            }
+            Some(Ok(Err(msg))) => {
+                // The fetch failed (server down); surface it as a warning. This
+                // is the llamacpp reachability signal (the ping is skipped).
+                app.model_fetch = None;
+                app.add_system_message(&format!("⚠ {msg}"));
+            }
+            Some(Err(tokio::sync::oneshot::error::TryRecvError::Closed)) => {
+                app.model_fetch = None;
+            }
+            Some(Err(tokio::sync::oneshot::error::TryRecvError::Empty)) => {}
             None => {}
         }
 
@@ -239,7 +293,8 @@ pub async fn run() -> anyhow::Result<()> {
 
                     // If user cancelled during compaction (Esc/Ctrl+C), abort
                     // the background task and roll back any deferred turn.
-                    if was_compacting && app.modal.state != AppState::Compacting
+                    if was_compacting
+                        && app.modal.state != AppState::Compacting
                         && let Some(task) = app.compaction_task.take()
                     {
                         task.abort();
@@ -249,8 +304,14 @@ pub async fn run() -> anyhow::Result<()> {
                     }
                 }
                 Event::Paste(text) => {
-                    let text: String = text.chars().filter(|c| !c.is_control() || *c == '\n').take(10_000).collect();
-                    app.editor.input_buffer.insert_str(app.editor.cursor_pos, &text);
+                    let text: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() || *c == '\n')
+                        .take(10_000)
+                        .collect();
+                    app.editor
+                        .input_buffer
+                        .insert_str(app.editor.cursor_pos, &text);
                     app.editor.cursor_pos += text.len();
                     app.chat.scroll_to_bottom();
                 }
@@ -278,21 +339,28 @@ pub async fn run() -> anyhow::Result<()> {
 /// Tear down the terminal after a quit request.
 ///
 /// Shared by the Ctrl+D path and a quit triggered while a deferred turn
-/// is running. Awaits the endpoint check task so its result is logged
-/// before shutdown.
+/// is running. Awaits the endpoint check task (if any) so its result is
+/// logged before shutdown. `llamacpp` has no endpoint check (the model fetch
+/// is the reachability signal), so the handle is `None`.
 ///
 /// # Errors
 ///
 /// - Terminal restore commands fail if the terminal is already gone.
 async fn shutdown_terminal(
-    endpoint_check: tokio::task::JoinHandle<()>,
+    endpoint_check: Option<tokio::task::JoinHandle<()>>,
 ) -> anyhow::Result<()> {
     execute!(std::io::stdout(), crate::mouse::DisableMouseScroll)?;
     execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
     execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
-    execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::style::ResetColor)?;
+    execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::style::ResetColor
+    )?;
     let _ = crossterm::terminal::disable_raw_mode();
-    endpoint_check.await.ok();
+    if let Some(handle) = endpoint_check {
+        handle.await.ok();
+    }
     tracing::info!("Quitting respondami");
     Ok(())
 }

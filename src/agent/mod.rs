@@ -364,6 +364,17 @@ pub async fn run_agent_with_snapshot(
             break;
         }
 
+        // Image strip (opt-in `strip_images_after_view`): the model has now
+        // seen every image in the context (each was in the request it just
+        // answered). Swap them for removal notes so the next request is
+        // text-only and hits the provider's prefix cache. New images are
+        // pushed during tool execution below — after this point — so a
+        // blanket strip is safe. The one-time prefix break is deliberate;
+        // the history guard's drift warning for the next request is expected.
+        if config.provider.strip_images_after_view {
+            strip_seen_images(&mut current_context, &mut context_digests, &tx).await;
+        }
+
         // Reasoning-only response: model thought but produced no visible output.
         // Don't save empty assistant message to session (would corrupt context).
         // End the turn normally — reasoning was already displayed to the user.
@@ -742,8 +753,11 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     };
 
     // Vision gate: drop image attachments when the model can't see them.
-    let (final_result, tool_images) =
-        apply_vision_gate(ctx.config.provider.vision, final_result, tool_images);
+    let (final_result, tool_images) = apply_vision_gate(
+        ctx.config.provider.active_vision(),
+        final_result,
+        tool_images,
+    );
 
     // Run PostToolUse hooks (only for successful tool calls). These are
     // side effects; their stdout never reaches the model. A blocked hook
@@ -856,6 +870,43 @@ async fn execute_tool_call(ctx: &mut ToolCallCtx<'_>, tc: &ToolCall) -> ToolCall
     ctx.context_digests.push(tool_digest);
 
     ToolCallOutcome::Continue
+}
+
+/// Strip all images from the live context: the model has seen them all in
+/// the request it just answered. Each image is replaced by a removal note in
+/// the tool result (via [`strip_images_from_tool`]) and the message's digest
+/// is recomputed so the parallel digest list stays in lockstep.
+///
+/// Emits [`AgentEvent::StripImages`] so the TUI applies the identical
+/// transform to the session (JSONL rewrite). No event is emitted when there
+/// is nothing to strip.
+async fn strip_seen_images(
+    context: &mut [AgentMessage],
+    digests: &mut [MessageDigest],
+    tx: &mpsc::Sender<AgentEvent>,
+) {
+    let mut stripped_ids: Vec<String> = Vec::new();
+    for (i, msg) in context.iter_mut().enumerate() {
+        if let AgentMessage::Tool {
+            images,
+            tool_call_id,
+            ..
+        } = msg
+            && !images.is_empty()
+        {
+            let id = tool_call_id.clone();
+            *msg = strip_images_from_tool(msg);
+            digests[i] = message_digest(msg);
+            stripped_ids.push(id);
+        }
+    }
+    if !stripped_ids.is_empty() {
+        let _ = tx
+            .send(AgentEvent::StripImages {
+                tool_call_ids: stripped_ids,
+            })
+            .await;
+    }
 }
 
 /// Push the assistant+tool message pair for an already-persisted tool call
@@ -983,6 +1034,57 @@ pub(crate) fn apply_vision_gate(
         )
     } else {
         (content, images)
+    }
+}
+
+/// Build the removal note left in a tool result after its image is stripped
+/// from the context (`strip_images_after_view` workaround).
+///
+/// Pure and deterministic: the same inputs always produce the same bytes, so
+/// the agent loop and the TUI (session rewrite) can never diverge.
+#[must_use]
+pub(crate) fn image_removal_note(path: &str, width: u32, height: u32) -> String {
+    format!("[image removed: {path} ({width}x{height}). Re-read to view again.]")
+}
+
+/// The stripped form of a tool message that carries images: `images` cleared
+/// and one removal note per image appended to `result`.
+///
+/// Non-tool messages and tool messages without images are returned unchanged
+/// (cloned). The `path` for each note comes from the tool call's `path`
+/// argument; dimensions come from the [`crate::image::ImageContent`].
+#[must_use]
+pub(crate) fn strip_images_from_tool(msg: &AgentMessage) -> AgentMessage {
+    let AgentMessage::Tool {
+        tool_call_id,
+        tool_name,
+        tool_arguments,
+        result,
+        images,
+    } = msg
+    else {
+        return msg.clone();
+    };
+    if images.is_empty() {
+        return msg.clone();
+    }
+    let mut new_result = result.clone();
+    for img in images {
+        let path = tool_arguments
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        new_result.push_str(&format!(
+            "\n{}",
+            image_removal_note(path, img.width, img.height)
+        ));
+    }
+    AgentMessage::Tool {
+        tool_call_id: tool_call_id.clone(),
+        tool_name: tool_name.clone(),
+        tool_arguments: tool_arguments.clone(),
+        result: new_result,
+        images: Vec::new(),
     }
 }
 

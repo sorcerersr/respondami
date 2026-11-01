@@ -3,542 +3,560 @@
 
 use super::*;
 
-use crate::provider::{ChatChunk, ChatRequest, CompletionResponse, Provider, ProviderError, ProviderTrait};
+use crate::provider::{
+    ChatChunk, ChatRequest, CompletionResponse, Provider, ProviderError, ProviderTrait,
+};
 use crate::skills::{Skill, SkillSource};
 use async_trait::async_trait;
 use tempfile::TempDir;
 
-    fn make_message_entry(content: &str, role: &str) -> SessionEntry {
-        let message = match role {
-            "user" => AgentMessage::User { content: content.to_string() },
-            "assistant" => AgentMessage::Assistant {
-                content: vec![ContentBlock::Text { text: content.to_string() }],
-                usage: None,
-            },
-            "system" => AgentMessage::System { content: content.to_string() },
-            "tool" => AgentMessage::Tool {
-                tool_call_id: "call_1".to_string(),
-                tool_name: "test".to_string(),
-                tool_arguments: serde_json::json!({}),
-                result: content.to_string(),
-                images: Vec::new(),
-            },
-            _ => panic!("unknown role: {role}"),
-        };
-        SessionEntry::new_message(None, message)
-    }
+fn make_message_entry(content: &str, role: &str) -> SessionEntry {
+    let message = match role {
+        "user" => AgentMessage::User {
+            content: content.to_string(),
+        },
+        "assistant" => AgentMessage::Assistant {
+            content: vec![ContentBlock::Text {
+                text: content.to_string(),
+            }],
+            usage: None,
+        },
+        "system" => AgentMessage::System {
+            content: content.to_string(),
+        },
+        "tool" => AgentMessage::Tool {
+            tool_call_id: "call_1".to_string(),
+            tool_name: "test".to_string(),
+            tool_arguments: serde_json::json!({}),
+            result: content.to_string(),
+            images: Vec::new(),
+        },
+        _ => panic!("unknown role: {role}"),
+    };
+    SessionEntry::new_message(None, message)
+}
 
-    fn make_compaction_entry() -> SessionEntry {
-        SessionEntry::new_compaction(
+fn make_compaction_entry() -> SessionEntry {
+    SessionEntry::new_compaction(
+        None,
+        "Previous summary".to_string(),
+        "kept_1".to_string(),
+        10000,
+    )
+}
+
+#[test]
+fn find_cut_point_basic() {
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Hello", "user"),
+        make_message_entry("Hi there", "assistant"),
+        make_message_entry("How are you?", "user"),
+        make_message_entry("I'm fine", "assistant"),
+    ];
+
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
+    assert!(cut.is_some());
+    assert!(cut.unwrap() >= 1);
+}
+
+#[test]
+fn find_cut_point_stops_at_compaction_boundary() {
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Old message 1", "user"),
+        make_message_entry("Old response 1", "assistant"),
+        make_compaction_entry(),
+        make_message_entry("New message 1", "user"),
+        make_message_entry("New response 1", "assistant"),
+    ];
+
+    // Should stop at compaction boundary (index 3)
+    let cut = LlmCompaction::find_cut_point(&entries, 4, 6, 100000);
+    assert!(cut.is_none() || cut.unwrap() >= 4);
+}
+
+#[test]
+fn find_cut_point_skips_tool_results() {
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Run this", "user"),
+        make_message_entry("", "assistant"),
+        make_message_entry("tool output", "tool"),
+        make_message_entry("Done", "assistant"),
+    ];
+
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
+    if let Some(cut_idx) = cut {
+        assert_ne!(cut_idx, 3, "should not cut at tool result");
+    }
+}
+
+#[test]
+fn extract_file_operations_reads_and_writes() {
+    let read_args = serde_json::json!({"path": "src/main.rs"});
+    let write_args = serde_json::json!({"path": "src/lib.rs"});
+
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        SessionEntry::new_message(
             None,
-            "Previous summary".to_string(),
-            "kept_1".to_string(),
-            10000,
-        )
-    }
-
-    #[test]
-    fn find_cut_point_basic() {
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Hello", "user"),
-            make_message_entry("Hi there", "assistant"),
-            make_message_entry("How are you?", "user"),
-            make_message_entry("I'm fine", "assistant"),
-        ];
-
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
-        assert!(cut.is_some());
-        assert!(cut.unwrap() >= 1);
-    }
-
-    #[test]
-    fn find_cut_point_stops_at_compaction_boundary() {
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Old message 1", "user"),
-            make_message_entry("Old response 1", "assistant"),
-            make_compaction_entry(),
-            make_message_entry("New message 1", "user"),
-            make_message_entry("New response 1", "assistant"),
-        ];
-
-        // Should stop at compaction boundary (index 3)
-        let cut = LlmCompaction::find_cut_point(&entries, 4, 6, 100000);
-        assert!(cut.is_none() || cut.unwrap() >= 4);
-    }
-
-    #[test]
-    fn find_cut_point_skips_tool_results() {
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Run this", "user"),
-            make_message_entry("", "assistant"),
-            make_message_entry("tool output", "tool"),
-            make_message_entry("Done", "assistant"),
-        ];
-
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
-        if let Some(cut_idx) = cut {
-            assert_ne!(cut_idx, 3, "should not cut at tool result");
-        }
-    }
-
-    #[test]
-    fn extract_file_operations_reads_and_writes() {
-        let read_args = serde_json::json!({"path": "src/main.rs"});
-        let write_args = serde_json::json!({"path": "src/lib.rs"});
-
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            SessionEntry::new_message(
-                None,
-                AgentMessage::Assistant {
-                    content: vec![
-                        crate::session::ContentBlock::ToolCall { tool_call: ToolCall {
+            AgentMessage::Assistant {
+                content: vec![
+                    crate::session::ContentBlock::ToolCall {
+                        tool_call: ToolCall {
                             id: "call_1".to_string(),
                             name: "read".to_string(),
                             arguments: read_args,
-                        }},
-                        crate::session::ContentBlock::ToolCall { tool_call: ToolCall {
+                        },
+                    },
+                    crate::session::ContentBlock::ToolCall {
+                        tool_call: ToolCall {
                             id: "call_2".to_string(),
                             name: "write".to_string(),
                             arguments: write_args,
-                        }},
-                    ],
-                    usage: None,
-                },
-            ),
-            make_message_entry("result", "user"),
-        ];
+                        },
+                    },
+                ],
+                usage: None,
+            },
+        ),
+        make_message_entry("result", "user"),
+    ];
 
-        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 3);
-        assert_eq!(read_files, vec!["src/main.rs"]);
-        assert_eq!(modified_files, vec!["src/lib.rs"]);
-    }
+    let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 3);
+    assert_eq!(read_files, vec!["src/main.rs"]);
+    assert_eq!(modified_files, vec!["src/lib.rs"]);
+}
 
-    #[test]
-    fn extract_file_operations_edit_goes_to_modified() {
-        let edit_args = serde_json::json!({"path": "src/edit.rs", "oldText": "a", "newText": "b"});
+#[test]
+fn extract_file_operations_edit_goes_to_modified() {
+    let edit_args = serde_json::json!({"path": "src/edit.rs", "oldText": "a", "newText": "b"});
 
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            SessionEntry::new_message(
-                None,
-                AgentMessage::Assistant {
-                    content: vec![
-                        crate::session::ContentBlock::ToolCall { tool_call: ToolCall {
-                            id: "call_1".to_string(),
-                            name: "edit".to_string(),
-                            arguments: edit_args,
-                        }},
-                    ],
-                    usage: None,
-                },
-            ),
-        ];
-
-        let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 2);
-        assert_eq!(read_files, [] as [String; 0]);
-        assert_eq!(modified_files, vec!["src/edit.rs"]);
-    }
-
-    #[test]
-    fn summarize_prompt_includes_previous_summary() {
-        let prompt = LlmCompaction::summarization_user_prompt(
-            "[User] hello\n[Assistant] hi",
-            Some("## Goal\nBuild a CLI app"),
-            4096,
-        );
-        assert!(prompt.contains("<previous-summary>"));
-        assert!(prompt.contains("Build a CLI app"));
-        assert!(prompt.contains("<conversation>"));
-        assert!(prompt.contains("[User] hello"));
-    }
-
-    #[test]
-    fn summarize_prompt_without_previous_summary() {
-        let prompt = LlmCompaction::summarization_user_prompt(
-            "[User] hello",
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        SessionEntry::new_message(
             None,
-            4096,
-        );
-        assert!(!prompt.contains("<previous-summary>"));
-        assert!(prompt.contains("<conversation>"));
-        assert!(prompt.contains("## Goal"));
-    }
+            AgentMessage::Assistant {
+                content: vec![crate::session::ContentBlock::ToolCall {
+                    tool_call: ToolCall {
+                        id: "call_1".to_string(),
+                        name: "edit".to_string(),
+                        arguments: edit_args,
+                    },
+                }],
+                usage: None,
+            },
+        ),
+    ];
 
-    #[test]
-    fn find_cut_point_by_count_splits_half() {
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Message 1", "user"),
-            make_message_entry("Response 1", "assistant"),
-            make_message_entry("Message 2", "user"),
-            make_message_entry("Response 2", "assistant"),
-            make_message_entry("Message 3", "user"),
-            make_message_entry("Response 3", "assistant"),
-        ];
+    let (read_files, modified_files) = LlmCompaction::extract_file_operations(&entries, 2);
+    assert_eq!(read_files, [] as [String; 0]);
+    assert_eq!(modified_files, vec!["src/edit.rs"]);
+}
 
-        // 6 messages (indices 1-6), should split at midpoint (index 4)
-        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
-        assert_eq!(cut, Some(4)); // Compact entries 1-3, keep entries 4-6
-    }
+#[test]
+fn summarize_prompt_includes_previous_summary() {
+    let prompt = LlmCompaction::summarization_user_prompt(
+        "[User] hello\n[Assistant] hi",
+        Some("## Goal\nBuild a CLI app"),
+        4096,
+    );
+    assert!(prompt.contains("<previous-summary>"));
+    assert!(prompt.contains("Build a CLI app"));
+    assert!(prompt.contains("<conversation>"));
+    assert!(prompt.contains("[User] hello"));
+}
 
-    #[test]
-    fn find_cut_point_by_count_too_few_entries() {
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Only message", "user"),
-        ];
+#[test]
+fn summarize_prompt_without_previous_summary() {
+    let prompt = LlmCompaction::summarization_user_prompt("[User] hello", None, 4096);
+    assert!(!prompt.contains("<previous-summary>"));
+    assert!(prompt.contains("<conversation>"));
+    assert!(prompt.contains("## Goal"));
+}
 
-        // Only 1 message, can't meaningfully compact
-        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 2);
-        assert_eq!(cut, None);
-    }
+#[test]
+fn find_cut_point_by_count_splits_half() {
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Message 1", "user"),
+        make_message_entry("Response 1", "assistant"),
+        make_message_entry("Message 2", "user"),
+        make_message_entry("Response 2", "assistant"),
+        make_message_entry("Message 3", "user"),
+        make_message_entry("Response 3", "assistant"),
+    ];
 
-    #[test]
-    fn find_cut_point_by_count_excludes_tool_results() {
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Run this", "user"),
-            make_message_entry("", "assistant"),
-            make_message_entry("tool output", "tool"),
-            make_message_entry("Done", "assistant"),
-            make_message_entry("Next", "user"),
-            make_message_entry("Final", "assistant"),
-        ];
+    // 6 messages (indices 1-6), should split at midpoint (index 4)
+    let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
+    assert_eq!(cut, Some(4)); // Compact entries 1-3, keep entries 4-6
+}
 
-        // Valid cuts: 1(user), 2(assistant), 4(assistant), 5(user), 6(assistant)
-        // Tool result at index 3 is excluded
-        // Midpoint of 5 valid cuts = index 2, so cut at valid_cuts[2] = 4
-        let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
-        assert_eq!(cut, Some(4));
-    }
+#[test]
+fn find_cut_point_by_count_too_few_entries() {
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Only message", "user"),
+    ];
 
-    #[test]
-    fn find_cut_point_off_by_one_fixed() {
-        // Test that when threshold is hit, we return i+1, not i
-        // NOTE: The caller (compute_compaction/perform) enforces MIN_KEEP_MESSAGES
-        // floor to prevent this from compacting everything in practice.
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("A", "user"),         // index 1, 0 tokens (1/4=0)
-            make_message_entry("BBBB", "assistant"), // index 2, 1 token
-            make_message_entry("CCCCCCCC", "user"),  // index 3, 2 tokens
-            make_message_entry("DDDDDDDD", "assistant"), // index 4, 2 tokens
-        ];
+    // Only 1 message, can't meaningfully compact
+    let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 2);
+    assert_eq!(cut, None);
+}
 
-        // keep_recent_tokens = 2
-        // Walk: index 4 (2 tokens, accumulated=2 >= 2) → return min(4+1, 5) = 5
-        // This means keep from index 5 onward (nothing), compact 1-4
-        // But wait, 5 >= end_index (5), so this means keep nothing and compact everything.
-        // Actually min(5, 5) = 5, which means "keep from index 5" = keep nothing.
-        // The cut point is the FIRST entry to KEEP, so cut=5 means keep entries 5..5 = empty.
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
-        assert_eq!(cut, Some(5)); // Compact everything (keep nothing from the range)
+#[test]
+fn find_cut_point_by_count_excludes_tool_results() {
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Run this", "user"),
+        make_message_entry("", "assistant"),
+        make_message_entry("tool output", "tool"),
+        make_message_entry("Done", "assistant"),
+        make_message_entry("Next", "user"),
+        make_message_entry("Final", "assistant"),
+    ];
 
-        // With a higher threshold, we should keep some entries
-        // keep_recent_tokens = 3
-        // Walk: index 4 (2 tokens, acc=2 < 3), index 3 (2 tokens, acc=4 >= 3) → return min(3+1, 5) = 4
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 3);
-        assert_eq!(cut, Some(4)); // Keep entry 4, compact entries 1-3
-    }
+    // Valid cuts: 1(user), 2(assistant), 4(assistant), 5(user), 6(assistant)
+    // Tool result at index 3 is excluded
+    // Midpoint of 5 valid cuts = index 2, so cut at valid_cuts[2] = 4
+    let cut = LlmCompaction::find_cut_point_by_count(&entries, 1, 7);
+    assert_eq!(cut, Some(4));
+}
 
-    #[test]
-    fn find_cut_point_advances_past_orphaned_tool_result() {
-        // Regression (M-6): the budget-crossing entry is an assistant tool-call
-        // and i+1 lands on its tool result. The cut must advance to the next
-        // non-Tool entry so the kept prefix never starts with an orphan.
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Y", "user"),          // index 1, 0 tokens
-            make_message_entry("XXXX", "assistant"),  // index 2, 1 token (tool-call)
-            make_message_entry("tool output", "tool"), // index 3, skipped in walk
-            make_message_entry("B", "user"),          // index 4, 0 tokens
-            make_message_entry("C", "assistant"),     // index 5, 0 tokens
-        ];
+#[test]
+fn find_cut_point_off_by_one_fixed() {
+    // Test that when threshold is hit, we return i+1, not i
+    // NOTE: The caller (compute_compaction/perform) enforces MIN_KEEP_MESSAGES
+    // floor to prevent this from compacting everything in practice.
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("A", "user"), // index 1, 0 tokens (1/4=0)
+        make_message_entry("BBBB", "assistant"), // index 2, 1 token
+        make_message_entry("CCCCCCCC", "user"), // index 3, 2 tokens
+        make_message_entry("DDDDDDDD", "assistant"), // index 4, 2 tokens
+    ];
 
-        // keep=1: walk i=5 (0), i=4 (0), i=3 (tool, skip), i=2 (1 >= 1)
-        // → base=3 (tool) → advance to 4 (user).
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 6, 1);
-        assert_eq!(
-            cut, Some(4),
-            "cut must not land on the orphaned tool result"
-        );
-    }
+    // keep_recent_tokens = 2
+    // Walk: index 4 (2 tokens, accumulated=2 >= 2) → return min(4+1, 5) = 5
+    // This means keep from index 5 onward (nothing), compact 1-4
+    // But wait, 5 >= end_index (5), so this means keep nothing and compact everything.
+    // Actually min(5, 5) = 5, which means "keep from index 5" = keep nothing.
+    // The cut point is the FIRST entry to KEEP, so cut=5 means keep entries 5..5 = empty.
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
+    assert_eq!(cut, Some(5)); // Compact everything (keep nothing from the range)
 
-    #[test]
-    fn find_cut_point_advance_exhausted_returns_none() {
-        // M-6: if advancing past leading Tool entries runs out of safe entries
-        // (cut reaches end_index), there is nothing safe to keep → None.
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Y", "user"),           // index 1, 0 tokens
-            make_message_entry("XXXX", "assistant"),   // index 2, 1 token
-            make_message_entry("tool output", "tool"), // index 3
-            make_message_entry("more output", "tool"), // index 4
-        ];
+    // With a higher threshold, we should keep some entries
+    // keep_recent_tokens = 3
+    // Walk: index 4 (2 tokens, acc=2 < 3), index 3 (2 tokens, acc=4 >= 3) → return min(3+1, 5) = 4
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 3);
+    assert_eq!(cut, Some(4)); // Keep entry 4, compact entries 1-3
+}
 
-        // keep=1: i=4,3 are tools (skipped); i=2 (1 >= 1) → base=3 →
-        // advance 3,4 → 5 = end_index → None.
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 1);
-        assert_eq!(cut, None, "advance exhausted the range → nothing safe to keep");
-    }
+#[test]
+fn find_cut_point_advances_past_orphaned_tool_result() {
+    // Regression (M-6): the budget-crossing entry is an assistant tool-call
+    // and i+1 lands on its tool result. The cut must advance to the next
+    // non-Tool entry so the kept prefix never starts with an orphan.
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Y", "user"),         // index 1, 0 tokens
+        make_message_entry("XXXX", "assistant"), // index 2, 1 token (tool-call)
+        make_message_entry("tool output", "tool"), // index 3, skipped in walk
+        make_message_entry("B", "user"),         // index 4, 0 tokens
+        make_message_entry("C", "assistant"),    // index 5, 0 tokens
+    ];
 
-    #[test]
-    fn min_floor_blocks_over_aggressive_cut() {
-        // When token-based cut keeps 0 messages, the floor guard should block.
-        // This tests the caller-side guard, not the algorithm.
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("A", "user"),
-            make_message_entry("BBBB", "assistant"),
-            make_message_entry("CCCCCCCC", "user"),
-            make_message_entry("DDDDDDDD", "assistant"),
-        ];
+    // keep=1: walk i=5 (0), i=4 (0), i=3 (tool, skip), i=2 (1 >= 1)
+    // → base=3 (tool) → advance to 4 (user).
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 6, 1);
+    assert_eq!(
+        cut,
+        Some(4),
+        "cut must not land on the orphaned tool result"
+    );
+}
 
-        // cut_index = 5 (keep nothing), boundary_end = 5
-        // kept_message_count = 0 < MIN_KEEP_MESSAGES = 4
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
-        assert_eq!(cut, Some(5));
+#[test]
+fn find_cut_point_advance_exhausted_returns_none() {
+    // M-6: if advancing past leading Tool entries runs out of safe entries
+    // (cut reaches end_index), there is nothing safe to keep → None.
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Y", "user"),         // index 1, 0 tokens
+        make_message_entry("XXXX", "assistant"), // index 2, 1 token
+        make_message_entry("tool output", "tool"), // index 3
+        make_message_entry("more output", "tool"), // index 4
+    ];
 
-        let kept_message_count = entries[5..5]
-            .iter()
-            .filter(|e| matches!(e, SessionEntry::Message { .. }))
-            .count();
-        assert_eq!(kept_message_count, 0);
-        assert!(
-            kept_message_count < CompactionSettings::MIN_KEEP_MESSAGES,
-            "Floor would block this cut"
-        );
-    }
+    // keep=1: i=4,3 are tools (skipped); i=2 (1 >= 1) → base=3 →
+    // advance 3,4 → 5 = end_index → None.
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 1);
+    assert_eq!(
+        cut, None,
+        "advance exhausted the range → nothing safe to keep"
+    );
+}
 
-    #[test]
-    fn min_floor_allows_sufficient_context() {
-        // When cut keeps ≥4 messages, the floor guard allows it.
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Old 1", "user"),         // 1
-            make_message_entry("Old 2", "assistant"),    // 2
-            make_message_entry("Old 3", "user"),         // 3
-            make_message_entry("Old 4", "assistant"),    // 4
-            make_message_entry("Recent 1", "user"),      // 5
-            make_message_entry("Recent 2", "assistant"), // 6
-            make_message_entry("Recent 3", "user"),      // 7
-            make_message_entry("Recent 4", "assistant"), // 8
-        ];
+#[test]
+fn min_floor_blocks_over_aggressive_cut() {
+    // When token-based cut keeps 0 messages, the floor guard should block.
+    // This tests the caller-side guard, not the algorithm.
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("A", "user"),
+        make_message_entry("BBBB", "assistant"),
+        make_message_entry("CCCCCCCC", "user"),
+        make_message_entry("DDDDDDDD", "assistant"),
+    ];
 
-        // With a moderate threshold, cut should land somewhere in the middle.
-        let cut = LlmCompaction::find_cut_point(&entries, 1, 9, 10);
-        assert!(cut.is_some());
-        let cut = cut.unwrap();
+    // cut_index = 5 (keep nothing), boundary_end = 5
+    // kept_message_count = 0 < MIN_KEEP_MESSAGES = 4
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 2);
+    assert_eq!(cut, Some(5));
 
-        let kept_message_count = entries[cut..9]
-            .iter()
-            .filter(|e| matches!(e, SessionEntry::Message { .. }))
-            .count();
-        assert!(
-            kept_message_count >= CompactionSettings::MIN_KEEP_MESSAGES,
-            "Floor requires {} messages, cut keeps {}",
-            CompactionSettings::MIN_KEEP_MESSAGES,
-            kept_message_count
-        );
-    }
+    let kept_message_count = entries[5..5]
+        .iter()
+        .filter(|e| matches!(e, SessionEntry::Message { .. }))
+        .count();
+    assert_eq!(kept_message_count, 0);
+    assert!(
+        kept_message_count < CompactionSettings::MIN_KEEP_MESSAGES,
+        "Floor would block this cut"
+    );
+}
 
-    #[test]
-    fn min_floor_boundary_exact() {
-        // Exactly 4 messages kept → allowed
-        // Exactly 3 messages kept → blocked
-        let entries: &[SessionEntry] = &[
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("Compact me", "user"),    // 1
-            make_message_entry("Compact me too", "assistant"), // 2
-            make_message_entry("Keep 1", "user"),        // 3
-            make_message_entry("Keep 2", "assistant"),   // 4
-            make_message_entry("Keep 3", "user"),        // 5
-            make_message_entry("Keep 4", "assistant"),   // 6
-        ];
+#[test]
+fn min_floor_allows_sufficient_context() {
+    // When cut keeps ≥4 messages, the floor guard allows it.
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Old 1", "user"),         // 1
+        make_message_entry("Old 2", "assistant"),    // 2
+        make_message_entry("Old 3", "user"),         // 3
+        make_message_entry("Old 4", "assistant"),    // 4
+        make_message_entry("Recent 1", "user"),      // 5
+        make_message_entry("Recent 2", "assistant"), // 6
+        make_message_entry("Recent 3", "user"),      // 7
+        make_message_entry("Recent 4", "assistant"), // 8
+    ];
 
-        // cut_index = 3 → keeps entries 3..7 = 4 messages → allowed
-        let kept_at_3 = entries[3..7]
-            .iter()
-            .filter(|e| matches!(e, SessionEntry::Message { .. }))
-            .count();
-        assert_eq!(kept_at_3, 4);
-        assert!(kept_at_3 >= CompactionSettings::MIN_KEEP_MESSAGES);
+    // With a moderate threshold, cut should land somewhere in the middle.
+    let cut = LlmCompaction::find_cut_point(&entries, 1, 9, 10);
+    assert!(cut.is_some());
+    let cut = cut.unwrap();
 
-        // cut_index = 4 → keeps entries 4..7 = 3 messages → blocked
-        let kept_at_4 = entries[4..7]
-            .iter()
-            .filter(|e| matches!(e, SessionEntry::Message { .. }))
-            .count();
-        assert_eq!(kept_at_4, 3);
-        assert!(kept_at_4 < CompactionSettings::MIN_KEEP_MESSAGES);
-    }
+    let kept_message_count = entries[cut..9]
+        .iter()
+        .filter(|e| matches!(e, SessionEntry::Message { .. }))
+        .count();
+    assert!(
+        kept_message_count >= CompactionSettings::MIN_KEEP_MESSAGES,
+        "Floor requires {} messages, cut keeps {}",
+        CompactionSettings::MIN_KEEP_MESSAGES,
+        kept_message_count
+    );
+}
 
-    // ---------------------------------------------------------------------------
-    // serialize_for_summary
-    // ---------------------------------------------------------------------------
+#[test]
+fn min_floor_boundary_exact() {
+    // Exactly 4 messages kept → allowed
+    // Exactly 3 messages kept → blocked
+    let entries: &[SessionEntry] = &[
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("Compact me", "user"), // 1
+        make_message_entry("Compact me too", "assistant"), // 2
+        make_message_entry("Keep 1", "user"),     // 3
+        make_message_entry("Keep 2", "assistant"), // 4
+        make_message_entry("Keep 3", "user"),     // 5
+        make_message_entry("Keep 4", "assistant"), // 6
+    ];
 
-    #[test]
-    fn serialize_for_summary_truncates_tool_result_at_char_boundary() {
-        // Regression: `§` (U+00A7, 2 bytes) straddles byte 4096 (bytes
-        // 4095..4097). A raw `&result[..4096]` panics with
-        // "byte index 4096 is not a char boundary". The fix floors the
-        // slice to a char boundary, dropping the multi-byte char whole.
-        let mut result = "a".repeat(4095);
-        result.push('§');
-        result.push_str("rest of the tool output");
-        assert_eq!(result.len(), 4120);
+    // cut_index = 3 → keeps entries 3..7 = 4 messages → allowed
+    let kept_at_3 = entries[3..7]
+        .iter()
+        .filter(|e| matches!(e, SessionEntry::Message { .. }))
+        .count();
+    assert_eq!(kept_at_3, 4);
+    assert!(kept_at_3 >= CompactionSettings::MIN_KEEP_MESSAGES);
 
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry(&result, "tool"),
-        ];
+    // cut_index = 4 → keeps entries 4..7 = 3 messages → blocked
+    let kept_at_4 = entries[4..7]
+        .iter()
+        .filter(|e| matches!(e, SessionEntry::Message { .. }))
+        .count();
+    assert_eq!(kept_at_4, 3);
+    assert!(kept_at_4 < CompactionSettings::MIN_KEEP_MESSAGES);
+}
 
-        let text = LlmCompaction::serialize_for_summary(&entries, 2);
+// ---------------------------------------------------------------------------
+// serialize_for_summary
+// ---------------------------------------------------------------------------
 
-        // The truncated content is the first 4095 bytes (the `§` is dropped
-        // whole because 4096 is not a char boundary).
-        let expected_prefix = format!("[Tool Result] {}", "a".repeat(4095));
-        assert!(text.starts_with(&expected_prefix), "should keep the 4095 ASCII bytes");
-        assert!(text.ends_with("... (truncated, 4120 bytes total)"));
-        // The multi-byte char must not leak into the truncated output.
-        assert!(!text.contains('§'));
-    }
+#[test]
+fn serialize_for_summary_truncates_tool_result_at_char_boundary() {
+    // Regression: `§` (U+00A7, 2 bytes) straddles byte 4096 (bytes
+    // 4095..4097). A raw `&result[..4096]` panics with
+    // "byte index 4096 is not a char boundary". The fix floors the
+    // slice to a char boundary, dropping the multi-byte char whole.
+    let mut result = "a".repeat(4095);
+    result.push('§');
+    result.push_str("rest of the tool output");
+    assert_eq!(result.len(), 4120);
 
-    #[test]
-    fn serialize_for_summary_truncates_tool_result_on_exact_boundary() {
-        // When 4096 lands exactly on a char boundary, the full 4096 bytes are
-        // kept (no char is dropped) and the label reports the byte total.
-        let result = "b".repeat(4100);
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry(&result, "tool"),
+    ];
 
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry(&result, "tool"),
-        ];
+    let text = LlmCompaction::serialize_for_summary(&entries, 2);
 
-        let text = LlmCompaction::serialize_for_summary(&entries, 2);
+    // The truncated content is the first 4095 bytes (the `§` is dropped
+    // whole because 4096 is not a char boundary).
+    let expected_prefix = format!("[Tool Result] {}", "a".repeat(4095));
+    assert!(
+        text.starts_with(&expected_prefix),
+        "should keep the 4095 ASCII bytes"
+    );
+    assert!(text.ends_with("... (truncated, 4120 bytes total)"));
+    // The multi-byte char must not leak into the truncated output.
+    assert!(!text.contains('§'));
+}
 
-        let expected_prefix = format!("[Tool Result] {}", "b".repeat(4096));
-        assert!(text.starts_with(&expected_prefix), "exact boundary keeps all 4096 bytes");
-        assert!(text.ends_with("... (truncated, 4100 bytes total)"));
-    }
+#[test]
+fn serialize_for_summary_truncates_tool_result_on_exact_boundary() {
+    // When 4096 lands exactly on a char boundary, the full 4096 bytes are
+    // kept (no char is dropped) and the label reports the byte total.
+    let result = "b".repeat(4100);
 
-    #[test]
-    fn serialize_for_summary_keeps_short_tool_result() {
-        // A tool result under 4096 bytes is emitted verbatim, no truncation.
-        let entries = vec![
-            SessionEntry::new_session(
-                "session_1".to_string(),
-                "2024-01-01T00:00:00Z".to_string(),
-                "/cwd".to_string(),
-                "model".to_string(),
-                32768,
-            ),
-            make_message_entry("short output", "tool"),
-        ];
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry(&result, "tool"),
+    ];
 
-        let text = LlmCompaction::serialize_for_summary(&entries, 2);
-        assert_eq!(text, "[Tool Result] short output");
-    }
+    let text = LlmCompaction::serialize_for_summary(&entries, 2);
+
+    let expected_prefix = format!("[Tool Result] {}", "b".repeat(4096));
+    assert!(
+        text.starts_with(&expected_prefix),
+        "exact boundary keeps all 4096 bytes"
+    );
+    assert!(text.ends_with("... (truncated, 4100 bytes total)"));
+}
+
+#[test]
+fn serialize_for_summary_keeps_short_tool_result() {
+    // A tool result under 4096 bytes is emitted verbatim, no truncation.
+    let entries = vec![
+        SessionEntry::new_session(
+            "session_1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "/cwd".to_string(),
+            "model".to_string(),
+            32768,
+        ),
+        make_message_entry("short output", "tool"),
+    ];
+
+    let text = LlmCompaction::serialize_for_summary(&entries, 2);
+    assert_eq!(text, "[Tool Result] short output");
+}
 
 // ---- format_active_skills ----
 
@@ -548,7 +566,11 @@ fn make_test_skill_file(tmp: &TempDir, name: &str, body: &str) -> (Skill, std::p
     let dir = tmp.path().join(name);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("SKILL.md");
-    std::fs::write(&path, format!("---\nname: {name}\ndescription: test skill\n---\n{body}")).unwrap();
+    std::fs::write(
+        &path,
+        format!("---\nname: {name}\ndescription: test skill\n---\n{body}"),
+    )
+    .unwrap();
     (
         Skill {
             name: name.to_string(),
@@ -564,58 +586,65 @@ fn make_test_skill_file(tmp: &TempDir, name: &str, body: &str) -> (Skill, std::p
     )
 }
 
-    #[test]
-    fn format_active_skills_empty_returns_empty_string() {
-        assert_eq!(crate::session::compaction::format_active_skills(&[], &[]), "");
-    }
+#[test]
+fn format_active_skills_empty_returns_empty_string() {
+    assert_eq!(
+        crate::session::compaction::format_active_skills(&[], &[]),
+        ""
+    );
+}
 
-    #[test]
-    fn format_active_skills_skips_missing_and_unreadable() {
-        let tmp = TempDir::new().unwrap();
-        let (found, _) = make_test_skill_file(&tmp, "found", "Found body.");
-        // In the skills vec but the file was deleted → skipped silently.
-        let gone = Skill {
-            name: "gone".to_string(),
-            description: "test skill".to_string(),
-            license: None,
-            metadata: std::collections::HashMap::new(),
-            hooks: Vec::new(),
-            file_path: tmp.path().join("gone").join("SKILL.md"),
-            base_dir: tmp.path().join("gone"),
-            source: SkillSource::Global,
-        };
-        let skills = vec![found, gone];
-        // "missing" is not in the skills vec at all.
-        let active = vec!["found".to_string(), "missing".to_string(), "gone".to_string()];
+#[test]
+fn format_active_skills_skips_missing_and_unreadable() {
+    let tmp = TempDir::new().unwrap();
+    let (found, _) = make_test_skill_file(&tmp, "found", "Found body.");
+    // In the skills vec but the file was deleted → skipped silently.
+    let gone = Skill {
+        name: "gone".to_string(),
+        description: "test skill".to_string(),
+        license: None,
+        metadata: std::collections::HashMap::new(),
+        hooks: Vec::new(),
+        file_path: tmp.path().join("gone").join("SKILL.md"),
+        base_dir: tmp.path().join("gone"),
+        source: SkillSource::Global,
+    };
+    let skills = vec![found, gone];
+    // "missing" is not in the skills vec at all.
+    let active = vec![
+        "found".to_string(),
+        "missing".to_string(),
+        "gone".to_string(),
+    ];
 
-        let out = crate::session::compaction::format_active_skills(&active, &skills);
+    let out = crate::session::compaction::format_active_skills(&active, &skills);
 
-        assert!(out.starts_with("<active-skills>"));
-        assert!(out.ends_with("</active-skills>"));
-        assert!(out.contains("<skill_instructions name=\"found\">"));
-        assert!(out.contains("Found body."));
-        assert!(!out.contains("missing"));
-        assert!(!out.contains("gone"));
-    }
+    assert!(out.starts_with("<active-skills>"));
+    assert!(out.ends_with("</active-skills>"));
+    assert!(out.contains("<skill_instructions name=\"found\">"));
+    assert!(out.contains("Found body."));
+    assert!(!out.contains("missing"));
+    assert!(!out.contains("gone"));
+}
 
-    #[test]
-    fn format_active_skills_follows_active_order() {
-        let tmp = TempDir::new().unwrap();
-        let (alpha, _) = make_test_skill_file(&tmp, "alpha", "Alpha body.");
-        let (beta, _) = make_test_skill_file(&tmp, "beta", "Beta body.");
-        // skills vec order: alpha, beta — active list order: beta, alpha.
-        let skills = vec![alpha, beta];
-        let active = vec!["beta".to_string(), "alpha".to_string()];
+#[test]
+fn format_active_skills_follows_active_order() {
+    let tmp = TempDir::new().unwrap();
+    let (alpha, _) = make_test_skill_file(&tmp, "alpha", "Alpha body.");
+    let (beta, _) = make_test_skill_file(&tmp, "beta", "Beta body.");
+    // skills vec order: alpha, beta — active list order: beta, alpha.
+    let skills = vec![alpha, beta];
+    let active = vec!["beta".to_string(), "alpha".to_string()];
 
-        let out = crate::session::compaction::format_active_skills(&active, &skills);
+    let out = crate::session::compaction::format_active_skills(&active, &skills);
 
-        let beta_pos = out.find("name=\"beta\"").expect("beta block present");
-        let alpha_pos = out.find("name=\"alpha\"").expect("alpha block present");
-        assert!(
-            beta_pos < alpha_pos,
-            "output follows the active list order, not the skills vec order: {out}"
-        );
-    }
+    let beta_pos = out.find("name=\"beta\"").expect("beta block present");
+    let alpha_pos = out.find("name=\"alpha\"").expect("alpha block present");
+    assert!(
+        beta_pos < alpha_pos,
+        "output follows the active list order, not the skills vec order: {out}"
+    );
+}
 
 // ---- compute_compaction active-skills re-injection ----
 
@@ -627,7 +656,9 @@ struct MockProvider {
 #[async_trait]
 impl ProviderTrait for MockProvider {
     fn clone_box(&self) -> Box<dyn ProviderTrait> {
-        Box::new(MockProvider { summary: self.summary.clone() })
+        Box::new(MockProvider {
+            summary: self.summary.clone(),
+        })
     }
 
     async fn stream_chat(
@@ -649,93 +680,121 @@ impl ProviderTrait for MockProvider {
     async fn ping(&self, _model: &str) -> Result<(), ProviderError> {
         Ok(())
     }
+
+    async fn list_models(&self) -> Result<Vec<crate::provider::DiscoveredModel>, ProviderError> {
+        Ok(Vec::new())
+    }
 }
 
-    #[tokio::test]
-    async fn compute_compaction_appends_active_skills_section() {
-        let tmp = TempDir::new().unwrap();
-        let (skill, _) = make_test_skill_file(&tmp, "my-skill", "# My Skill\nDo the thing.");
+#[tokio::test]
+async fn compute_compaction_appends_active_skills_section() {
+    let tmp = TempDir::new().unwrap();
+    let (skill, _) = make_test_skill_file(&tmp, "my-skill", "# My Skill\nDo the thing.");
 
-        let mut entries = vec![SessionEntry::new_session(
-            "session_1".to_string(),
-            "2024-01-01T00:00:00Z".to_string(),
-            tmp.path().to_string_lossy().to_string(),
-            "model".to_string(),
-            32768,
-        )];
-        if let SessionEntry::Session { ref mut activated_skills, .. } = entries[0] {
-            activated_skills.push("my-skill".to_string());
-        }
-        // 10 messages → count-based cut keeps 5 (≥ MIN_KEEP_MESSAGES).
-        for i in 0..10 {
-            let role = if i % 2 == 0 { "user" } else { "assistant" };
-            entries.push(make_message_entry(&format!("Message {i}"), role));
-        }
-
-        let mut config = crate::config::Config::default();
-        config.compaction.mode = crate::config::CompactionMode::Llm;
-        let engine = CompactionEngine::from_config(&config);
-        let provider = Provider::from_trait(Box::new(MockProvider {
-            summary: "## Goal\nTest goal".to_string(),
-        }));
-
-        let plan = engine
-            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), vec![skill], None)
-            .await
-            .expect("compute_compaction");
-
-        assert!(plan.summary.contains("## Goal"), "LLM summary present");
-        assert!(plan.summary.contains("<active-skills>"));
-        assert!(plan.summary.contains("<skill_instructions name=\"my-skill\">"));
-        assert!(plan.summary.contains("Do the thing."));
-        assert!(!plan.summary.contains("name: my-skill"), "frontmatter stripped");
+    let mut entries = vec![SessionEntry::new_session(
+        "session_1".to_string(),
+        "2024-01-01T00:00:00Z".to_string(),
+        tmp.path().to_string_lossy().to_string(),
+        "model".to_string(),
+        32768,
+    )];
+    if let SessionEntry::Session {
+        ref mut activated_skills,
+        ..
+    } = entries[0]
+    {
+        activated_skills.push("my-skill".to_string());
+    }
+    // 10 messages → count-based cut keeps 5 (≥ MIN_KEEP_MESSAGES).
+    for i in 0..10 {
+        let role = if i % 2 == 0 { "user" } else { "assistant" };
+        entries.push(make_message_entry(&format!("Message {i}"), role));
     }
 
-    #[tokio::test]
-    async fn compute_compaction_orphaned_first_kept_id_recovers() {
-        // M4: the LLM strategy shares `vcc::find_live_start` for its
-        // boundary. An orphaned `first_kept_entry_id` (no matching entry)
-        // must fall back to the entry after the compaction record instead
-        // of panicking or compacting pre-compaction history.
-        let tmp = TempDir::new().unwrap();
-        let mut entries = vec![SessionEntry::new_session(
-            "session_orphan".to_string(),
-            "2024-01-01T00:00:00Z".to_string(),
-            tmp.path().to_string_lossy().to_string(),
-            "model".to_string(),
-            32768,
-        )];
-        entries.push(make_message_entry("Pre 1", "user"));
-        entries.push(make_message_entry("Pre 2", "assistant"));
-        let compaction_idx = entries.len();
-        entries.push(SessionEntry::new_compaction(
+    let mut config = crate::config::Config::default();
+    config.compaction.mode = crate::config::CompactionMode::Llm;
+    let engine = CompactionEngine::from_config(&config);
+    let provider = Provider::from_trait(Box::new(MockProvider {
+        summary: "## Goal\nTest goal".to_string(),
+    }));
+
+    let plan = engine
+        .compute_compaction(
+            provider,
+            config,
+            entries,
+            tmp.path().to_path_buf(),
+            vec![skill],
             None,
-            "Previous summary".to_string(),
-            "orphan_id_that_matches_nothing".to_string(),
-            10000,
-        ));
-        for i in 0..10 {
-            let role = if i % 2 == 0 { "user" } else { "assistant" };
-            entries.push(make_message_entry(&format!("Post {i}"), role));
-        }
+        )
+        .await
+        .expect("compute_compaction");
 
-        let mut config = crate::config::Config::default();
-        config.compaction.mode = crate::config::CompactionMode::Llm;
-        let engine = CompactionEngine::from_config(&config);
-        let provider = Provider::from_trait(Box::new(MockProvider {
-            summary: "## Goal\nOrphan test".to_string(),
-        }));
+    assert!(plan.summary.contains("## Goal"), "LLM summary present");
+    assert!(plan.summary.contains("<active-skills>"));
+    assert!(
+        plan.summary
+            .contains("<skill_instructions name=\"my-skill\">")
+    );
+    assert!(plan.summary.contains("Do the thing."));
+    assert!(
+        !plan.summary.contains("name: my-skill"),
+        "frontmatter stripped"
+    );
+}
 
-        let plan = engine
-            .compute_compaction(provider, config, entries, tmp.path().to_path_buf(), Vec::new(), None)
-            .await
-            .expect("orphaned first_kept_entry_id must not fail compaction");
-
-        assert!(
-            plan.cut_index > compaction_idx,
-            "cut point ({}) must stay after the compaction record ({}); \
-             pre-compaction history is out of scope",
-            plan.cut_index,
-            compaction_idx
-        );
+#[tokio::test]
+async fn compute_compaction_orphaned_first_kept_id_recovers() {
+    // M4: the LLM strategy shares `vcc::find_live_start` for its
+    // boundary. An orphaned `first_kept_entry_id` (no matching entry)
+    // must fall back to the entry after the compaction record instead
+    // of panicking or compacting pre-compaction history.
+    let tmp = TempDir::new().unwrap();
+    let mut entries = vec![SessionEntry::new_session(
+        "session_orphan".to_string(),
+        "2024-01-01T00:00:00Z".to_string(),
+        tmp.path().to_string_lossy().to_string(),
+        "model".to_string(),
+        32768,
+    )];
+    entries.push(make_message_entry("Pre 1", "user"));
+    entries.push(make_message_entry("Pre 2", "assistant"));
+    let compaction_idx = entries.len();
+    entries.push(SessionEntry::new_compaction(
+        None,
+        "Previous summary".to_string(),
+        "orphan_id_that_matches_nothing".to_string(),
+        10000,
+    ));
+    for i in 0..10 {
+        let role = if i % 2 == 0 { "user" } else { "assistant" };
+        entries.push(make_message_entry(&format!("Post {i}"), role));
     }
+
+    let mut config = crate::config::Config::default();
+    config.compaction.mode = crate::config::CompactionMode::Llm;
+    let engine = CompactionEngine::from_config(&config);
+    let provider = Provider::from_trait(Box::new(MockProvider {
+        summary: "## Goal\nOrphan test".to_string(),
+    }));
+
+    let plan = engine
+        .compute_compaction(
+            provider,
+            config,
+            entries,
+            tmp.path().to_path_buf(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("orphaned first_kept_entry_id must not fail compaction");
+
+    assert!(
+        plan.cut_index > compaction_idx,
+        "cut point ({}) must stay after the compaction record ({}); \
+             pre-compaction history is out of scope",
+        plan.cut_index,
+        compaction_idx
+    );
+}

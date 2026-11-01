@@ -130,6 +130,67 @@ fn hook_registry_add_and_get() {
     assert_eq!(registry.total_count(), 1);
 }
 
+fn skill_hook(event: HookEvent, name: &str, skill: &str) -> Hook {
+    Hook {
+        event,
+        name: format!("{skill}:{name}"),
+        command: format!("sh /skills/{skill}/{name}"),
+        script: None,
+        source: HookSource::Global,
+        skill_name: Some(skill.to_string()),
+        skill_dir: Some(std::path::PathBuf::from(format!("/skills/{skill}"))),
+        matcher: ToolMatcher::All,
+    }
+}
+
+#[test]
+fn remove_skill_hooks_removes_only_that_skill() {
+    let mut registry = HookRegistry::new();
+    registry.add(skill_hook(HookEvent::PreToolUse, "a.sh", "planning"));
+    registry.add(skill_hook(HookEvent::Stop, "b.sh", "planning"));
+    registry.add(skill_hook(HookEvent::PreToolUse, "c.sh", "refine"));
+    registry.add(Hook {
+        event: HookEvent::PreToolUse,
+        name: "dir.sh".to_string(),
+        command: "bash dir.sh".to_string(),
+        script: None,
+        source: HookSource::Project,
+        skill_name: None,
+        skill_dir: None,
+        matcher: ToolMatcher::All,
+    });
+
+    registry.remove_skill_hooks("planning");
+
+    assert_eq!(registry.total_count(), 2);
+    // The other skill's hook and the directory hook survive.
+    assert_eq!(registry.hooks(HookEvent::PreToolUse).len(), 2);
+    assert!(registry
+        .hooks(HookEvent::PreToolUse)
+        .iter()
+        .any(|h| h.name == "refine:c.sh"));
+    assert!(registry
+        .hooks(HookEvent::PreToolUse)
+        .iter()
+        .any(|h| h.name == "dir.sh"));
+    assert!(registry.hooks(HookEvent::Stop).is_empty());
+}
+
+#[test]
+fn remove_skill_hooks_unknown_skill_is_noop() {
+    let mut registry = HookRegistry::new();
+    registry.add(skill_hook(HookEvent::Stop, "a.sh", "planning"));
+    registry.remove_skill_hooks("nonexistent");
+    assert_eq!(registry.total_count(), 1);
+}
+
+#[test]
+fn remove_skill_hooks_empty_registry_is_noop() {
+    let mut registry = HookRegistry::new();
+    registry.remove_skill_hooks("planning");
+    assert_eq!(registry.total_count(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Directory-based hooks
 // ---------------------------------------------------------------------------

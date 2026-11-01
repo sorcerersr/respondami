@@ -20,8 +20,10 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     let selected = &app.modal.session_select_matches[app.modal.session_select_index];
     app.session.session_store.load_session(&selected.path)?;
     app.chat.chat_messages.clear();
-    // Restore cumulative token usage from saved session data
-    let (input_tokens, output_tokens) = app.session.session_store.total_usage();
+    // Restore cumulative token usage from saved session data (max prompt,
+    // sum completions — the live counter's semantics, so the status bar
+    // shows the pre-close value after resume)
+    let (input_tokens, output_tokens) = app.session.session_store.cumulative_usage();
     app.session.cumulative_usage = crate::session::RequestTokenUsage {
         input_tokens,
         output_tokens,
@@ -56,6 +58,9 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // Resumed session — the next outgoing prefix legitimately differs from
     // whatever the guard saw last, so reset the baseline.
     app.session.reset_history_guard();
+    // `llamacpp`: refresh the model list on resume so the status bar's loaded
+    // icon reflects the server's current state. Best-effort; silent on failure.
+    app.spawn_model_fetch(true);
     app.modal.state = AppState::Idle;
     app.chat.auto_scroll = true;
     Ok(())

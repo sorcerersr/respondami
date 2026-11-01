@@ -386,3 +386,48 @@ fn guard_detects_hook_injection_divergence() {
         "live/persisted divergence at the injected message must be detected"
     );
 }
+
+// ---- strip_images_after_view: the expected one-time drift ----
+
+/// The strip is a deliberate, one-time prefix break: the request that first
+/// carries the stripped tool message diverges at that message's position, and
+/// the guard must flag it (the canary for *unintended* drift). After that the
+/// new (text-only) baseline is stable again.
+#[test]
+fn guard_strip_is_expected_one_time_drift() {
+    let with_image = image_tool_result("t1", "Image: x (100x50, image/png)");
+    let stripped = crate::agent::strip_images_from_tool(&with_image);
+
+    let mut guard = HistoryGuard::new();
+    // Request 1: the image is still in the context.
+    let req1: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
+        message_digest(&with_image),
+    ];
+    assert!(guard.check_and_update(&req1).is_none());
+
+    // Request 2: the image was stripped after the model saw it → the digest
+    // at the tool position changes. This is the expected, deliberate break.
+    let req2: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
+        message_digest(&stripped),
+    ];
+    let v = guard.check_and_update(&req2).expect("strip must be a one-time drift");
+    assert_eq!(v.index, 2, "drift reported at the stripped tool message");
+    assert!(!v.shrank);
+
+    // Request 3: the stripped form is now the stable baseline — no further
+    // drift (this is the prefix that hits the provider's cache).
+    let req3: Vec<MessageDigest> = vec![
+        message_digest(&system("sys")),
+        message_digest(&user("q1")),
+        message_digest(&stripped),
+        message_digest(&assistant_with("a1", false)),
+    ];
+    assert!(
+        guard.check_and_update(&req3).is_none(),
+        "post-strip baseline must be stable (the cached prefix)"
+    );
+}

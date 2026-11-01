@@ -10,11 +10,12 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::config::Config;
 use crate::hooks::{Hook, HookEvent, HookSource, ToolMatcher};
-use crate::session::CompactionPlan;
-use crate::skills::{Skill, SkillSource};
+use crate::session::{CompactionPlan, SessionStore};
+use crate::skills::{Skill, SkillHook, SkillSource};
 use crate::tui::{App, AppState, ChatMessage, HookDisplay};
 use crate::turn::{
     PendingTurn, restart_agent, rollback_pending_turn, run_turn_with_input, start_turn,
+    undo_turn_setup,
 };
 use tempfile::TempDir;
 
@@ -38,7 +39,15 @@ fn make_terminal() -> Terminal<CrosstermBackend<std::io::Stdout>> {
 }
 
 fn make_app() -> App {
-    App::new(Config::default(), PathBuf::from("."))
+    // The session store is re-pointed at a temp dir: tests that create a
+    // session must not write into the real `.respondami/sessions/` (the
+    // mtime-sorted /resume dialog would show them on top of real sessions).
+    // `keep` keeps the dir alive without threading a TempDir through
+    // every call site; the leftover /tmp dir is harmless.
+    let dir = tempfile::tempdir().unwrap().keep();
+    let mut app = App::new(Config::default(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(&dir);
+    app
 }
 
 /// A compaction task that never finishes — used to trip the in-progress
@@ -51,7 +60,7 @@ fn never_finishes_task() -> tokio::task::JoinHandle<anyhow::Result<CompactionPla
 /// tiny context window + zero reserve → `should_compact` is always true.
 fn deferral_config() -> Config {
     let mut config = Config::default();
-    config.provider.context_window = 10;
+    config.provider.models[0].context_window = 10;
     config.compaction.reserve_tokens = 0;
     config
 }
@@ -130,7 +139,9 @@ async fn run_turn_with_input_blocked_while_compaction_in_progress() {
 
 #[tokio::test]
 async fn run_turn_defers_to_background_compaction_when_near_threshold() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     let pre_len = app.chat.chat_messages.len();
     let mut terminal = make_terminal();
 
@@ -173,7 +184,9 @@ async fn run_turn_defers_to_background_compaction_when_near_threshold() {
 
 #[tokio::test]
 async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     let mut terminal = make_terminal();
 
     // `/skillname` shape: LLM gets the injected prompt, chat shows what was
@@ -213,7 +226,9 @@ async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
 
 #[tokio::test]
 async fn run_turn_ups_hook_stdout_not_injected_into_model_input() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.hook_registry.add(make_hook(
         HookEvent::UserPromptSubmit,
         "ups.sh",
@@ -253,7 +268,9 @@ async fn run_turn_ups_hook_stdout_not_injected_into_model_input() {
 
 #[tokio::test]
 async fn run_turn_ups_hook_empty_stdout_not_injected() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config
         .hook_registry
         .add(make_hook(HookEvent::UserPromptSubmit, "ups.sh", "true"));
@@ -281,7 +298,9 @@ async fn run_turn_ups_hook_empty_stdout_not_injected() {
 
 #[tokio::test]
 async fn run_turn_precompact_blocked_undoes_turn_setup() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.hook_registry.add(make_hook(
         HookEvent::PreCompact,
         "gate.sh",
@@ -320,7 +339,9 @@ async fn run_turn_precompact_blocked_undoes_turn_setup() {
 
 #[tokio::test]
 async fn run_turn_precompact_stdout_captured_for_summary() {
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.hook_registry.add(make_hook(
         HookEvent::PreCompact,
         "pc.sh",
@@ -445,7 +466,9 @@ async fn skill_activation_persists_to_session_header() {
     )
     .unwrap();
 
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(deferral_config(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.config.skills = vec![Skill {
         name: "my-skill".to_string(),
         description: "test".to_string(),
@@ -492,20 +515,28 @@ async fn unknown_skill_returns_not_found() {
     // `/zzz` fuzzy-matches no command id, so `parse_slash_command` passes it
     // to `handle_skill_activation`, which must stop the turn with a
     // not-found system message (no fall-through to `run_turn_with_input`).
+    let dir = TempDir::new().unwrap();
     let mut app = App::new(Config::default(), PathBuf::from("."));
+    app.session.session_store = SessionStore::new(dir.path());
     app.editor.input_buffer = "/zzz".to_string();
     let mut terminal = make_terminal();
 
-    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
+    let quit = start_turn(&mut app, &mut terminal)
+        .await
+        .expect("start_turn");
 
     assert!(!quit);
-    let not_found = app.chat
+    let not_found = app
+        .chat
         .chat_messages
         .iter()
         .any(|m| matches!(m, ChatMessage::System(s) if s.content.contains("not found")));
     assert!(not_found, "expected a not-found system message");
     assert!(
-        !app.chat.chat_messages.iter().any(|m| matches!(m, ChatMessage::User(_))),
+        !app.chat
+            .chat_messages
+            .iter()
+            .any(|m| matches!(m, ChatMessage::User(_))),
         "turn must not fall through to run_turn_with_input"
     );
 }
@@ -598,6 +629,108 @@ fn rollback_pending_turn_is_noop_when_nothing_pending() {
     assert!(app.pending_turn.is_none());
     assert_eq!(app.chat.chat_messages.len(), pre_len);
     assert_eq!(app.editor.input_buffer, "keep me");
+}
+
+// ---- undo_turn_setup: hook registry re-sync ----
+
+/// A skill with one `PreToolUse` hook, loaded into the app's skill set.
+fn app_with_hooked_skill() -> App {
+    let mut app = make_app();
+    // Hermetic: drop any directory hooks loaded from the real config dir so
+    // the exact-count assertions below are environment-independent.
+    app.config.hook_registry = crate::hooks::HookRegistry::new();
+    app.config.skills = vec![Skill {
+        name: "refine".to_string(),
+        description: "test".to_string(),
+        license: None,
+        metadata: std::collections::HashMap::new(),
+        hooks: vec![SkillHook {
+            event: HookEvent::PreToolUse,
+            command: "sh /skills/refine/scripts/enforce.sh".to_string(),
+            matcher: None,
+        }],
+        file_path: PathBuf::from("/skills/refine/SKILL.md"),
+        base_dir: PathBuf::from("/skills/refine"),
+        source: SkillSource::Global,
+    }];
+    app
+}
+
+#[test]
+fn undo_turn_setup_removes_rolled_back_skill_hooks() {
+    let mut app = app_with_hooked_skill();
+    let pre_len = app.chat.chat_messages.len();
+
+    // The turn activated `/refine` (the `/skillname` path) and its hooks
+    // are registered; the pre-turn set was empty.
+    app.activate_skill("refine");
+    assert_eq!(
+        app.config.hook_registry.hooks(HookEvent::PreToolUse).len(),
+        1
+    );
+
+    undo_turn_setup(
+        &mut app,
+        pre_len,
+        false,
+        "typed question".to_string(),
+        HashSet::new(),
+    );
+
+    assert!(app.active_skills.is_empty());
+    assert_eq!(app.config.hook_registry.total_count(), 0);
+    assert_eq!(app.editor.input_buffer, "typed question");
+}
+
+#[test]
+fn undo_turn_setup_keeps_pre_turn_skill_hooks() {
+    let mut app = app_with_hooked_skill();
+    let pre_len = app.chat.chat_messages.len();
+
+    // The skill was active before the turn and must survive the rollback,
+    // with its hooks re-registered from the skill set.
+    app.activate_skill("refine");
+    let pre_turn_skills = app.active_skills.clone();
+
+    undo_turn_setup(&mut app, pre_len, false, "x".to_string(), pre_turn_skills);
+
+    assert!(app.active_skills.contains("refine"));
+    assert_eq!(
+        app.config.hook_registry.hooks(HookEvent::PreToolUse).len(),
+        1
+    );
+}
+
+// ---- End-to-end regression: /skillname + re-activation survive restart ----
+
+#[test]
+fn skillname_activation_then_reactivation_survives_agent_restart() {
+    // The reported bug: `/refine` (TUI path) never registered hooks into the
+    // TUI registry; the model's `activate_skill` call then found the skill
+    // already active and the `insert` gate skipped registration. After
+    // compaction, the agent restarted from the empty registry and the hooks
+    // were gone. This test simulates the full sequence and asserts the
+    // restart clone (what `restart_agent` builds) carries the hook.
+    let mut app = app_with_hooked_skill();
+
+    // 1. `/refine` — the TUI activation path.
+    assert!(app.activate_skill("refine"));
+
+    // 2. The model calls `activate_skill` for the already-active skill —
+    // the `SkillActivation` event handler runs (idempotent register).
+    crate::agent_events::handle_skill_activation_event(&mut app, "refine");
+
+    // 3. Compaction restarts the agent: it clones the TUI registry.
+    let restart_registry = app.config.hook_registry.clone();
+
+    let hooks = restart_registry.hooks(HookEvent::PreToolUse);
+    assert_eq!(
+        hooks.len(),
+        1,
+        "the restart clone must carry the skill's PreToolUse hook"
+    );
+    assert_eq!(hooks[0].name, "refine:enforce.sh");
+    assert_eq!(hooks[0].skill_name, Some("refine".to_string()));
 }
 
 // ---- PendingTurn ----

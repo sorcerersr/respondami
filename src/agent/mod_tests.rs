@@ -52,6 +52,178 @@ fn vision_gate_disabled_no_images_is_noop() {
     assert_eq!(images, Vec::new());
 }
 
+// ---------------------------------------------------------------------------
+// image_removal_note / strip_images_from_tool (strip_images_after_view)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn image_removal_note_format() {
+    let note = super::image_removal_note("/tmp/pic.png", 100, 50);
+    assert_eq!(note, "[image removed: /tmp/pic.png (100x50). Re-read to view again.]");
+}
+
+fn tool_msg_with_image() -> AgentMessage {
+    AgentMessage::tool(
+        "call_img".to_string(),
+        "read".to_string(),
+        serde_json::json!({ "path": "/tmp/pic.png" }),
+        "Image: /tmp/pic.png (100x50, image/png)".to_string(),
+        vec![img()],
+    )
+}
+
+#[test]
+fn strip_images_from_tool_clears_images_and_appends_note() {
+    let msg = tool_msg_with_image();
+    let stripped = super::strip_images_from_tool(&msg);
+
+    match &stripped {
+        AgentMessage::Tool { result, images, .. } => {
+            assert!(images.is_empty(), "images must be cleared");
+            assert!(
+                result.starts_with("Image: /tmp/pic.png"),
+                "original result text must be preserved: {result}"
+            );
+            assert!(
+                result.contains("[image removed: /tmp/pic.png (100x50). Re-read to view again.]"),
+                "removal note must be appended: {result}"
+            );
+            // The note is on its own line after the original result.
+            assert!(result.contains("\n[image removed:"));
+        }
+        other => panic!("expected Tool message, got {other:?}"),
+    }
+}
+
+#[test]
+fn strip_images_from_tool_no_images_is_noop() {
+    let msg = AgentMessage::tool(
+        "call_txt".to_string(),
+        "read".to_string(),
+        serde_json::json!({ "path": "/tmp/file.txt" }),
+        "file contents".to_string(),
+        Vec::new(),
+    );
+    let stripped = super::strip_images_from_tool(&msg);
+    assert_eq!(
+        serde_json::to_value(&stripped).unwrap(),
+        serde_json::to_value(&msg).unwrap(),
+        "no images → byte-identical message"
+    );
+}
+
+#[test]
+fn strip_images_from_tool_non_tool_is_noop() {
+    let msg = AgentMessage::user("hello".to_string());
+    let stripped = super::strip_images_from_tool(&msg);
+    assert_eq!(
+        serde_json::to_value(&stripped).unwrap(),
+        serde_json::to_value(&msg).unwrap(),
+        "non-tool message → unchanged"
+    );
+}
+
+#[test]
+fn strip_images_from_tool_missing_path_uses_unknown() {
+    let msg = AgentMessage::tool(
+        "call_img".to_string(),
+        "read".to_string(),
+        serde_json::json!({}),
+        "Image: x".to_string(),
+        vec![img()],
+    );
+    let stripped = super::strip_images_from_tool(&msg);
+    match &stripped {
+        AgentMessage::Tool { result, .. } => {
+            assert!(
+                result.contains("[image removed: unknown (100x50). Re-read to view again.]"),
+                "missing path → 'unknown': {result}"
+            );
+        }
+        other => panic!("expected Tool message, got {other:?}"),
+    }
+}
+
+/// Byte-identity invariant: the live-context strip and the session strip
+/// (same function) must produce identical digests, so the history guard sees
+/// the same message on both sides.
+#[test]
+fn strip_images_from_tool_digest_changes() {
+    let msg = tool_msg_with_image();
+    let original_digest = crate::history_guard::message_digest(&msg);
+    let stripped = super::strip_images_from_tool(&msg);
+    let stripped_digest = crate::history_guard::message_digest(&stripped);
+    assert_ne!(
+        original_digest, stripped_digest,
+        "strip must change the digest (the expected one-time drift)"
+    );
+}
+
+/// `strip_seen_images`: strips every image in the context, recomputes digests
+/// in lockstep, and emits a `StripImages` event with the stripped IDs.
+#[tokio::test]
+async fn strip_seen_images_strips_and_emits_event() {
+    use crate::history_guard::MessageDigest;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let mut context = vec![
+        AgentMessage::user("look at this".to_string()),
+        tool_msg_with_image(),
+        AgentMessage::assistant("here it is".to_string(), String::new(), Vec::new(), None),
+    ];
+    let mut digests: Vec<MessageDigest> =
+        context.iter().map(crate::history_guard::message_digest).collect();
+
+    super::strip_seen_images(&mut context, &mut digests, &tx).await;
+
+    // The tool message is stripped; the others are untouched.
+    match &context[1] {
+        AgentMessage::Tool { images, result, .. } => {
+            assert_eq!(images.as_slice(), []);
+            assert!(result.contains("[image removed:"));
+        }
+        other => panic!("expected Tool message, got {other:?}"),
+    }
+    match &context[0] {
+        AgentMessage::User { content } => assert_eq!(content, "look at this"),
+        other => panic!("expected User message, got {other:?}"),
+    }
+
+    // Digests recomputed in lockstep with the stripped context.
+    assert_eq!(digests.len(), context.len());
+    for (d, m) in digests.iter().zip(context.iter()) {
+        assert_eq!(*d, crate::history_guard::message_digest(m));
+    }
+
+    // Exactly one StripImages event carrying the stripped tool call ID.
+    let event = rx.try_recv().expect("StripImages event must be emitted");
+    match event {
+        AgentEvent::StripImages { tool_call_ids } => {
+            assert_eq!(tool_call_ids, vec!["call_img".to_string()]);
+        }
+        other => panic!("expected StripImages, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "no further events");
+}
+
+/// `strip_seen_images` with no images: no mutation, no event.
+#[tokio::test]
+async fn strip_seen_images_no_images_no_event() {
+    use crate::history_guard::MessageDigest;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let mut context = vec![AgentMessage::user("hello".to_string())];
+    let mut digests: Vec<MessageDigest> =
+        context.iter().map(crate::history_guard::message_digest).collect();
+
+    super::strip_seen_images(&mut context, &mut digests, &tx).await;
+
+    assert!(rx.try_recv().is_err(), "no event when nothing to strip");
+    assert_eq!(context.len(), 1);
+}
+
 #[test]
 fn build_system_prompt_no_agents_md() {
     let dir = TempDir::new().unwrap();

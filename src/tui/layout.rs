@@ -5,20 +5,18 @@
 //!
 //! Rust guideline compliant 2026-02-21
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
-use ratatui::Frame;
-use tachyonfx::{fx, EffectTimer, Interpolation};
+use tachyonfx::{EffectTimer, Interpolation, fx};
 
 use super::app::App;
 use super::editor::FileMatch;
 use super::mode::PopupType;
 use super::theme::Theme;
-use ratatui_widgets::{
-    AutocompletePopup, CommandPaletteOverlay, PanelOverlay,
-};
+use ratatui_widgets::{AutocompletePopup, CommandPaletteOverlay, PanelOverlay};
 
 /// Main layout renderer.
 #[derive(Debug, Default)]
@@ -46,7 +44,12 @@ impl LayoutRenderer {
     }
 
     /// Add fade-in animation for overlay popups.
-    fn maybe_add_popup_fade_effect(app: &mut App, popup_type: PopupType, popup_area: Rect, theme: &Theme) {
+    fn maybe_add_popup_fade_effect(
+        app: &mut App,
+        popup_type: PopupType,
+        popup_area: Rect,
+        theme: &Theme,
+    ) {
         if let Some((current_type, _)) = app.modal.popup_animation
             && current_type == popup_type
         {
@@ -97,16 +100,15 @@ impl LayoutRenderer {
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(1),  // Chat area (fills remaining)
-                Constraint::Length(input_height as u16),  // Prompt input (+ autocomplete)
-                Constraint::Length(1),  // Status bar
+                Constraint::Min(1),                      // Chat area (fills remaining)
+                Constraint::Length(input_height as u16), // Prompt input (+ autocomplete)
+                Constraint::Length(1),                   // Status bar
             ])
             .split(area);
         let (chat_row, input_row, status_row) = (vertical[0], vertical[1], vertical[2]);
 
         // Chat area
         Self::render_chat_area(frame, chat_row, app, theme);
-
 
         // Prompt input area
         Self::render_input_area(frame, input_row, app, theme);
@@ -142,6 +144,11 @@ impl LayoutRenderer {
         // Keep-N compaction prompt overlay (drawn on top of chat area)
         if app.modal.state == super::mode::AppState::CompactKeepPrompt {
             Self::render_compact_keep_prompt(frame, chat_row, app, theme);
+        }
+
+        // Model select popup overlay (drawn on top of chat area)
+        if app.modal.state == super::mode::AppState::ModelSelect {
+            Self::render_model_select_popup(frame, chat_row, app, theme);
         }
 
         // File autocomplete popup overlay (drawn on top of chat/input boundary)
@@ -188,9 +195,7 @@ impl LayoutRenderer {
                     matches,
                     selected,
                     scroll_offset,
-                } if !matches.is_empty() => {
-                    Some((matches.clone(), *selected, *scroll_offset))
-                }
+                } if !matches.is_empty() => Some((matches.clone(), *selected, *scroll_offset)),
                 _ => None,
             }
         } {
@@ -216,6 +221,7 @@ impl LayoutRenderer {
             || app.modal.state == super::mode::AppState::HelpPopup
             || app.modal.state == super::mode::AppState::TokenStatsDialog
             || app.modal.state == super::mode::AppState::CompactKeepPrompt
+            || app.modal.state == super::mode::AppState::ModelSelect
             || any_autocomplete_popup;
         if app.modal.popup_animation.is_some() && !any_popup_active {
             Self::clear_popup_animation(app);
@@ -223,8 +229,11 @@ impl LayoutRenderer {
 
         // Process all effects (tool call stretch + popup expand) over full frame area
         if app.ui.effect_manager.is_running() && elapsed_ms > 0 {
-            let duration = tachyonfx::Duration { milliseconds: elapsed_ms };
-            app.ui.effect_manager
+            let duration = tachyonfx::Duration {
+                milliseconds: elapsed_ms,
+            };
+            app.ui
+                .effect_manager
                 .process_effects(duration, frame.buffer_mut(), area);
         }
     }
@@ -346,19 +355,33 @@ impl LayoutRenderer {
         let sessions = &app.modal.session_select_matches;
 
         let format_timestamp = |ts: &str| -> String {
-            DateTime::parse_from_rfc3339(ts).map_or_else(|_| "unknown".into(), |dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            DateTime::parse_from_rfc3339(ts).map_or_else(
+                |_| "unknown".into(),
+                |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+            )
         };
 
-        let text: Vec<ratatui::text::Line> = sessions.iter().enumerate().map(|(i, s)| {
-            let prefix = if i == app.modal.session_select_index { "↑ " } else { "  " };
-            let date = format_timestamp(&s.timestamp);
-            let msg_preview = s.first_message.chars().take(40).collect::<String>();
-            let label = format!(
-                "{}{} · \"{}\" · {} messages",
-                prefix, date, msg_preview, s.message_count
-            );
-            ratatui::text::Line::from(ratatui::text::Span::styled(label, theme.panel_content_style()))
-        }).collect();
+        let text: Vec<ratatui::text::Line> = sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let prefix = if i == app.modal.session_select_index {
+                    "↑ "
+                } else {
+                    "  "
+                };
+                let date = format_timestamp(&s.timestamp);
+                let msg_preview = s.first_message.chars().take(40).collect::<String>();
+                let label = format!(
+                    "{}{} · \"{}\" · {} messages",
+                    prefix, date, msg_preview, s.message_count
+                );
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    label,
+                    theme.panel_content_style(),
+                ))
+            })
+            .collect();
 
         let overlay = PanelOverlay::new(" Resume Session ")
             .border_style(theme.panel_border_style())
@@ -377,7 +400,10 @@ impl LayoutRenderer {
     ///
     /// Horizontally centered, anchored above the input row, grows upward.
     /// Uses front-truncation for long paths and a footer row to toggle hidden files.
-    #[expect(clippy::too_many_arguments, reason = "render signature unified across all message types")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "render signature unified across all message types"
+    )]
     fn render_file_autocomplete_popup(
         frame: &mut Frame,
         chat_area: Rect,
@@ -425,7 +451,10 @@ impl LayoutRenderer {
 
         // Build display items with front-truncation
         let inner_width = (popup_width - 2).max(1) as usize;
-        let items: Vec<String> = matches.iter().map(|m| m.display_truncated(inner_width)).collect();
+        let items: Vec<String> = matches
+            .iter()
+            .map(|m| m.display_truncated(inner_width))
+            .collect();
 
         // Footer hint line
         let footer_text = if show_hidden {
@@ -462,7 +491,10 @@ impl LayoutRenderer {
     /// Render the skill autocomplete popup as a centered overlay.
     ///
     /// Horizontally centered, anchored above the input row, grows upward.
-    #[expect(clippy::too_many_arguments, reason = "render signature unified across all message types")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "render signature unified across all message types"
+    )]
     fn render_skill_autocomplete_popup(
         frame: &mut Frame,
         chat_area: Rect,
@@ -523,7 +555,6 @@ impl LayoutRenderer {
         frame.render_widget(popup, popup_area);
     }
 
-
     /// Render the help popup as a centered overlay.
     ///
     /// Height is computed from content (~25 rows for current keybindings). Width is fixed at 60.
@@ -538,27 +569,66 @@ impl LayoutRenderer {
         let lines = vec![
             Line::from(""),
             Line::from(headline_span("  Navigation")),
-            Line::from(vec![key_span("    PgUp / PgDown    "), desc_span("Scroll chat page")]),
-            Line::from(vec![key_span("    j / k            "), desc_span("Navigate lists")]),
+            Line::from(vec![
+                key_span("    PgUp / PgDown    "),
+                desc_span("Scroll chat page"),
+            ]),
+            Line::from(vec![
+                key_span("    j / k            "),
+                desc_span("Navigate lists"),
+            ]),
             Line::from(""),
             Line::from(headline_span("  Input")),
-            Line::from(vec![key_span("    Enter            "), desc_span("Send message")]),
-            Line::from(vec![key_span("    Shift+Enter      "), desc_span("New line")]),
-            Line::from(vec![key_span("    Ctrl+G           "), desc_span("Command palette")]),
-            Line::from(vec![key_span("    Ctrl+C / Ctrl+K  "), desc_span("Clear input")]),
-            Line::from(vec![key_span("    Esc              "), desc_span("Clear input")]),
-            Line::from(vec![key_span("    @                "), desc_span("File references")]),
-            Line::from(vec![key_span("    /                "), desc_span("Skill references")]),
+            Line::from(vec![
+                key_span("    Enter            "),
+                desc_span("Send message"),
+            ]),
+            Line::from(vec![
+                key_span("    Shift+Enter      "),
+                desc_span("New line"),
+            ]),
+            Line::from(vec![
+                key_span("    Ctrl+G           "),
+                desc_span("Command palette"),
+            ]),
+            Line::from(vec![
+                key_span("    Ctrl+C / Ctrl+K  "),
+                desc_span("Clear input"),
+            ]),
+            Line::from(vec![
+                key_span("    Esc              "),
+                desc_span("Clear input"),
+            ]),
+            Line::from(vec![
+                key_span("    @                "),
+                desc_span("File references"),
+            ]),
+            Line::from(vec![
+                key_span("    /                "),
+                desc_span("Skill references"),
+            ]),
             Line::from(""),
             Line::from(headline_span("  Display")),
-            Line::from(vec![key_span("    Ctrl+O / Ctrl+/  "), desc_span("Toggle reasoning")]),
-            Line::from(vec![key_span("    Ctrl+T           "), desc_span("Toggle tool output")]),
+            Line::from(vec![
+                key_span("    Ctrl+O / Ctrl+/  "),
+                desc_span("Toggle reasoning"),
+            ]),
+            Line::from(vec![
+                key_span("    Ctrl+T           "),
+                desc_span("Toggle tool output"),
+            ]),
             Line::from(""),
             Line::from(headline_span("  Shortcuts")),
-            Line::from(vec![key_span("    F1               "), desc_span("This help")]),
+            Line::from(vec![
+                key_span("    F1               "),
+                desc_span("This help"),
+            ]),
             Line::from(vec![key_span("    Ctrl+D           "), desc_span("Quit")]),
             Line::from(""),
-            Line::from(Span::styled("  Esc to close", Style::default().fg(theme.text_dim).bg(theme.bg_light))),
+            Line::from(Span::styled(
+                "  Esc to close",
+                Style::default().fg(theme.text_dim).bg(theme.bg_light),
+            )),
         ];
 
         // Dynamic height: content rows + 2 for borders
@@ -612,10 +682,7 @@ impl LayoutRenderer {
     fn render_compact_keep_prompt(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let prompt = app.modal.compact_keep_input.clone();
 
-        let label = Span::styled(
-            "Keep last N user turns: ",
-            Style::default().fg(theme.text),
-        );
+        let label = Span::styled("Keep last N user turns: ", Style::default().fg(theme.text));
         let value = Span::styled(
             format!("[{prompt}]"),
             Style::default().fg(theme.accent).bold(),
@@ -684,6 +751,9 @@ impl LayoutRenderer {
 
         let m = |tokens: u64| super::token_stats::ProjectTokenStats::format_millions(tokens);
 
+        // Two sections: the cache-aware numbers are primary (what the model
+        // actually processed); the raw sum is a dimmed secondary reference
+        // (the theoretical upper bound without prompt caching).
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -691,28 +761,23 @@ impl LayoutRenderer {
                 theme.panel_content_style(),
             )),
             Line::from(""),
+            Line::from(Span::styled("  With prompt caching:", Style::default().fg(theme.accent).bg(theme.bg_light))),
             Line::from(Span::styled(
-                format!("  Input tokens:    {}", m(stats.total_input_tokens)),
+                format!("  Input:           {}", m(stats.effective_input_tokens)),
                 theme.panel_content_style(),
             )),
             Line::from(Span::styled(
-                format!("  Output tokens:   {}", m(stats.total_output_tokens)),
+                format!("  Output:          {}", m(stats.total_output_tokens)),
                 theme.panel_content_style(),
             )),
             Line::from(Span::styled(
-                format!("  Total tokens:    {}", m(stats.total_tokens())),
+                format!("  Total:           {}", m(stats.effective_total_tokens())),
                 theme.panel_content_style(),
             )),
-            Line::from(""),
             Line::from(Span::styled(
                 format!("  Avg input/sess:  {}", m(stats.avg_input_per_session())),
                 theme.panel_content_style(),
             )),
-            Line::from(Span::styled(
-                format!("  Avg output/sess: {}", m(stats.avg_output_per_session())),
-                theme.panel_content_style(),
-            )),
-            Line::from(""),
             Line::from(Span::styled(
                 format!(
                     "  I/O ratio:       {}% / {}%",
@@ -720,6 +785,16 @@ impl LayoutRenderer {
                     stats.output_ratio()
                 ),
                 theme.panel_content_style(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("  Raw (no caching):", Style::default().fg(theme.accent).bg(theme.bg_light))),
+            Line::from(Span::styled(
+                format!("  Input:           {}", m(stats.total_input_tokens)),
+                Style::default().fg(theme.text_dim).bg(theme.bg_light),
+            )),
+            Line::from(Span::styled(
+                format!("  Total:           {}", m(stats.total_tokens())),
+                Style::default().fg(theme.text_dim).bg(theme.bg_light),
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -864,7 +939,10 @@ impl LayoutRenderer {
         Self::maybe_add_popup_fade_effect(app, PopupType::TokenStats, popup_area, theme);
 
         let label = "Gathering metrics";
-        let spans = app.ui.activity_indicator.render_spans(label, theme.text, theme);
+        let spans = app
+            .ui
+            .activity_indicator
+            .render_spans(label, theme.text, theme);
 
         let lines = vec![
             Line::from(""),
@@ -888,9 +966,213 @@ impl LayoutRenderer {
         frame.render_widget(overlay, popup_area);
     }
 
+    /// Render the model select popup as a centered 3-column table.
+    ///
+    /// Columns: `Loaded` | `Name` | `Vision`. A fixed header row sits above the
+    /// (scrollable) model rows; the header is decorative and never navigable. The
+    /// `Name` column is sized to the longest model name and front-truncated with
+    /// `…` if the clamped popup width can't fit it. `Loaded` shows `●`/`○`/`?`
+    /// for llamacpp and `-` for openai; `Vision` shows `◉` when supported, `-`
+    /// otherwise.
+    pub(crate) fn render_model_select_popup(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
+        use super::editor::FILE_POPUP_PAGE_SIZE;
+        use ratatui::style::Modifier;
+        use ratatui::text::Text;
+        use ratatui::widgets::{Block, Borders, Paragraph};
+        use ratatui_widgets::PANEL_BORDER;
+        use unicode_width::UnicodeWidthStr;
+
+        let models = app.modal.model_select_models.clone();
+        if models.is_empty() {
+            return;
+        }
+
+        let is_llamacpp = matches!(
+            app.config.config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        );
+
+        // Column widths (display columns). The Name column is dynamic.
+        const ARROW_W: usize = 2;
+        const LOADED_W: usize = 6; // max("Loaded", 1)
+        const VISION_W: usize = 6; // max("Vision", 1)
+        const GAP: usize = 1;
+        const RIGHT_PAD: usize = 1;
+        const FIXED_W: usize = ARROW_W + LOADED_W + GAP + GAP + VISION_W + RIGHT_PAD;
+
+        // Name column = max of the "Name" header and the longest model name.
+        let longest = models.iter().map(|m| m.width()).max().unwrap_or(0);
+        let name_w = longest.max(4);
+
+        // Popup width from the required table width, clamped 40–100 & area.
+        let required_width = (FIXED_W + name_w + 2) as u16; // +2 borders
+        let popup_width = required_width.clamp(40, 100).min(area.width);
+        let inner_width = popup_width as usize - 2;
+        // If the clamp shrank the width, the Name column absorbs the loss.
+        let name_w = inner_width.saturating_sub(FIXED_W).max(1);
+
+        let visible_count = models.len().min(FILE_POPUP_PAGE_SIZE);
+        let popup_height = (visible_count + 3) as u16; // header + rows + 2 borders
+        let popup_height = popup_height.min(area.height);
+        if popup_height < 4 {
+            return;
+        }
+
+        let popup_x = area.x + (area.width - popup_width) / 2;
+        let popup_y = area.y + (area.height - popup_height) / 2;
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        Self::maybe_add_popup_fade_effect(app, PopupType::ModelSelect, popup_area, theme);
+
+        let selected = app.modal.model_select_index;
+        let scroll_offset = app.modal.model_select_scroll_offset;
+
+        // Virtual scroll window over the model rows (the header is fixed above).
+        let page_size = (popup_height as usize - 2 - 1).max(1); // content rows - header
+        let mut offset = scroll_offset;
+        if selected >= offset + page_size {
+            offset = selected - page_size + 1;
+        } else if selected < offset {
+            offset = selected;
+        }
+        let visible_end = (offset + page_size).min(models.len());
+
+        // Right-pad a string to `w` display columns.
+        let pad = |s: &str, w: usize| -> String {
+            let cur = s.width();
+            if cur >= w {
+                s.to_string()
+            } else {
+                format!("{s}{}", " ".repeat(w - cur))
+            }
+        };
+
+        // Header row (muted), fixed at the top of the content.
+        let header_bg = theme.bg_light;
+        let header = Line::from(vec![
+            Span::styled("  ", Style::default().fg(theme.text_muted).bg(header_bg)),
+            Span::styled(
+                pad("Loaded", LOADED_W),
+                Style::default().fg(theme.text_muted).bg(header_bg),
+            ),
+            Span::styled(" ", Style::default().bg(header_bg)),
+            Span::styled(
+                pad("Name", name_w),
+                Style::default().fg(theme.text_muted).bg(header_bg),
+            ),
+            Span::styled(" ", Style::default().bg(header_bg)),
+            Span::styled(
+                pad("Vision", VISION_W),
+                Style::default().fg(theme.text_muted).bg(header_bg),
+            ),
+            Span::styled(" ", Style::default().bg(header_bg)),
+        ]);
+
+        let mut lines: Vec<Line> = vec![header];
+        for (i, model) in models.iter().enumerate().skip(offset).take(visible_end - offset) {
+            let is_selected = i == selected;
+            let bg = if is_selected { theme.accent } else { theme.bg_light };
+
+            // Loaded cell: `●`/`○`/`?` (llamacpp) or `-` (openai).
+            let (loaded_icon, loaded_color) = if is_llamacpp {
+                let loaded = app
+                    .config
+                    .discovered_models
+                    .iter()
+                    .find(|m| &m.name == model)
+                    .and_then(|dm| dm.loaded);
+                match loaded {
+                    Some(true) => ("●", theme.green),
+                    Some(false) => ("○", theme.orange),
+                    None => ("?", theme.text_muted),
+                }
+            } else {
+                ("-", theme.text_muted)
+            };
+
+            // Vision cell: `◉` when supported, `-` otherwise.
+            let vision = if is_llamacpp {
+                app.config
+                    .discovered_models
+                    .iter()
+                    .find(|m| &m.name == model)
+                    .is_some_and(|dm| dm.vision == Some(true))
+            } else {
+                app.config
+                    .config
+                    .provider
+                    .models
+                    .iter()
+                    .find(|m| &m.name == model)
+                    .is_some_and(|m| m.vision)
+            };
+            let (vision_icon, vision_color) = if vision {
+                ("◉", theme.accent)
+            } else {
+                ("-", theme.text_muted)
+            };
+
+            let name_display = AutocompletePopup::truncate_front_str(model, name_w);
+            let arrow_style = Style::default()
+                .fg(theme.text)
+                .bg(bg)
+                .add_modifier(if is_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
+
+            lines.push(Line::from(vec![
+                Span::styled(if is_selected { "→ " } else { "  " }, arrow_style),
+                Span::styled(
+                    pad(loaded_icon, LOADED_W),
+                    Style::default().fg(loaded_color).bg(bg),
+                ),
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    pad(&name_display, name_w),
+                    Style::default().fg(theme.text).bg(bg),
+                ),
+                Span::styled(" ", Style::default().bg(bg)),
+                Span::styled(
+                    pad(vision_icon, VISION_W),
+                    Style::default().fg(vision_color).bg(bg),
+                ),
+                Span::styled(" ", Style::default().bg(bg)),
+            ]));
+        }
+
+        // Fill remaining content rows with blank (bg_light) lines.
+        let content_rows = popup_height as usize - 2;
+        while lines.len() < content_rows {
+            lines.push(Line::from(Span::styled(
+                " ".repeat(inner_width),
+                Style::default().bg(theme.bg_light),
+            )));
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(PANEL_BORDER)
+            .border_style(theme.panel_border_style())
+            .title(Span::styled(" Select Model ", theme.panel_title_style()));
+
+        let paragraph = Paragraph::new(Text::from(lines))
+            .block(block)
+            .style(Style::default().bg(theme.bg_light));
+
+        frame.render_widget(Clear, popup_area);
+        frame.render_widget(paragraph, popup_area);
+    }
+
     fn render_chat_area(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
-        use ratatui::widgets::Block;
         use super::messages::ChatRenderer;
+        use ratatui::widgets::Block;
         frame.render_widget(Clear, area);
         // Fill full area with chat bg — Block reliably fills all cells
         let bg = Block::new().style(Style::default().bg(theme.bg));
@@ -907,7 +1189,6 @@ impl LayoutRenderer {
         }
     }
 
-
     fn render_input_area(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         use super::editor::EditorRenderer;
         use ratatui::widgets::Block;
@@ -918,7 +1199,11 @@ impl LayoutRenderer {
         // Render side borders (left and right only, no top/bottom)
         let border = Block::new()
             .borders(ratatui::widgets::Borders::LEFT | ratatui::widgets::Borders::RIGHT)
-            .border_style(Style::default().fg(theme.accent).add_modifier(ratatui::style::Modifier::BOLD));
+            .border_style(
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            );
         frame.render_widget(border, area);
         // Inner area for editor content (inside borders)
         let inner = Rect {

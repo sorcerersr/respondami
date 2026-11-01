@@ -31,11 +31,16 @@ use tokio::sync::mpsc;
 
 /// Register a skill's frontmatter hooks into the registry.
 ///
+/// Idempotent: any previously registered hooks for this skill are removed
+/// first, so re-registering (a model re-activating an active skill, or a
+/// skill file edited on disk) yields exactly one copy of each hook.
+///
 /// Hook names are tagged with the skill name (`<skill>:<script>`) for
 /// deterministic ordering and TUI display. `SKILL_NAME`/`SKILL_DIR` env vars
 /// are set from the skill at execution time. A matcher that fails to compile
 /// is logged and the hook is registered as never-firing.
 pub fn register_skill_hooks(registry: &mut HookRegistry, skill: &Skill) {
+    registry.remove_skill_hooks(&skill.name);
     for hook in &skill.hooks {
         let matcher = match &hook.matcher {
             None => ToolMatcher::All,

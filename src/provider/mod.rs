@@ -6,17 +6,20 @@
 //! Rust guideline compliant 2026-02-21
 
 mod llamacpp;
+mod openai;
 mod sse;
 
 #[doc(inline)]
 pub use llamacpp::LlamaCppProvider;
+#[doc(inline)]
+pub use openai::OpenAIProvider;
 
 #[cfg(test)]
 mod finalize_tool_calls_tests;
 #[cfg(test)]
-mod llamacpp_tests;
-#[cfg(test)]
 mod mod_tests;
+#[cfg(test)]
+mod openai_tests;
 #[cfg(test)]
 mod sse_tests;
 
@@ -61,7 +64,9 @@ impl Message {
     #[must_use]
     pub fn content(&self) -> &str {
         match self {
-            Message::System { content } | Message::User { content, .. } | Message::Assistant { content, .. } => content,
+            Message::System { content }
+            | Message::User { content, .. }
+            | Message::Assistant { content, .. } => content,
             Message::Tool { result, .. } => result,
         }
     }
@@ -117,6 +122,21 @@ pub struct CompletionResponse {
     pub usage: Option<Usage>,
 }
 
+/// A model discovered from the provider's `/v1/models` endpoint.
+#[derive(Debug, Clone)]
+pub struct DiscoveredModel {
+    /// The model name (exact string to send in requests).
+    pub name: String,
+    /// The model's context length, if reported by the endpoint.
+    pub context_length: Option<u32>,
+    /// Whether the model is currently loaded on the server. `None` when the
+    /// endpoint does not report it (the generic `OpenAI` provider).
+    pub loaded: Option<bool>,
+    /// Whether the model supports vision (image input). `None` when the
+    /// endpoint does not report it (the generic `OpenAI` provider).
+    pub vision: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Provider trait — extensible abstraction
 // ---------------------------------------------------------------------------
@@ -145,6 +165,9 @@ pub trait ProviderTrait: Send + Sync {
     /// `model` — the configured model name to probe with (some endpoints
     /// reject unknown model names, so the literal `"dummy"` was unreliable).
     async fn ping(&self, model: &str) -> Result<(), ProviderError>;
+
+    /// List models available at the provider's `/v1/models` endpoint.
+    async fn list_models(&self) -> Result<Vec<DiscoveredModel>, ProviderError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +198,7 @@ impl Provider {
     /// Construct a provider from config settings.
     ///
     /// Dispatches to the appropriate provider implementation based on the
-    /// `ProviderSettings` variant (currently only `LlamaCpp`).
+    /// `ProviderSettings` variant (`OpenAI` or `LlamaCpp`).
     ///
     /// # Errors
     ///
@@ -183,16 +206,21 @@ impl Provider {
     /// not configured or unavailable.
     pub fn from_settings(settings: &ProviderSettings) -> Result<Self, ProviderError> {
         match settings {
-            ProviderSettings::LlamaCpp(s) => {
-                Ok(Provider { inner: Box::new(LlamaCppProvider::from_settings(s)) })
-            }
+            ProviderSettings::OpenAI(s) => Ok(Provider {
+                inner: Box::new(OpenAIProvider::from_settings(s)),
+            }),
+            ProviderSettings::LlamaCpp(s) => Ok(Provider {
+                inner: Box::new(LlamaCppProvider::from_settings(s)),
+            }),
         }
     }
 
     /// Clone the provider for use in spawned tasks.
     #[must_use]
     pub fn clone_provider(&self) -> Self {
-        Provider { inner: self.inner.clone_box() }
+        Provider {
+            inner: self.inner.clone_box(),
+        }
     }
 
     /// Construct a provider from an arbitrary trait implementation.
@@ -238,6 +266,16 @@ impl Provider {
     pub async fn ping(&self, model: &str) -> Result<(), ProviderError> {
         self.inner.ping(model).await
     }
+
+    /// List models available at the provider's `/v1/models` endpoint.
+    ///
+    /// # Errors
+    ///
+    /// - Network errors if the provider endpoint is unreachable.
+    /// - HTTP errors if the endpoint returns a non-200 status.
+    pub async fn list_models(&self) -> Result<Vec<DiscoveredModel>, ProviderError> {
+        self.inner.list_models().await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +286,7 @@ impl Provider {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderType {
+    OpenAI,
     LlamaCpp,
 }
 
@@ -255,11 +294,22 @@ pub enum ProviderType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderSettings {
+    #[serde(rename = "openai")]
+    OpenAI(OpenAISettings),
     #[serde(rename = "llamacpp")]
     LlamaCpp(LlamaCppSettings),
 }
 
 /// Settings for OpenAI-compatible providers (llama.cpp, Ollama, vLLM, `OpenAI`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAISettings {
+    #[serde(default = "default_url")]
+    pub url: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Settings for the llama.cpp provider (autodetects models from the server).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlamaCppSettings {
     #[serde(default = "default_url")]
@@ -290,10 +340,13 @@ pub fn agent_message_to_message(msg: &AgentMessage) -> Message {
             content: content.clone(),
             images: Vec::new(),
         },
-        AgentMessage::Assistant { content: blocks, .. } => {
+        AgentMessage::Assistant {
+            content: blocks, ..
+        } => {
             let content = msg.text();
             let reasoning = msg.thinking();
-            let tool_calls: Vec<ToolCall> = blocks.iter()
+            let tool_calls: Vec<ToolCall> = blocks
+                .iter()
                 .filter_map(|b| {
                     if let ContentBlock::ToolCall { tool_call } = b {
                         Some(tool_call.clone())
@@ -355,10 +408,7 @@ pub fn agent_messages_to_provider_messages(messages: &[AgentMessage]) -> Vec<Mes
 }
 
 /// Accumulate a `ToolCallDelta` into a `PartialToolCall`.
-pub fn accumulate_tool_call(
-    pending: &mut Vec<PartialToolCall>,
-    delta: &ToolCallDelta,
-) {
+pub fn accumulate_tool_call(pending: &mut Vec<PartialToolCall>, delta: &ToolCallDelta) {
     let idx = delta.index as usize;
     while pending.len() <= idx {
         pending.push(PartialToolCall {
@@ -570,7 +620,10 @@ impl ProviderError {
 pub fn is_context_overflow(status: u16, body: &str) -> bool {
     // 1. Try to parse structured error and check `error.type`
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(body)
-        && let Some(error_type) = val.get("error").and_then(|e| e.get("type")).and_then(|t| t.as_str())
+        && let Some(error_type) = val
+            .get("error")
+            .and_then(|e| e.get("type"))
+            .and_then(|t| t.as_str())
     {
         let context_overflow_types = [
             "exceed_context_size_error",

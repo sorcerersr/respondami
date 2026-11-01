@@ -18,6 +18,10 @@ use super::panel_overlay::PANEL_BORDER;
 pub struct AutocompletePopup {
     /// Items to display.
     items: Vec<String>,
+    /// Optional styled items (one `Line` per row, with per-span colors). When
+    /// `Some`, these are rendered in place of `items` (which is kept only for
+    /// count/width purposes). Used by the model picker for per-row icons.
+    styled_items: Option<Vec<Line<'static>>>,
     /// Index of the selected item.
     selected: usize,
     /// Virtual scroll offset.
@@ -65,6 +69,7 @@ impl AutocompletePopup {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
+            styled_items: None,
             selected: 0,
             scroll_offset: 0,
             anchor_col: 0,
@@ -93,6 +98,24 @@ impl AutocompletePopup {
     pub fn items(mut self, items: Vec<String>) -> Self {
         self.items = items;
         self
+    }
+
+    /// Set styled items to display (one `Line` per row, with per-span colors).
+    /// When set, these are rendered in place of the plain `items`, which is
+    /// kept only for count/width purposes. The caller is responsible for
+    /// including the selection arrow and background in each `Line`.
+    pub fn items_styled(mut self, items: Vec<Line<'static>>) -> Self {
+        self.styled_items = Some(items);
+        self
+    }
+
+    /// Number of displayable items (styled items win over plain items).
+    fn item_count(&self) -> usize {
+        self
+            .styled_items
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(self.items.len())
     }
 
     /// Set the selected item index.
@@ -202,11 +225,11 @@ impl AutocompletePopup {
     /// Only used when `centered` is false. When centered, the caller provides
     /// the area directly.
     pub fn area(&self, terminal_width: u16, _terminal_height: u16) -> Option<Rect> {
-        if self.items.is_empty() {
+        if self.item_count() == 0 {
             return None;
         }
 
-        let visible_count = self.items.len().min(self.max_height);
+        let visible_count = self.item_count().min(self.max_height);
         let footer_height = if self.footer.is_some() { 2 } else { 0 }; // divider + footer
         let popup_height = (visible_count + 2 + footer_height) as u16;
 
@@ -247,14 +270,14 @@ impl AutocompletePopup {
 
     /// Calculate the height of the widget.
     pub fn height(&self) -> usize {
-        let visible = self.items.len().min(self.max_height);
+        let visible = self.item_count().min(self.max_height);
         let footer_height = if self.footer.is_some() { 2 } else { 0 };
         visible + 2 + footer_height // borders + footer (divider + line)
     }
 
     /// Truncate a string from the front if it exceeds `max_width`, preserving
     /// the rightmost characters. Prepends `…` to indicate truncation.
-    fn truncate_front_str(s: &str, max_width: usize) -> String {
+    pub fn truncate_front_str(s: &str, max_width: usize) -> String {
         let display_width = s.width();
         if display_width <= max_width {
             return s.to_string();
@@ -301,31 +324,39 @@ impl AutocompletePopup {
         } else if self.selected < offset {
             offset = self.selected;
         }
-        let visible_end = (offset + page_size).min(self.items.len());
+        let visible_end = (offset + page_size).min(self.item_count());
 
         let inner_width = (area.width - 2).max(1) as usize;
         let mut lines: Vec<Line> = Vec::new();
-        for (i, item) in self.items[offset..visible_end].iter().enumerate() {
-            let is_selected = (offset + i) == self.selected;
-            let arrow = if is_selected { "→ " } else { "  " };
+        if let Some(styled) = &self.styled_items {
+            // Styled items: the caller already built each row (arrow, icons,
+            // name, background). Render them verbatim.
+            for row in &styled[offset..visible_end] {
+                lines.push(row.clone());
+            }
+        } else {
+            for (i, item) in self.items[offset..visible_end].iter().enumerate() {
+                let is_selected = (offset + i) == self.selected;
+                let arrow = if is_selected { "→ " } else { "  " };
 
-            let display_item = if self.truncate_front && item.width() > inner_width.saturating_sub(2) {
-                Self::truncate_front_str(item, inner_width.saturating_sub(2))
-            } else {
-                item.clone()
-            };
+                let display_item = if self.truncate_front && item.width() > inner_width.saturating_sub(2) {
+                    Self::truncate_front_str(item, inner_width.saturating_sub(2))
+                } else {
+                    item.clone()
+                };
 
-            let display = format!("{}{}", arrow, display_item);
+                let display = format!("{}{}", arrow, display_item);
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(self.text_color)
-                    .bg(self.accent_color)
-                    .add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                Style::default().fg(self.text_color).bg(self.content_bg)
-            };
-            lines.push(Line::from(Span::styled(display, style)));
+                let style = if is_selected {
+                    Style::default()
+                        .fg(self.text_color)
+                        .bg(self.accent_color)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    Style::default().fg(self.text_color).bg(self.content_bg)
+                };
+                lines.push(Line::from(Span::styled(display, style)));
+            }
         }
 
         // Fill remaining rows
@@ -476,5 +507,59 @@ mod tests {
         // Content should contain ellipsis
         let row_text: String = (0..24).map(|x| buf.cell((x, 1)).map(|c| c.symbol()).unwrap_or("")) .collect();
         assert!(row_text.contains("…"), "Expected ellipsis in rendered row, got: {}", row_text);
+    }
+
+    #[test]
+    fn render_styled_items() {
+        // Two styled rows: a green `●` + name, and an orange `○` + name + `◉`.
+        let styled = vec![
+            Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(ratatui::style::Color::Green)),
+                Span::styled("coder-27b", Style::default().fg(ratatui::style::Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("  ○ ", Style::default().fg(ratatui::style::Color::Yellow)),
+                Span::styled("vision", Style::default().fg(ratatui::style::Color::White)),
+                Span::styled(" ◉", Style::default().fg(ratatui::style::Color::Blue)),
+            ]),
+        ];
+        let popup = AutocompletePopup::new()
+            .items(vec!["coder-27b".into(), "vision".into()])
+            .items_styled(styled)
+            .selected(0);
+        let area = Rect::new(0, 0, 20, 4); // 2 items + 2 borders
+        let mut buf = Buffer::empty(area);
+        popup.render_into(area, &mut buf);
+        // Row 1 (y=1): `●` at x=3, name starts at x=5 (line = "  ● coder-27b").
+        assert_eq!(buf.cell((3, 1)).map(|c| c.symbol()), Some("●"));
+        assert_eq!(buf.cell((5, 1)).map(|c| c.symbol()), Some("c"));
+        // Row 2 (y=2): `○` at x=3, `◉` after the name.
+        assert_eq!(buf.cell((3, 2)).map(|c| c.symbol()), Some("○"));
+        // The vision icon `◉` should be present somewhere in row 2.
+        let row2: String = (0..20)
+            .map(|x| buf.cell((x, 2)).map(|c| c.symbol().to_string()).unwrap_or_default())
+            .collect();
+        assert!(row2.contains('◉'), "expected ◉ in row 2, got: {row2}");
+    }
+
+    #[test]
+    fn height_with_styled_items() {
+        let styled = vec![Line::from("a"), Line::from("b"), Line::from("c")];
+        let popup = AutocompletePopup::new().items_styled(styled).max_height(10);
+        assert_eq!(popup.height(), 5); // 3 items + 2 borders
+    }
+
+    #[test]
+    fn area_with_styled_items() {
+        let styled = vec![Line::from("a"), Line::from("b")];
+        let popup = AutocompletePopup::new()
+            .items_styled(styled)
+            .anchor_col(10)
+            .anchor_row(20);
+        let area = popup.area(80, 24);
+        assert!(area.is_some());
+        let a = area.unwrap();
+        assert_eq!(a.x, 10);
+        assert_eq!(a.y, 16); // 20 - 4 (2 items + 2 borders)
     }
 }

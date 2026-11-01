@@ -12,10 +12,15 @@ use crate::session::{AgentMessage, SessionEntry, Usage};
 pub struct ProjectTokenStats {
     /// Number of sessions scanned.
     pub session_count: usize,
-    /// Total input tokens across all sessions.
+    /// Total input tokens across all sessions (raw sum of every request's
+    /// prompt tokens — the upper bound, no prompt caching considered).
     pub total_input_tokens: u64,
     /// Total output tokens across all sessions.
     pub total_output_tokens: u64,
+    /// Cache-aware input estimate: sum of the max `prompt_tokens` per session
+    /// (same math as the live status-bar counter — assumes the prompt cache
+    /// serves the full prior prefix on every request).
+    pub effective_input_tokens: u64,
 }
 
 impl ProjectTokenStats {
@@ -25,38 +30,39 @@ impl ProjectTokenStats {
         self.total_input_tokens + self.total_output_tokens
     }
 
-    /// Average input tokens per session. Returns 0 if no sessions.
+    /// Cache-aware total: effective input + output (output is unaffected by
+    /// prompt caching).
+    #[must_use]
+    pub fn effective_total_tokens(&self) -> u64 {
+        self.effective_input_tokens + self.total_output_tokens
+    }
+
+    /// Average effective (cache-aware) input tokens per session. Returns 0 if
+    /// no sessions.
     #[must_use]
     pub fn avg_input_per_session(&self) -> u64 {
         if self.session_count == 0 {
             return 0;
         }
-        self.total_input_tokens / self.session_count as u64
+        self.effective_input_tokens / self.session_count as u64
     }
 
-    /// Average output tokens per session. Returns 0 if no sessions.
-    #[must_use]
-    pub fn avg_output_per_session(&self) -> u64 {
-        if self.session_count == 0 {
-            return 0;
-        }
-        self.total_output_tokens / self.session_count as u64
-    }
-
-    /// Input percentage of total tokens. Returns 0 if no tokens.
+    /// Input percentage of the effective (cache-aware) total tokens. Returns 0
+    /// if no tokens.
     #[must_use]
     pub fn input_ratio(&self) -> u64 {
-        let total = self.total_tokens();
+        let total = self.effective_total_tokens();
         if total == 0 {
             return 0;
         }
-        (self.total_input_tokens * 100) / total
+        (self.effective_input_tokens * 100) / total
     }
 
-    /// Output percentage of total tokens. Returns 0 if no tokens.
+    /// Output percentage of the effective (cache-aware) total tokens. Returns 0
+    /// if no tokens.
     #[must_use]
     pub fn output_ratio(&self) -> u64 {
-        let total = self.total_tokens();
+        let total = self.effective_total_tokens();
         if total == 0 {
             return 0;
         }
@@ -75,6 +81,9 @@ impl ProjectTokenStats {
 ///
 /// Reads every `.jsonl` file in `.respondami/sessions/`, parses `Assistant`
 /// messages, and sums their `Usage.prompt_tokens` and `Usage.completion_tokens`.
+/// Also tracks the per-session max `prompt_tokens` for the cache-aware
+/// `effective_input_tokens` estimate (each session has its own cache prefix,
+/// so the max is per session, not global).
 ///
 /// Returns `Ok(default)` when the sessions directory does not exist or contains
 /// no valid session files ("no sessions"), and `Err(message)` when a read error
@@ -89,6 +98,7 @@ pub fn compute_project_stats(cwd: &Path) -> Result<ProjectTokenStats, String> {
     let mut session_count = 0usize;
     let mut total_input: u64 = 0;
     let mut total_output: u64 = 0;
+    let mut effective_input: u64 = 0;
 
     let entries = std::fs::read_dir(&sessions_dir)
         .map_err(|e| format!("cannot list {}: {e}", sessions_dir.display()))?;
@@ -111,6 +121,11 @@ pub fn compute_project_stats(cwd: &Path) -> Result<ProjectTokenStats, String> {
                 }
             };
 
+            // Per-session max prompt: each session has its own cache prefix,
+            // so the effective estimate uses the max within this file, not a
+            // global max.
+            let mut session_max_prompt: u64 = 0;
+
             for (i, line) in content.lines().enumerate() {
                 let line = line.trim();
                 if line.is_empty() {
@@ -129,6 +144,7 @@ pub fn compute_project_stats(cwd: &Path) -> Result<ProjectTokenStats, String> {
                         {
                             total_input += *prompt_tokens as u64;
                             total_output += *completion_tokens as u64;
+                            session_max_prompt = session_max_prompt.max(*prompt_tokens as u64);
                         }
                     }
                     Ok(_) => {}
@@ -142,6 +158,8 @@ pub fn compute_project_stats(cwd: &Path) -> Result<ProjectTokenStats, String> {
                     }
                 }
             }
+
+            effective_input += session_max_prompt;
         }
     }
 
@@ -153,5 +171,6 @@ pub fn compute_project_stats(cwd: &Path) -> Result<ProjectTokenStats, String> {
         session_count,
         total_input_tokens: total_input,
         total_output_tokens: total_output,
+        effective_input_tokens: effective_input,
     })
 }

@@ -5,6 +5,28 @@ use super::app::App;
 use super::chat_state::ChatState;
 use super::messages::{ChatMessage, UserMessage, AssistantMessage, SystemMessage};
 use crate::session::{RequestTokenUsage, Usage};
+use crate::skills::{Skill, SkillHook, SkillSource};
+
+fn app_with_skill(name: &str, hooks: Vec<SkillHook>) -> App {
+    let mut app = App::new(
+        crate::config::Config::default(),
+        std::path::PathBuf::from("."),
+    );
+    // Hermetic: drop any directory hooks loaded from the real config dir so
+    // the exact-count assertions below are environment-independent.
+    app.config.hook_registry = crate::hooks::HookRegistry::new();
+    app.config.skills = vec![Skill {
+        name: name.to_string(),
+        description: "test skill".to_string(),
+        license: None,
+        metadata: std::collections::HashMap::new(),
+        hooks,
+        file_path: std::path::PathBuf::from(format!("/skills/{name}/SKILL.md")),
+        base_dir: std::path::PathBuf::from(format!("/skills/{name}")),
+        source: SkillSource::Global,
+    }];
+    app
+}
 
     // Scroll behavior tests (pinned scroll, auto-scroll)
     #[test]
@@ -187,6 +209,62 @@ use crate::session::{RequestTokenUsage, Usage};
         assert_eq!(app.editor.saved_cursor, 0);
     }
 
+    // Skill activation tests (`/skillname` path: set + hook registry sync)
+    #[test]
+    fn activate_skill_registers_hooks_on_new_activation() {
+        let mut app = app_with_skill(
+            "refine",
+            vec![SkillHook {
+                event: crate::hooks::HookEvent::PreToolUse,
+                command: "sh /skills/refine/scripts/enforce.sh".to_string(),
+                matcher: Some("Read|Write".to_string()),
+            }],
+        );
+
+        let newly = app.activate_skill("refine");
+
+        assert!(newly);
+        assert!(app.active_skills.contains("refine"));
+        let hooks = app.config.hook_registry.hooks(crate::hooks::HookEvent::PreToolUse);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].name, "refine:enforce.sh");
+        assert_eq!(hooks[0].skill_name, Some("refine".to_string()));
+    }
+
+    #[test]
+    fn activate_skill_second_activation_no_duplicate_hooks() {
+        let mut app = app_with_skill(
+            "refine",
+            vec![SkillHook {
+                event: crate::hooks::HookEvent::PreToolUse,
+                command: "sh /skills/refine/scripts/enforce.sh".to_string(),
+                matcher: None,
+            }],
+        );
+
+        assert!(app.activate_skill("refine"));
+        assert!(!app.activate_skill("refine"));
+
+        assert_eq!(
+            app.config
+                .hook_registry
+                .hooks(crate::hooks::HookEvent::PreToolUse)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn activate_skill_unknown_name_updates_set_without_hooks() {
+        let mut app = app_with_skill("refine", Vec::new());
+
+        let newly = app.activate_skill("nonexistent");
+
+        assert!(newly);
+        assert!(app.active_skills.contains("nonexistent"));
+        assert_eq!(app.config.hook_registry.total_count(), 0);
+    }
+
     // Token usage reset tests (session boundary vs turn boundary)
     #[test]
     fn reset_for_new_session_zeroes_all_usage() {
@@ -262,4 +340,290 @@ use crate::session::{RequestTokenUsage, Usage};
         assert_eq!(app.session.current_request_usage.output_tokens, 400);
         assert_eq!(app.session.cumulative_usage.input_tokens, 3_000);
         assert_eq!(app.session.cumulative_usage.output_tokens, 400);
+    }
+
+    // Live model state tests (Phase 3: ConfigState vision/loaded/discovered +
+    // live_config injection + switch_model divergence)
+
+    fn llamacpp_app() -> App {
+        let mut config = crate::config::Config::default();
+        config.provider.settings = crate::provider::ProviderSettings::LlamaCpp(
+            crate::provider::LlamaCppSettings {
+                url: "http://192.168.178.68:8080".to_string(),
+                api_key: "1234".to_string(),
+            },
+        );
+        config.provider.models.clear();
+        config.provider.active_model.clear();
+        App::new(config, std::path::PathBuf::from("."))
+    }
+
+    #[test]
+    fn app_new_llamacpp_placeholder() {
+        let app = llamacpp_app();
+        assert_eq!(app.config.model_name, "…");
+        assert_eq!(app.config.context_window, 32768);
+        assert!(!app.config.vision);
+        assert_eq!(app.config.loaded, None);
+        assert_eq!(app.config.discovered_models.len(), 0);
+    }
+
+    #[test]
+    fn app_new_openai_from_config() {
+        let app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        assert_eq!(app.config.model_name, "llama3.2");
+        assert_eq!(app.config.context_window, 32768);
+        assert!(app.config.vision);
+        assert_eq!(app.config.loaded, None);
+    }
+
+    #[test]
+    fn live_config_llamacpp_injects_synthetic_entry() {
+        let mut app = llamacpp_app();
+        app.config.model_name = "coder-27b".to_string();
+        app.config.context_window = 200192;
+        app.config.vision = false;
+        let live = app.config.live_config();
+        assert_eq!(live.provider.active_model, "coder-27b");
+        assert_eq!(live.provider.active_context_window(), 200192);
+        assert!(!live.provider.active_vision());
+    }
+
+    #[test]
+    fn live_config_openai_updates_existing_entry() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        // The default config has one model (llama3.2). Change the live values.
+        app.config.model_name = "llama3.2".to_string();
+        app.config.context_window = 12345;
+        app.config.vision = false;
+        let live = app.config.live_config();
+        assert_eq!(live.provider.active_model, "llama3.2");
+        assert_eq!(live.provider.active_context_window(), 12345);
+        assert!(!live.provider.active_vision());
+    }
+
+    #[test]
+    fn resolve_discovered_returns_fields() {
+        let mut app = llamacpp_app();
+        app.config.discovered_models = vec![crate::provider::DiscoveredModel {
+            name: "coder-27b-vision".to_string(),
+            context_length: Some(161072),
+            loaded: Some(false),
+            vision: Some(true),
+        }];
+        let (ctx, vision, loaded) =
+            app.config.resolve_discovered("coder-27b-vision").unwrap();
+        assert_eq!(ctx, 161072);
+        assert!(vision);
+        assert_eq!(loaded, Some(false));
+    }
+
+    #[test]
+    fn resolve_discovered_missing_is_none() {
+        let app = llamacpp_app();
+        assert!(app.config.resolve_discovered("nope").is_none());
+    }
+
+    #[test]
+    fn resolve_discovered_fallbacks() {
+        // vision None → false, context_length None → 32768, loaded None → None.
+        let mut app = llamacpp_app();
+        app.config.discovered_models = vec![crate::provider::DiscoveredModel {
+            name: "mystery".to_string(),
+            context_length: None,
+            loaded: None,
+            vision: None,
+        }];
+        let (ctx, vision, loaded) = app.config.resolve_discovered("mystery").unwrap();
+        assert_eq!(ctx, 32768);
+        assert!(!vision);
+        assert_eq!(loaded, None);
+    }
+
+    #[tokio::test]
+    async fn switch_model_llamacpp_updates_live_no_config_write() {
+        let mut app = llamacpp_app();
+        app.config.discovered_models = vec![crate::provider::DiscoveredModel {
+            name: "coder-27b-vision".to_string(),
+            context_length: Some(161072),
+            loaded: Some(false),
+            vision: Some(true),
+        }];
+        app.switch_model("coder-27b-vision");
+        assert_eq!(app.config.model_name, "coder-27b-vision");
+        assert_eq!(app.config.context_window, 161072);
+        assert!(app.config.vision);
+        assert_eq!(app.config.loaded, Some(false));
+        // No config write: the stored provider's active_model stays empty.
+        assert_eq!(app.config.config.provider.active_model, "");
+        assert_eq!(app.config.config.provider.models.len(), 0);
+    }
+
+    #[test]
+    fn switch_model_openai_writes_config() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        // Add a second model to switch to.
+        app.config
+            .config
+            .provider
+            .models
+            .push(crate::config::ModelConfig {
+                name: "other".to_string(),
+                context_window: 9999,
+                vision: false,
+            });
+        app.switch_model("other");
+        assert_eq!(app.config.model_name, "other");
+        assert_eq!(app.config.context_window, 9999);
+        assert!(!app.config.vision);
+        // Config write: the stored provider's active_model is updated.
+        assert_eq!(app.config.config.provider.active_model, "other");
+    }
+
+    // Phase 4: startup/refresh model fetch application
+
+    fn discovered(name: &str, ctx: Option<u32>, loaded: Option<bool>, vision: Option<bool>) -> crate::provider::DiscoveredModel {
+        crate::provider::DiscoveredModel {
+            name: name.to_string(),
+            context_length: ctx,
+            loaded,
+            vision,
+        }
+    }
+
+    #[test]
+    fn apply_fetched_models_startup_prefers_loaded() {
+        let mut app = llamacpp_app();
+        app.apply_fetched_models(
+            vec![
+                discovered("a", Some(1000), Some(false), None),
+                discovered("b", Some(2000), Some(true), Some(true)),
+                discovered("c", Some(3000), Some(false), None),
+            ],
+            false,
+        );
+        assert_eq!(app.config.model_name, "b");
+        assert_eq!(app.config.context_window, 2000);
+        assert!(app.config.vision);
+        assert_eq!(app.config.loaded, Some(true));
+        assert_eq!(app.config.discovered_models.len(), 3);
+    }
+
+    #[test]
+    fn apply_fetched_models_startup_falls_back_to_unknown() {
+        let mut app = llamacpp_app();
+        app.apply_fetched_models(
+            vec![
+                discovered("a", Some(1000), Some(false), None),
+                discovered("b", None, None, None),
+            ],
+            false,
+        );
+        // No loaded model; first unknown (b) is chosen over the first loaded=false (a).
+        assert_eq!(app.config.model_name, "b");
+        assert_eq!(app.config.context_window, 32768); // None → default
+    }
+
+    #[test]
+    fn apply_fetched_models_startup_falls_back_to_first() {
+        let mut app = llamacpp_app();
+        app.apply_fetched_models(
+            vec![discovered("a", Some(1000), Some(false), None), discovered("b", Some(2000), Some(false), None)],
+            false,
+        );
+        // No loaded, no unknown → first.
+        assert_eq!(app.config.model_name, "a");
+        assert_eq!(app.config.context_window, 1000);
+    }
+
+    #[test]
+    fn apply_fetched_models_refresh_keeps_current() {
+        let mut app = llamacpp_app();
+        app.config.model_name = "b".to_string();
+        app.apply_fetched_models(
+            vec![
+                discovered("a", Some(1000), Some(true), None),
+                discovered("b", Some(2000), Some(true), Some(true)),
+            ],
+            true,
+        );
+        // keep_current: stays on b, re-resolves its attributes.
+        assert_eq!(app.config.model_name, "b");
+        assert_eq!(app.config.context_window, 2000);
+        assert!(app.config.vision);
+        assert_eq!(app.config.loaded, Some(true));
+    }
+
+    #[test]
+    fn apply_fetched_models_empty_keeps_state() {
+        let mut app = llamacpp_app();
+        app.config.model_name = "keepme".to_string();
+        app.config.context_window = 4242;
+        app.apply_fetched_models(vec![], false);
+        assert_eq!(app.config.model_name, "keepme");
+        assert_eq!(app.config.context_window, 4242);
+        assert_eq!(app.config.discovered_models.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn spawn_model_fetch_noop_for_openai() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        app.spawn_model_fetch(false);
+        assert!(app.model_fetch.is_none());
+    }
+
+    #[tokio::test]
+    async fn spawn_model_fetch_sets_receiver_for_llamacpp() {
+        let mut app = llamacpp_app();
+        app.spawn_model_fetch(false);
+        assert!(app.model_fetch.is_some());
+        // Let the task run a bit; the receiver should be present (or the
+        // result already delivered). Either way the field is managed.
+        drop(app.model_fetch.take());
+    }
+
+    #[tokio::test]
+    async fn spawn_model_fetch_sends_err_when_server_down() {
+        // Point at a closed localhost port: `list_models` fails with a network
+        // error, and the fetch surfaces it as `Err` (the llamacpp reachability
+        // signal, since the startup ping is skipped).
+        let mut config = crate::config::Config::default();
+        config.provider.settings = crate::provider::ProviderSettings::LlamaCpp(
+            crate::provider::LlamaCppSettings {
+                url: "http://127.0.0.1:9".to_string(),
+                api_key: String::new(),
+            },
+        );
+        config.provider.models.clear();
+        config.provider.active_model.clear();
+        let mut app = App::new(config, std::path::PathBuf::from("."));
+        app.spawn_model_fetch(false);
+        let Some((rx, _)) = app.model_fetch.take() else {
+            panic!("expected an in-flight model fetch");
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await;
+        assert!(result.is_ok(), "fetch did not complete in time");
+        let recv = result.unwrap();
+        assert!(recv.is_ok(), "receiver closed without a result");
+        let inner = recv.unwrap();
+        let count = match &inner {
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        };
+        assert!(
+            inner.is_err(),
+            "expected Err for a down server, got Ok with {count} models"
+        );
     }

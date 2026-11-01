@@ -181,6 +181,18 @@ impl HookRegistry {
         self.hooks.entry(hook.event).or_default().push(hook);
     }
 
+    /// Remove all hooks registered by a skill.
+    ///
+    /// Matches on the `skill_name` field, the stable registration key
+    /// (display names are tagged `<skill>:<script>`). Directory hooks
+    /// (`skill_name: None`) are never removed. A no-op when the skill
+    /// has no registered hooks.
+    pub fn remove_skill_hooks(&mut self, skill_name: &str) {
+        for hooks in self.hooks.values_mut() {
+            hooks.retain(|h| h.skill_name.as_deref() != Some(skill_name));
+        }
+    }
+
     /// Check if any hooks are registered for a given event.
     #[must_use]
     pub fn has_hooks(&self, event: HookEvent) -> bool {

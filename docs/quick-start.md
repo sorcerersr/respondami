@@ -34,12 +34,12 @@ On first run, Respondami creates `~/.config/respondami/config.json` with default
 {
   "provider": {
     "type": "llamacpp",
-    "url": "http://localhost:8080",
-    "model": "llama3.2",
-    "context_window": 32768
+    "url": "http://localhost:8080"
   }
 }
 ```
+
+The `llamacpp` type autodetects the model, context window, and vision support from the server's `/v1/models` endpoint, so no model block is needed. (For a generic OpenAI-compatible endpoint with an explicit model list, use `"type": "openai"` — see [configuration.md](./configuration.md).)
 
 ## 4. Run
 
@@ -112,6 +112,18 @@ The bottom bar shows the current state, working directory, model, context usage,
 | `✦` | InitPopup | AGENTS.md generation prompt |
 | `⌘` | CommandPalette | Command palette overlay |
 | `✎` | PromptEditor | Prompt editor overlay |
+
+### Token Counters
+
+The `↑` and `↓` segments track cumulative token usage for the session:
+
+- `↑` (input) is the largest prompt size observed in the session — context growth. It estimates the tokens the model actually processes, assuming the provider's prompt cache serves the repeated prefix. The raw sum of all requests would be many times larger, so this is the useful number.
+- `↓` (output) is the sum of all generated tokens.
+- The counter is restored when you resume a session, so it stays stable across close/reopen.
+
+The **Project Token Statistics** dialog (command palette) shows two sections: **With prompt caching** (the cache-aware input, output, total, per-session average, and I/O ratio — the numbers that approximate real processing) and **Raw (no caching)** (the raw input and total sums, the theoretical upper bound). Both use the same per-session max math as the status bar.
+
+**Caveat:** the estimate assumes 100% prefix cache hits. A cold cache — the first request of a session, right after compaction, or resuming on another machine or a restarted server — processes more tokens than the estimate. The raw sum is the upper bound.
 
 ## Next Steps
 
