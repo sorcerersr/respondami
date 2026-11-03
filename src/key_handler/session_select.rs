@@ -55,6 +55,8 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // Rebuild chat display from session using the adapter
     let adapter = crate::session::SessionDisplayAdapter::new(app.config.tool_output_expanded);
     app.chat.chat_messages = adapter.build_messages(app.session.session_store.entries());
+    // The message list was fully replaced — drop all cached heights.
+    app.chat.heights.invalidate_all();
     // Resumed session — the next outgoing prefix legitimately differs from
     // whatever the guard saw last, so reset the baseline.
     app.session.reset_history_guard();

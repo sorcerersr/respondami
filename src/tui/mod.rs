@@ -14,6 +14,7 @@ pub mod chat_state;
 pub mod config_state;
 pub mod editor;
 pub mod editor_state;
+pub mod height_cache;
 pub mod hook_display;
 pub mod layout;
 pub mod messages;
@@ -54,6 +55,8 @@ mod activity_indicator_tests;
 mod app_tests;
 #[cfg(test)]
 mod autocomplete_tests;
+#[cfg(test)]
+mod height_cache_tests;
 #[cfg(test)]
 mod hook_display_tests;
 #[cfg(test)]

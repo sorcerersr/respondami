@@ -6,6 +6,7 @@
 //! Rust guideline compliant 2026-02-21
 
 use super::app::App;
+use super::height_cache::CacheKey;
 use crate::agent::token_estimation::TokenEstimator;
 use ratatui_md::HeightAware;
 use super::hook_display::HookDisplay;
@@ -139,12 +140,17 @@ impl ChatRenderer {
         let rtk_active = app.config.config.rtk.enabled && app.config.rtk_state.is_available();
         let est = app.session.session_store.cached_estimator();
         let width = area.width as usize;
+        let key = CacheKey::new(width, display, max_lines, hook_display);
 
-        // Compute heights for all messages
-        let msg_heights: usize = messages
-            .iter()
-            .map(|m| m.height(width, display, max_lines, hook_display, theme))
-            .sum();
+        // Compute heights for all messages (cached — steady-state cost is one
+        // cheap walk; `height()` is only called for stale entries such as the
+        // streaming tail).
+        let msg_heights = {
+            let heights = &mut app.chat.heights;
+            heights.total(messages.len(), key, |i| {
+                messages[i].height(width, display, max_lines, hook_display, theme)
+            })
+        };
         // Separators between messages (N messages → N-1 separators)
         let separator_height: usize = messages.len().saturating_sub(1) * SEPARATOR_HEIGHT;
         let total_height = msg_heights + separator_height;
@@ -174,6 +180,7 @@ impl ChatRenderer {
 
         // Walk messages, track cumulative Y, render visible ones
         let mut row: usize = 0;
+        let heights = &mut app.chat.heights;
         for (i, message) in messages.iter().enumerate() {
             // Render separator before every message except the first
             let sep_row = (i > 0).then(|| {
@@ -181,7 +188,9 @@ impl ChatRenderer {
                 row - SEPARATOR_HEIGHT
             });
 
-            let msg_h = message.height(width, display, max_lines, hook_display, theme);
+            let msg_h = heights.get_or_compute(i, key, || {
+                message.height(width, display, max_lines, hook_display, theme)
+            });
             let msg_end = row + msg_h;
 
             // Skip if entirely outside viewport
@@ -259,16 +268,19 @@ impl ChatRenderer {
 
     /// Add stretch effects for Pending tool calls within their animation window.
     fn process_effects(_frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
-        let messages = &mut app.chat.chat_messages;
+        let (messages, heights) = (&mut app.chat.chat_messages, &mut app.chat.heights);
         let display = app.config.thinking_display;
         let max_lines = app.config.config.ui.thinking_max_lines;
         let hook_display = app.config.hook_display;
         let width = area.width as usize;
+        let key = CacheKey::new(width, display, max_lines, hook_display);
         let scroll_offset = app.chat.scroll_offset;
 
-        // Compute max offset for clamping
+        // Compute max offset for clamping (cached walk)
         let viewport_height = area.height as usize;
-        let total_height = Self::total_height(messages, width, display, max_lines, hook_display, theme);
+        let total_height = heights.total(messages.len(), key, |i| {
+            messages[i].height(width, display, max_lines, hook_display, theme)
+        });
         let max_offset = total_height.saturating_sub(viewport_height);
         let clamped_offset = scroll_offset.min(max_offset);
         let visible_start = clamped_offset;
@@ -281,7 +293,9 @@ impl ChatRenderer {
             if i > 0 {
                 row += SEPARATOR_HEIGHT;
             }
-            let msg_h = message.height(width, display, max_lines, hook_display, theme);
+            let msg_h = heights.get_or_compute(i, key, || {
+                message.height(width, display, max_lines, hook_display, theme)
+            });
             let msg_end = row + msg_h;
 
             // Add stretch effect once for Pending tool calls entering animation window

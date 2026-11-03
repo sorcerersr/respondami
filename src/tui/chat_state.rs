@@ -4,11 +4,13 @@
 //! for top-down scroll model (`scroll_offset=0` means viewport at top).
 
 use super::messages::ChatMessage;
+use super::height_cache::HeightCache;
 
 /// Chat display state: messages, scrolling, viewport dimensions.
 #[derive(Debug)]
 pub struct ChatState {
     pub chat_messages: Vec<ChatMessage>,
+    pub heights: HeightCache,
     pub scroll_offset: usize,
     pub last_total_height: usize,
     pub last_viewport_height: usize,
@@ -21,6 +23,7 @@ impl ChatState {
     pub fn new() -> Self {
         Self {
             chat_messages: Vec::new(),
+            heights: HeightCache::new(),
             scroll_offset: 0,
             last_total_height: 0,
             last_viewport_height: 0,

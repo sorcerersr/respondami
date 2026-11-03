@@ -294,6 +294,8 @@ impl App {
                     }));
             }
         }
+        // The last message is the one that changed (append or new) — mark it stale.
+        self.chat.heights.invalidate(self.chat.chat_messages.len().saturating_sub(1));
     }
 
     /// Add a user message to chat.
@@ -345,13 +347,21 @@ impl App {
     /// Finds the most recent Pending variant and appends text to its output field.
     pub fn append_tool_output(&mut self, text: &str) {
         // Find the last Pending message (tool calls execute sequentially)
-        for msg in self.chat.chat_messages.iter_mut().rev() {
-            if let ChatMessage::ToolCall(tool_msg) = msg
+        if let Some(idx) = self
+            .chat
+            .chat_messages
+            .iter()
+            .rposition(|m| matches!(
+                m,
+                ChatMessage::ToolCall(t) if matches!(t.variant, ToolCallVariant::Pending { .. })
+            ))
+        {
+            if let ChatMessage::ToolCall(tool_msg) = &mut self.chat.chat_messages[idx]
                 && let ToolCallVariant::Pending { output, .. } = &mut tool_msg.variant
             {
                 output.push_str(text);
-                return;
             }
+            self.chat.heights.invalidate(idx);
         }
     }
 
@@ -396,6 +406,7 @@ impl App {
                     rtk_original,
                 ),
             });
+            self.chat.heights.invalidate(idx);
         }
     }
 
@@ -463,14 +474,16 @@ impl App {
 
     /// Append reasoning text to the most recent Thinking message.
     pub fn push_reasoning(&mut self, text: &str) {
-        if let Some(ChatMessage::Thinking(msg)) = self
+        if let Some(idx) = self
             .chat
             .chat_messages
-            .iter_mut()
-            .rev()
-            .find(|m| matches!(m, ChatMessage::Thinking(_)))
+            .iter()
+            .rposition(|m| matches!(m, ChatMessage::Thinking(_)))
         {
-            msg.reasoning.push_str(text);
+            if let ChatMessage::Thinking(msg) = &mut self.chat.chat_messages[idx] {
+                msg.reasoning.push_str(text);
+            }
+            self.chat.heights.invalidate(idx);
         }
     }
 
@@ -537,6 +550,8 @@ impl App {
     pub fn toggle_all_tool_output(&mut self) {
         self.config.tool_output_expanded = !self.config.tool_output_expanded;
         let expanded = self.config.tool_output_expanded;
+        // Toggling changes the rendered height of every affected tool call — drop all cached heights.
+        self.chat.heights.invalidate_all();
 
         use super::messages::tool_call::ToolCallRender;
         for msg in &mut self.chat.chat_messages {
