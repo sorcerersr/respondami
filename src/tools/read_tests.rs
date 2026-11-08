@@ -1,5 +1,5 @@
 use super::read::ReadTool;
-use super::{CancelGuard, ToolHandler};
+use super::{CancelGuard, ToolDefinition, ToolHandler};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -94,7 +94,9 @@ async fn read_file_with_offset_and_limit() {
     assert!(content.contains('c'));
     assert!(content.contains('d'));
     // Continuation hint
-    assert!(content.contains("Use offset=5 to continue"));
+    assert!(
+        content.contains("Pass offset=<line> to jump to a specific line, or offset=5 to continue.")
+    );
 }
 
 // ============ Offset OOB ============
@@ -171,7 +173,10 @@ async fn read_line_truncation() {
     let content = result.unwrap();
     // Should be truncated at 2000 lines
     assert!(content.contains("2000 line limit"));
-    assert!(content.contains("Use offset=2001 to continue"));
+    assert!(
+        content
+            .contains("Pass offset=<line> to jump to a specific line, or offset=2001 to continue.")
+    );
 }
 
 #[tokio::test]
@@ -191,7 +196,55 @@ async fn read_byte_truncation() {
     let content = result.unwrap();
     // Should be truncated by bytes
     assert!(content.contains("50KB limit") || content.contains("limit"));
-    assert!(content.contains("Use offset="));
+    assert!(content.contains("Pass offset=<line> to jump to a specific line, or offset="));
+}
+
+// ============ Random-access hint ============
+
+#[tokio::test]
+async fn read_hint_offers_random_access_on_line_truncation() {
+    let dir = TempDir::new().unwrap();
+    // 2005 lines: the 2000-line limit triggers the lines-truncated hint.
+    let content: String = (1..=2005)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.path().join("big.txt"), content).unwrap();
+
+    let result = run_read(dir.path(), serde_json::json!({ "path": "big.txt" })).await;
+
+    assert!(result.is_ok());
+    let content = result.unwrap();
+    assert!(content.contains("2000 line limit"));
+    assert!(content.contains("jump to a specific line"));
+    assert!(content.contains("offset=2001 to continue"));
+}
+
+#[tokio::test]
+async fn read_hint_offers_random_access_on_byte_truncation() {
+    let dir = TempDir::new().unwrap();
+    // Wide lines: the 50KB byte limit triggers the bytes-truncated hint.
+    let long_line = "x".repeat(300);
+    let content: String = (1..=300)
+        .map(|_| long_line.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.path().join("wide.txt"), content).unwrap();
+
+    let result = run_read(dir.path(), serde_json::json!({ "path": "wide.txt" })).await;
+
+    assert!(result.is_ok());
+    let content = result.unwrap();
+    assert!(content.contains("50.0KB limit"));
+    assert!(content.contains("jump to a specific line"));
+    assert!(content.contains("to continue."));
+}
+
+#[test]
+fn read_description_mentions_grep_random_access() {
+    let (_, description, _) = get_tool().definition();
+    assert!(description.contains("found via grep"));
+    assert!(description.contains("1-indexed start line"));
 }
 
 // ============ First line exceeds limit ============

@@ -30,8 +30,9 @@ impl ToolDefinition for ReadTool {
             "read".to_string(),
             "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). \
              Images are sent as attachments. For text files, output is truncated to 2000 lines \
-             or 50KB (whichever is hit first). Use offset/limit for large files. \
-             When you need the full file, continue with offset until complete."
+             or 50KB (whichever is hit first). To read a specific line or range (e.g. a line you \
+             found via grep), pass offset (1-indexed start line) and limit (max lines). \
+             Without offset, you get the first 2000 lines / 50KB."
                 .to_string(),
             serde_json::json!({
                 "type": "object",
@@ -212,23 +213,39 @@ impl ToolHandler for ReadTool {
             let next_offset = end + 1;
             if truncated_by == Some("lines") {
                 output.push_str(&format!(
-                    "\n\n[Showing lines {}-{} of {} ({} line limit). Use offset={} to continue.]",
-                    start + 1, end, total_lines, MAX_LINES, next_offset,
+                    "\n\n[Showing lines {}-{} of {} ({} line limit). {}]",
+                    start + 1,
+                    end,
+                    total_lines,
+                    MAX_LINES,
+                    continuation_hint(next_offset),
                 ));
             } else if truncated_by == Some("bytes") {
                 output.push_str(&format!(
-                    "\n\n[Showing lines {}-{} of {} ({} limit). Use offset={} to continue.]",
-                    start + 1, end, total_lines, format_bytes(MAX_BYTES), next_offset,
+                    "\n\n[Showing lines {}-{} of {} ({} limit). {}]",
+                    start + 1,
+                    end,
+                    total_lines,
+                    format_bytes(MAX_BYTES),
+                    continuation_hint(next_offset),
                 ));
             } else {
                 output.push_str(&format!(
-                    "\n\n[{remaining} more lines in file. Use offset={next_offset} to continue.]",
+                    "\n\n[{remaining} more lines in file. {}]",
+                    continuation_hint(next_offset),
                 ));
             }
         }
 
         Ok(ToolOutput::text(output))
     }
+}
+
+/// Shared truncation-hint suffix: offers random access (jump to a specific
+/// line) as well as sequential continuation, so the model can recover by
+/// jumping to a grep-found line, not just by continuing from the head.
+fn continuation_hint(next_offset: usize) -> String {
+    format!("Pass offset=<line> to jump to a specific line, or offset={next_offset} to continue.")
 }
 
 fn format_bytes(bytes: usize) -> String {
