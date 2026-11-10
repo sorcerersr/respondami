@@ -154,7 +154,7 @@ pub async fn execute_palette_command(
             } else {
                 app.add_user_message(crate::agents_md::GENERATE_CHAT_MESSAGE);
                 let prompt = crate::agents_md::GENERATE_PROMPT.to_string();
-                return run_turn_with_input(app, prompt, None, app.active_skills.clone(), terminal)
+                return run_turn_with_input(app, prompt, Vec::new(), None, app.active_skills.clone(), terminal)
                     .await;
             }
         }

@@ -4,13 +4,16 @@
 //! `build_visual_lines()` for building the full visual line list, and
 //! `cursor_visual_pos()` for mapping byte positions to visual (wrapped) coordinates.
 
+use super::tokens::find_tokens;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Wrap a single logical line into visual segments that fit `max_width` display columns.
 ///
 /// Returns a `Vec` of `(byte_start, byte_end)` ranges within the original line string.
-/// Each segment's display width is ≤ `max_width`. Multi-byte characters are never split.
-/// An empty line returns a single `(0, 0)` segment.
+/// Each segment's display width is ≤ `max_width`. Multi-byte characters are never
+/// split. An `[img:N]` token is atomic: it is never split across segments — if it
+/// doesn't fit in the remaining space of the current segment, the segment breaks
+/// before the token. An empty line returns a single `(0, 0)` segment.
 /// Returns empty vec when `max_width == 0`.
 #[must_use]
 pub fn wrap_line(line: &str, max_width: usize) -> Vec<(usize, usize)> {
@@ -22,20 +25,40 @@ pub fn wrap_line(line: &str, max_width: usize) -> Vec<(usize, usize)> {
         return vec![(0, 0)];
     }
 
+    let tokens = find_tokens(line);
     let mut segments = Vec::new();
     let mut seg_start = 0;
     let mut current_width = 0;
+    let mut i = 0;
+    let mut token_idx = 0;
 
-    for (idx, ch) in line.char_indices() {
+    while i < line.len() {
+        // If a token starts at `i`, treat it as an atomic unit: never split it.
+        if let Some(token) = tokens.get(token_idx).filter(|t| t.start == i) {
+            let token_width = line[token.start..token.end].width();
+            if current_width > 0 && current_width + token_width > max_width {
+                // Token doesn't fit in the remaining space; break before it.
+                segments.push((seg_start, i));
+                seg_start = i;
+                current_width = token_width;
+            } else {
+                current_width += token_width;
+            }
+            i = token.end;
+            token_idx += 1;
+            continue;
+        }
+        let ch = line[i..].chars().next().unwrap();
         let ch_width = ch.width().unwrap_or(0);
         if current_width > 0 && current_width + ch_width > max_width {
             // Close current segment at this char's start
-            segments.push((seg_start, idx));
-            seg_start = idx;
+            segments.push((seg_start, i));
+            seg_start = i;
             current_width = ch_width;
         } else {
             current_width += ch_width;
         }
+        i += ch.len_utf8();
     }
 
     // Final segment

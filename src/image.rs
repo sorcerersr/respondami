@@ -71,6 +71,8 @@ pub fn sniff_mime(bytes: &[u8]) -> Result<&'static str, ImageError> {
         Ok("image/gif")
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Ok("image/webp")
+    } else if bytes.starts_with(b"BM") {
+        Ok("image/bmp")
     } else {
         Err(ImageError::Unsupported)
     }
@@ -82,11 +84,22 @@ pub fn sniff_mime(bytes: &[u8]) -> Result<&'static str, ImageError> {
 /// Lanczos3) → re-encode (JPEG; PNG/GIF/WebP → PNG) → byte cap → base64.
 pub fn process_image(path: &Path) -> Result<ImageContent, ImageError> {
     let bytes = std::fs::read(path).map_err(|e| ImageError::Io(e.to_string()))?;
-    let mime = sniff_mime(&bytes)?;
-    if mime == "image/gif" && is_animated_gif(&bytes)? {
+    process_image_bytes(&bytes)
+}
+
+/// Normalize raw image bytes into a base64 [`ImageContent`].
+///
+/// Pipeline: sniff → (reject animated GIF) → decode → resize (2000px,
+/// Lanczos3) → re-encode (JPEG; PNG/GIF/WebP/BMP → PNG) → byte cap → base64.
+///
+/// Shared by file ingestion (`process_image`) and clipboard ingestion
+/// (`crate::clipboard`), so pasted and read images are normalized identically.
+pub fn process_image_bytes(bytes: &[u8]) -> Result<ImageContent, ImageError> {
+    let mime = sniff_mime(bytes)?;
+    if mime == "image/gif" && is_animated_gif(bytes)? {
         return Err(ImageError::Unsupported);
     }
-    let img = image::load_from_memory(&bytes).map_err(|e| ImageError::Io(format!("decode failed: {e}")))?;
+    let img = image::load_from_memory(bytes).map_err(|e| ImageError::Io(format!("decode failed: {e}")))?;
     let resized = if img.width() > MAX_DIMENSION || img.height() > MAX_DIMENSION {
         img.resize(
             MAX_DIMENSION,
@@ -119,9 +132,10 @@ pub fn estimate_image_tokens(width: u32, height: u32) -> u32 {
     1600 + ((area / (1024 * 1024)) as u32) * 448
 }
 
-/// Re-encode the resized image. JPEG stays JPEG; PNG/GIF/WebP are re-encoded
-/// to PNG (lossless, universally accepted). Default encoder quality is used —
-/// the byte cap bounds size and the base64 is frozen at this point.
+/// Re-encode the resized image. JPEG stays JPEG; PNG/GIF/WebP/BMP are
+/// re-encoded to PNG (lossless, universally accepted). Default encoder
+/// quality is used — the byte cap bounds size and the base64 is frozen at
+/// this point.
 fn re_encode(img: &image::DynamicImage, mime: &str) -> Result<Vec<u8>, ImageError> {
     let format = if mime == "image/jpeg" {
         ImageFormat::Jpeg

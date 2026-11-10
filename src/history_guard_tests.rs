@@ -30,6 +30,16 @@ fn user(msg: &str) -> AgentMessage {
     AgentMessage::user(msg.to_string())
 }
 
+fn user_with_image(msg: &str) -> AgentMessage {
+    let img = ImageContent {
+        data: "aW1hZ2U=".to_string(),
+        mime_type: "image/png".to_string(),
+        width: 2000,
+        height: 1500,
+    };
+    AgentMessage::user_with_images(msg.to_string(), vec![img])
+}
+
 fn system(content: &str) -> AgentMessage {
     AgentMessage::system(content.to_string())
 }
@@ -75,6 +85,51 @@ fn digest_tool_with_images_differs_from_text_only() {
     let with_img = image_tool_result("t1", "Image: x");
     let without_img = tool_result("t1", "Image: x");
     assert_ne!(message_digest(&with_img), message_digest(&without_img));
+}
+
+#[test]
+fn digest_user_with_images_is_stable() {
+    // A user message carrying an image must be byte-stable across a JSONL
+    // rebuild (the base64 is frozen at ingestion; the digest covers it).
+    let a = user_with_image("why is this failing?");
+    let wire = serde_json::to_value(&a).unwrap();
+    let rebuilt: AgentMessage = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        message_digest(&a),
+        message_digest(&rebuilt),
+        "user image message must be byte-stable across persistence"
+    );
+}
+
+#[test]
+fn user_image_prefix_is_byte_stable_across_requests() {
+    // The load-bearing regression: a context that includes a user image must
+    // serialize its shared prefix byte-identically across requests. When a
+    // turn is appended (assistant + tool), the first N messages — including
+    // the user image message — must serialize to the same bytes. This is
+    // what vLLM prefix caching relies on: the prior prefix must be
+    // byte-identical so the provider's cache hits.
+    let shared: Vec<AgentMessage> = vec![
+        system("be helpful"),
+        user_with_image("why is this failing?"),
+        assistant_with("let me look", true),
+    ];
+    let context_n: Vec<AgentMessage> = shared.clone();
+    let mut context_n1 = shared.clone();
+    context_n1.push(tool_result("t1", "file contents"));
+
+    // The first N messages of each request must serialize byte-identically.
+    let prefix_n = serde_json::to_string(&context_n).unwrap();
+    let prefix_n1 = serde_json::to_string(&context_n1[..context_n.len()]).unwrap();
+    assert_eq!(
+        prefix_n, prefix_n1,
+        "the shared prefix (incl. the user image message) must be byte-identical across requests"
+    );
+
+    // And the user image message specifically must be byte-stable on its own.
+    let user_n = serde_json::to_string(&context_n[1]).unwrap();
+    let user_n1 = serde_json::to_string(&context_n1[1]).unwrap();
+    assert_eq!(user_n, user_n1, "the user image message must be byte-stable");
 }
 
 #[test]

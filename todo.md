@@ -30,36 +30,17 @@ To fix properly, port real read tracking:
   with many read-heavy blocks. That shift is the intended behavior change, but the
   brief output is byte-stable test territory, so update expectations deliberately.
 
-## Future: Image clipboard paste (Ctrl+V)
-
-Deferred from the image/vision support design (2026-10-08). The first cut covers
-images via the `read` tool only (the model reads an image file, e.g. `@screenshot.png`),
-which is the keystone path. Once the `ImageContent` block type and the provider
-serializer exist, add a second ingestion path: paste an image from the platform
-clipboard (Ctrl+V) into the prompt.
-
-- `src/lib.rs` — the `Event::Paste(text)` handler currently inserts text only. Detect
-  an image on the clipboard (Wayland `wl-paste` / X11 `xclip`), write it to a temp file,
-  and attach it as an `ImageContent` on the outgoing user message (or insert the temp
-  path and let the model `read` it — the reference's approach, one mechanism not two).
-- Reuse the same `processImage` normalization pipeline (MIME sniff, convert, resize,
-  byte cap) as the `read` tool so pasted and read images are handled identically.
-- TUI: show a marker (e.g. `[image: <name>]`) on the user message so the attachment is
-  visible in the chat.
-
-## Future: Full image normalization pipeline (EXIF + BMP conversion)
+## Future: Full image normalization pipeline (EXIF)
 
 Deferred from the image/vision support design (2026-10-08). The first cut does
-MIME sniff + resize + byte cap only. Add the remaining reference-parity pieces if a
+MIME sniff + resize + byte cap only; BMP → PNG conversion was added 2026-11-10
+(with the clipboard-paste feature). Add the remaining reference-parity piece if a
 real case comes up:
 
 - **EXIF orientation correction** — parse the TIFF `0x0112` orientation tag (JPEG `FF E1`
   segment / WebP `RIFF`+`EXIF` chunk) and apply the 8 orientations before resize, so the
   model sees the image in its intended orientation. Phone screenshots are the main case.
-- **BMP → PNG conversion** — detect `BM` magic bytes and convert to PNG via the `image`
-  crate (BMP is not an accepted inline format for the OpenAI API). WSLg clipboard is the
-  main source of BMP.
-- Both run inside the existing `processImage` pipeline, before the resize step.
+- Runs inside the existing `process_image_bytes` pipeline, before the resize step.
 
 ## Future: Exhaustive panic-elimination (Option B)
 

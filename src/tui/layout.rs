@@ -27,20 +27,33 @@ impl LayoutRenderer {
     const MAX_TEXT_ROWS: usize = 6;
 
     /// Calculate the height of the input area.
-    /// Just the visible text rows (1 to `MAX_TEXT_ROWS`). Spacing comes from chat area above.
+    /// Just the visible text rows (1 to `MAX_TEXT_ROWS`), plus one row for the
+    /// pending-image summary line when an image is attached. Spacing comes from
+    /// chat area above.
     #[must_use]
     pub fn input_area_height(app: &App) -> usize {
-        Self::input_area_height_for(&app.editor.input_buffer, app.ui.terminal_width)
+        let has_pending_images = !app.editor.pending_images.is_empty();
+        Self::input_area_height_for(&app.editor.input_buffer, app.ui.terminal_width, has_pending_images)
     }
 
     /// Pure calculation: input area height from buffer text and wrap width.
-    /// Used by `input_area_height()` and testable in isolation.
-    pub(crate) fn input_area_height_for(input: &str, wrap_width: usize) -> usize {
+    /// `has_pending_images` adds one row for the `📎` summary line the renderer
+    /// reserves above the text. Used by `input_area_height()` and testable in isolation.
+    pub(crate) fn input_area_height_for(
+        input: &str,
+        wrap_width: usize,
+        has_pending_images: bool,
+    ) -> usize {
         use super::editor::build_visual_lines;
         let width = wrap_width.max(1);
         let visual_lines = build_visual_lines(input, width);
         let total_visual = visual_lines.len().max(1);
-        total_visual.clamp(1, Self::MAX_TEXT_ROWS)
+        let text_rows = total_visual.clamp(1, Self::MAX_TEXT_ROWS);
+        if has_pending_images {
+            text_rows + 1
+        } else {
+            text_rows
+        }
     }
 
     /// Add fade-in animation for overlay popups.

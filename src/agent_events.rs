@@ -95,7 +95,7 @@ pub async fn process_agent_events(
                         app.add_system_message(system_msg);
                         app.maybe_auto_scroll();
 
-                        let new_agent = crate::turn::restart_agent(app, user_msg);
+                        let new_agent = crate::turn::restart_agent(app, user_msg, Vec::new());
                         sse_guard = new_agent.sse_guard;
 
                         agent_handle = new_agent.handle;
@@ -396,7 +396,7 @@ pub async fn process_agent_events(
                         "Agent was blocked from stopping. Reason: {stop_blocked_error}\n\nContinue your current work.",
                     );
 
-                    let new_agent = crate::turn::restart_agent(app, wrapped_error);
+                    let new_agent = crate::turn::restart_agent(app, wrapped_error, Vec::new());
                     sse_guard = new_agent.sse_guard;
 
                     agent_handle = new_agent.handle;

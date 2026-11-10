@@ -33,6 +33,21 @@ use crate::session::{AgentMessage, Usage};
     }
 
     #[test]
+    fn estimate_tokens_from_messages_user_with_image() {
+        use crate::image::{estimate_image_tokens, ImageContent};
+        let img = ImageContent {
+            data: "aW1hZ2U=".to_string(),
+            mime_type: "image/png".to_string(),
+            width: 100,
+            height: 50,
+        };
+        let msg = AgentMessage::user_with_images("hello".to_string(), vec![img.clone()]);
+        let tokens = estimate_tokens_from_messages(&[msg], &TokenEstimator::heuristic());
+        // "user" (1) + "hello" (2) + image (1600) = 1603
+        assert_eq!(tokens, 3 + estimate_image_tokens(100, 50));
+    }
+
+    #[test]
     fn estimate_tokens_from_messages_system() {
         let msg = AgentMessage::system("You are an AI".to_string());
         let tokens = estimate_tokens_from_messages(&[msg], &TokenEstimator::heuristic());

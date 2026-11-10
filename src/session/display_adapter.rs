@@ -44,7 +44,7 @@ impl SessionDisplayAdapter {
         for entry in entries {
             if let SessionEntry::Message { message, .. } = entry {
                 match message {
-                    AgentMessage::User { content } => {
+                    AgentMessage::User { content, .. } => {
                         // Reconstruct hook instruction boxes (M3): a user
                         // message composed of `[Hook instruction — <name>]`
                         // framed blocks renders as hook boxes, not a user

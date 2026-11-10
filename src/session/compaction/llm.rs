@@ -165,7 +165,7 @@ impl CompactionStrategy for LlmCompaction {
 
 impl LlmCompaction {
     /// Estimate tokens from entries (used by `compute` which has no `SessionStore`).
-    fn estimate_tokens_from_entries(entries: &[SessionEntry], system_overhead: u32) -> u32 {
+    pub(crate) fn estimate_tokens_from_entries(entries: &[SessionEntry], system_overhead: u32) -> u32 {
         // Try to get actual usage from the last Assistant message
         for entry in entries.iter().rev() {
             if let SessionEntry::Message {
@@ -183,12 +183,14 @@ impl LlmCompaction {
         for entry in entries {
             if let SessionEntry::Message { message, .. } = entry {
                 total += CompactionSettings::estimate_tokens(message.content());
-                if let AgentMessage::Tool { images, .. } = message {
-                    for img in images {
-                        total = total.saturating_add(crate::image::estimate_image_tokens(
-                            img.width, img.height,
-                        ));
-                    }
+                let images: &[crate::image::ImageContent] = match message {
+                    AgentMessage::Tool { images, .. } | AgentMessage::User { images, .. } => images,
+                    _ => &[],
+                };
+                for img in images {
+                    total = total.saturating_add(crate::image::estimate_image_tokens(
+                        img.width, img.height,
+                    ));
                 }
             }
         }
@@ -356,7 +358,7 @@ impl LlmCompaction {
                     AgentMessage::System { content } => {
                         lines.push(format!("[System] {content}"));
                     }
-                    AgentMessage::User { content } => {
+                    AgentMessage::User { content, .. } => {
                         lines.push(format!("[User] {content}"));
                     }
                     AgentMessage::Assistant {

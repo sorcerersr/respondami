@@ -752,3 +752,59 @@ use super::{build_context_from_entries, SessionStore, SessionEntry, AgentMessage
         assert_eq!(manager.cached_context_tokens(), expected);
         assert_ne!(before, expected, "strip changes the token estimate");
     }
+
+    fn image_user_msg() -> AgentMessage {
+        AgentMessage::user_with_images(
+            "why is this failing?".to_string(),
+            vec![crate::image::ImageContent {
+                data: "aW1hZ2U=".to_string(),
+                mime_type: "image/png".to_string(),
+                width: 2000,
+                height: 1500,
+            }],
+        )
+    }
+
+    #[test]
+    fn strip_tool_images_strips_user_images_blanket() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager.append_message(None, image_user_msg()).unwrap();
+
+        // User strips are blanket — no ID needed (pass an empty slice).
+        manager.strip_tool_images(&[]).unwrap();
+
+        let context = manager.build_context();
+        match &context[0] {
+            AgentMessage::User { content, images } => {
+                assert!(images.is_empty(), "user images must be stripped");
+                assert!(
+                    content.contains("[image removed: image/png (2000x1500)]"),
+                    "removal note must be appended: {content}"
+                );
+            }
+            other => panic!("expected User message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_tool_images_user_and_tool_together() {
+        let dir = temp_dir();
+        let mut manager = SessionStore::new(&dir);
+        manager.create_session("llama3.2".to_string(), 32768, "/".to_string()).unwrap();
+        manager.append_message(None, image_user_msg()).unwrap();
+        manager.append_message(None, image_tool_msg()).unwrap();
+
+        manager.strip_tool_images(&["call_img".to_string()]).unwrap();
+
+        let context = manager.build_context();
+        match &context[0] {
+            AgentMessage::User { images, .. } => assert!(images.is_empty(), "user stripped blanket"),
+            other => panic!("expected User message, got {other:?}"),
+        }
+        match &context[1] {
+            AgentMessage::Tool { images, .. } => assert!(images.is_empty(), "tool stripped by ID"),
+            other => panic!("expected Tool message, got {other:?}"),
+        }
+    }

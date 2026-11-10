@@ -12,9 +12,7 @@ use tempfile::TempDir;
 
 fn make_message_entry(content: &str, role: &str) -> SessionEntry {
     let message = match role {
-        "user" => AgentMessage::User {
-            content: content.to_string(),
-        },
+        "user" => AgentMessage::user(content.to_string()),
         "assistant" => AgentMessage::Assistant {
             content: vec![ContentBlock::Text {
                 text: content.to_string(),
@@ -64,6 +62,33 @@ fn find_cut_point_basic() {
     let cut = LlmCompaction::find_cut_point(&entries, 1, 5, 10);
     assert!(cut.is_some());
     assert!(cut.unwrap() >= 1);
+}
+
+#[test]
+fn estimate_tokens_from_entries_counts_user_image() {
+    use crate::image::{estimate_image_tokens, ImageContent};
+    let user_with_img = SessionEntry::new_message(
+        None,
+        AgentMessage::user_with_images(
+            "why?".to_string(),
+            vec![ImageContent {
+                data: "aW1hZ2U=".to_string(),
+                mime_type: "image/png".to_string(),
+                width: 100,
+                height: 50,
+            }],
+        ),
+    );
+    let with_image = vec![user_with_img.clone()];
+    let without_image = vec![SessionEntry::new_message(None, AgentMessage::user("why?".to_string()))];
+
+    let tokens_with = LlmCompaction::estimate_tokens_from_entries(&with_image, 0);
+    let tokens_without = LlmCompaction::estimate_tokens_from_entries(&without_image, 0);
+    assert_eq!(
+        tokens_with - tokens_without,
+        estimate_image_tokens(100, 50),
+        "user image must add exactly its estimated tokens"
+    );
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use super::image::{
-    ImageError, estimate_image_tokens, is_animated_gif, process_image, sniff_mime,
+    ImageError, estimate_image_tokens, is_animated_gif, process_image, process_image_bytes,
+    sniff_mime,
 };
 use base64::Engine;
 use image::RgbaImage;
@@ -107,6 +108,12 @@ fn sniff_riff_not_webp() {
     b.extend_from_slice(&[0, 0, 0, 0]);
     b.extend_from_slice(b"AVI ");
     assert_eq!(sniff_mime(&b), Err(ImageError::Unsupported));
+}
+
+#[test]
+fn sniff_bmp() {
+    // BMP magic: "BM" + file size
+    assert_eq!(sniff_mime(b"BM\x00\x00\x00\x00"), Ok("image/bmp"));
 }
 
 #[test]
@@ -227,12 +234,47 @@ fn is_animated_gif_malformed_is_false() {
 }
 
 #[test]
-fn process_bmp_rejected() {
+fn process_bmp_converted_to_png() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.bmp");
-    // BMP magic: "BM" + size
+    write_image(&path, 64, 32, [10, 20, 30]);
+
+    let img = process_image(&path).unwrap();
+    // BMP is re-encoded to PNG bytes, but `mime_type` preserves the original
+    // sniffed format (existing behavior — GIF/WebP tests depend on it).
+    assert_eq!(img.mime_type, "image/bmp");
+    assert_eq!((img.width, img.height), (64, 32));
+    // The re-encoded bytes are a valid PNG.
+    let decoded = base64::engine::general_purpose::STANDARD.decode(&img.data).unwrap();
+    assert!(decoded.starts_with(&[0x89, 0x50, 0x4E, 0x47]));
+}
+
+#[test]
+fn process_bytes_parity_with_file() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("parity.png");
+    write_image(&path, 120, 80, [1, 2, 3]);
+
+    let via_file = process_image(&path).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let via_bytes = process_image_bytes(&bytes).unwrap();
+
+    // Same input bytes → identical normalized output (frozen base64).
+    assert_eq!(via_file, via_bytes);
+}
+
+#[test]
+fn process_bytes_unsupported() {
+    assert_eq!(process_image_bytes(b"not an image"), Err(ImageError::Unsupported));
+}
+
+#[test]
+fn process_truncated_bmp_is_io_error() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("trunc.bmp");
+    // "BM" magic but not a decodable BMP — the sniff passes, the decoder fails.
     std::fs::write(&path, b"BM\x00\x00\x00\x00").unwrap();
-    assert_eq!(process_image(&path), Err(ImageError::Unsupported));
+    assert!(matches!(process_image(&path), Err(ImageError::Io(_))));
 }
 
 #[test]

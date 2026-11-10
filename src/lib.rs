@@ -10,6 +10,7 @@ pub mod agents_md;
 pub mod commands;
 pub mod config;
 pub mod context;
+pub mod clipboard;
 pub mod event_loop;
 pub mod history_guard;
 pub mod hooks;
@@ -33,6 +34,8 @@ mod agents_md_tests;
 #[cfg(test)]
 mod commands_tests;
 #[cfg(test)]
+mod clipboard_tests;
+#[cfg(test)]
 mod config_tests;
 #[cfg(test)]
 mod event_loop_tests;
@@ -40,6 +43,8 @@ mod event_loop_tests;
 mod history_guard_tests;
 #[cfg(test)]
 mod image_tests;
+#[cfg(test)]
+mod lib_tests;
 #[cfg(test)]
 mod logging_tests;
 #[cfg(test)]
@@ -55,8 +60,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::event::{
-    Event, EventStream, KeyEventKind, KeyboardEnhancementFlags, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    Event, EventStream, KeyCode, KeyEventKind, KeyboardEnhancementFlags, KeyModifiers,
+    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use futures_util::StreamExt;
 use ratatui::Terminal;
@@ -284,6 +289,15 @@ pub async fn run() -> anyhow::Result<()> {
         if let Some(ev) = event {
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Ctrl+Shift+V: explicit image paste from the clipboard.
+                    if key.code == KeyCode::Char('v')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                    {
+                        paste_clipboard_image(&mut app).await;
+                        continue;
+                    }
+
                     let was_compacting = app.modal.state == AppState::Compacting;
 
                     if key_handler::handle_key_event(&mut app, &key, &mut terminal).await? {
@@ -309,11 +323,21 @@ pub async fn run() -> anyhow::Result<()> {
                         .filter(|c| !c.is_control() || *c == '\n')
                         .take(10_000)
                         .collect();
-                    app.editor
-                        .input_buffer
-                        .insert_str(app.editor.cursor_pos, &text);
-                    app.editor.cursor_pos += text.len();
-                    app.chat.scroll_to_bottom();
+                    if text.is_empty() {
+                        // Empty paste: the terminal often reports a clipboard
+                        // image this way. Fall back to a clipboard image check.
+                        paste_clipboard_image(&mut app).await;
+                    } else if try_attach_dropped_image(&mut app, &text) {
+                        // The whole paste was a single dropped image path — it
+                        // was attached and a token inserted; nothing to insert.
+                        app.chat.scroll_to_bottom();
+                    } else {
+                        app.editor
+                            .input_buffer
+                            .insert_str(app.editor.cursor_pos, &text);
+                        app.editor.cursor_pos += text.len();
+                        app.chat.scroll_to_bottom();
+                    }
                 }
                 Event::Mouse(mouse) => {
                     match mouse.kind {
@@ -333,6 +357,86 @@ pub async fn run() -> anyhow::Result<()> {
                 _ => {}
             }
         }
+    }
+}
+
+/// Paste an image from the clipboard into the input buffer.
+///
+/// Gated on the active model's vision flag: if vision is off, a system message
+/// is shown and nothing is attached. The clipboard read is blocking (arboard),
+/// so it runs in `spawn_blocking`. On success the image is added to the
+/// `pending_images` side table and an `[img:N]` token is inserted at the cursor.
+async fn paste_clipboard_image(app: &mut App) {
+    if !app.config.config.provider.active_vision() {
+        app.add_system_message("Current model does not support images");
+        return;
+    }
+    let result = tokio::task::spawn_blocking(crate::clipboard::fetch_image).await;
+    match result {
+        Ok(Ok(Some(image))) => {
+            let id = app
+                .editor
+                .add_pending_image("clipboard".to_string(), image);
+            let token = crate::tui::editor::format_token(id);
+            app.editor.input_buffer.insert_str(app.editor.cursor_pos, &token);
+            app.editor.cursor_pos += token.len();
+            app.chat.scroll_to_bottom();
+        }
+        Ok(Ok(None)) => {
+            // No image on the clipboard — a convenience feature, so stay quiet.
+        }
+        Ok(Err(crate::clipboard::ClipboardError::NoDisplay)) => {
+            app.add_system_message("Clipboard unavailable (no display server)");
+        }
+        Ok(Err(e)) => {
+            app.add_system_message(&format!("Image paste failed: {e}"));
+        }
+        Err(_) => {
+            // The blocking task panicked — surface a generic error.
+            app.add_system_message("Image paste failed");
+        }
+    }
+}
+
+/// Try to attach a dropped image path from a non-empty paste.
+///
+/// The entire trimmed paste must be a single path to an existing file whose
+/// magic bytes sniff as a supported image; anything else returns `false` (the
+/// caller inserts the text as usual). On success the image is attached and an
+/// `[img:N]` token is inserted at the cursor, and `true` is returned.
+pub(crate) fn try_attach_dropped_image(app: &mut App, text: &str) -> bool {
+    if !app.config.config.provider.active_vision() {
+        return false;
+    }
+    let path_str = text.trim();
+    // A single path: no internal whitespace.
+    if path_str.is_empty() || path_str.contains(char::is_whitespace) {
+        return false;
+    }
+    let path = std::path::Path::new(path_str);
+    if !path.is_file() {
+        return false;
+    }
+    // Sniff the magic bytes to confirm it's a supported image before attaching.
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    if crate::image::sniff_mime(&bytes).is_err() {
+        return false;
+    }
+    match crate::image::process_image_bytes(&bytes) {
+        Ok(image) => {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path_str.to_string());
+            let id = app.editor.add_pending_image(name, image);
+            let token = crate::tui::editor::format_token(id);
+            app.editor.input_buffer.insert_str(app.editor.cursor_pos, &token);
+            app.editor.cursor_pos += token.len();
+            true
+        }
+        Err(_) => false,
     }
 }
 

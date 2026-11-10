@@ -78,7 +78,13 @@ pub enum AgentMessage {
     #[serde(rename = "system")]
     System { content: String },
     #[serde(rename = "user")]
-    User { content: String },
+    User {
+        content: String,
+        /// Images attached to the user message (clipboard paste / dropped
+        /// path). Serialized inline; empty for text-only messages.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageContent>,
+    },
     #[serde(rename = "assistant")]
     Assistant {
         /// Structured content blocks (text, thinking, tool calls).
@@ -262,7 +268,18 @@ impl AgentMessage {
     /// Create a user message.
     #[must_use]
     pub fn user(content: String) -> Self {
-        AgentMessage::User { content }
+        AgentMessage::User {
+            content,
+            images: Vec::new(),
+        }
+    }
+
+    /// Create a user message with attached images (clipboard paste /
+    /// dropped path). The base64 is frozen at ingestion, so the stored
+    /// value is byte-stable for the life of the message.
+    #[must_use]
+    pub fn user_with_images(content: String, images: Vec<ImageContent>) -> Self {
+        AgentMessage::User { content, images }
     }
 
     /// Create an assistant message from structured content blocks.
@@ -314,7 +331,7 @@ impl AgentMessage {
     pub fn content(&self) -> &str {
         match self {
             AgentMessage::System { content } => content,
-            AgentMessage::User { content } => content,
+            AgentMessage::User { content, .. } => content,
             AgentMessage::Tool { result, .. } => result,
             AgentMessage::Assistant { content: blocks, .. } => {
                 // Return first text block's content, or empty string
@@ -346,7 +363,7 @@ impl AgentMessage {
                     .collect::<Vec<_>>()
                     .join("\n")
             }
-            AgentMessage::System { content } | AgentMessage::User { content } => content.clone(),
+            AgentMessage::System { content } | AgentMessage::User { content, .. } => content.clone(),
             AgentMessage::Tool { result, .. } => result.clone(),
         }
     }

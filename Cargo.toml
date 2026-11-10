@@ -14,6 +14,7 @@ keywords = ["cli", "ai", "agent", "terminal", "tdd"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+arboard = "3.7"
 async-openai = { version = "0.43.0", features = ["chat-completion"] }
 async-trait = "0.1"
 base64 = "0.23"
@@ -24,7 +25,7 @@ dirs = "7"
 dashmap = "6"
 fastrand = "2"
 ignore = "0.4"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 libc = "0.2"
 futures-util = "0.3"
 reqwest = { version = "0.13", features = ["json", "stream", "rustls"], default-features = false }

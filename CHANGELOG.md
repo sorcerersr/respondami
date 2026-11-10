@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Features
+
+- TUI: paste an image from the clipboard into the prompt (Ctrl+Shift+V, or an empty Ctrl+V) — the image is normalized and attached to the outgoing user message as an `[img:N]` buffer token; dropped image file paths are auto-attached the same way
+- Image: BMP input is now accepted and re-encoded to PNG (WSLg clipboard source); `process_image_bytes` is the shared normalization entry point for the `read` tool, clipboard paste, and dropped paths
+- Provider: `strip_images_after_view` now also strips user-message images (blanket, no ID) alongside tool images, so pasted images protect prefix-cache hits too
+
 ## [0.3.0] - 2026-11-01
 
 ### Features

@@ -8,9 +8,7 @@ use crate::tui::messages::ChatMessage;
 fn user_entry(content: &str) -> SessionEntry {
     SessionEntry::new_message(
         None,
-        AgentMessage::User {
-            content: content.to_string(),
-        },
+        AgentMessage::user(content.to_string()),
     )
 }
 

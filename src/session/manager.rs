@@ -538,7 +538,7 @@ impl SessionStore {
                     Ok(SessionEntry::Message { message, .. }) => {
                         message_count += 1;
                         if first_message.is_empty()
-                            && let AgentMessage::User { content } = &message
+                            && let AgentMessage::User { content, .. } = &message
                         {
                             first_message = content.chars().take(50).collect();
                         }
@@ -710,13 +710,15 @@ impl SessionStore {
         Ok((tokens_before, self.estimate_token_count(), messages_removed))
     }
 
-    /// Strip images from the tool results with the given IDs, appending a
-    /// removal note to each result (`strip_images_after_view` workaround).
+    /// Strip images from the session (`strip_images_after_view` workaround).
     ///
-    /// Uses the same transform as the agent loop's live-context strip
-    /// ([`crate::agent::strip_images_from_tool`]), so session and live
-    /// context stay byte-identical. Rewrites the session file (atomic);
-    /// no-op when none of the IDs carry images.
+    /// Tool images are stripped by ID (ID-matched); user-message images are
+    /// stripped blanket-style (no ID in the event). Both use the same
+    /// transforms as the agent loop's live-context strip
+    /// ([`crate::agent::strip_images_from_tool`] /
+    /// [`crate::agent::strip_images_from_user`]), so session and live context
+    /// stay byte-identical. Rewrites the session file (atomic); no-op when
+    /// nothing carries images.
     ///
     /// # Errors
     ///
@@ -724,6 +726,7 @@ impl SessionStore {
     pub fn strip_tool_images(&mut self, tool_call_ids: &[String]) -> anyhow::Result<()> {
         let mut changed = false;
         for entry in &mut self.entries {
+            // Tool images: ID-matched. User images: blanket (no ID).
             let should_strip = matches!(
                 entry,
                 SessionEntry::Message {
@@ -731,12 +734,24 @@ impl SessionStore {
                         tool_call_id, images, ..
                     },
                     ..
-                } if !images.is_empty() && tool_call_ids.iter().any(|id| id == tool_call_id)
-            );
+                } if !images.is_empty()
+                    && tool_call_ids.iter().any(|id| id == tool_call_id)
+            )
+                || matches!(
+                    entry,
+                    SessionEntry::Message {
+                        message: AgentMessage::User { images, .. },
+                        ..
+                    } if !images.is_empty()
+                );
             if should_strip
                 && let SessionEntry::Message { message, .. } = entry
             {
-                *message = crate::agent::strip_images_from_tool(message);
+                *message = if matches!(message, AgentMessage::User { .. }) {
+                    crate::agent::strip_images_from_user(message)
+                } else {
+                    crate::agent::strip_images_from_tool(message)
+                };
                 changed = true;
             }
         }

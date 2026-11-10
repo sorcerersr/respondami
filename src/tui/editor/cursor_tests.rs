@@ -674,3 +674,61 @@ use super::{cursor_line_col, cursor_left, cursor_right, cursor_up, cursor_down, 
         let result = cursor_down_visual(input, 2, 5);
         assert_eq!(result, 5);
     }
+
+    // ---------------------------------------------------------------------------
+    // Image-token atomicity
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn cursor_left_jumps_over_token() {
+        // Cursor at the end of the token jumps to its start.
+        let input = "x [img:0] y";
+        assert_eq!(cursor_left(input, 9), 2);
+        // Cursor just after the token (on a space) steps back normally.
+        assert_eq!(cursor_left(input, 10), 9);
+    }
+
+    #[test]
+    fn cursor_right_jumps_over_token() {
+        // Cursor at the start of the token jumps to its end.
+        let input = "x [img:0] y";
+        assert_eq!(cursor_right(input, 2), 9);
+        // Cursor just before the token steps forward normally.
+        assert_eq!(cursor_right(input, 1), 2);
+    }
+
+    #[test]
+    fn cursor_backspace_removes_whole_token() {
+        let mut input = String::from("x [img:0] y");
+        let mut pos = 9; // end of token
+        cursor_backspace(&mut input, &mut pos);
+        assert_eq!(input, "x  y");
+        assert_eq!(pos, 2);
+    }
+
+    #[test]
+    fn cursor_backspace_normal_char_untouched() {
+        let mut input = String::from("x [img:0] y");
+        let mut pos = 10; // on the space after the token
+        cursor_backspace(&mut input, &mut pos);
+        assert_eq!(input, "x [img:0]y");
+        assert_eq!(pos, 9);
+    }
+
+    #[test]
+    fn cursor_delete_removes_whole_token() {
+        let mut input = String::from("x [img:0] y");
+        let mut pos = 2; // start of token
+        cursor_delete(&mut input, &mut pos);
+        assert_eq!(input, "x  y");
+        assert_eq!(pos, 2);
+    }
+
+    #[test]
+    fn cursor_delete_normal_char_untouched() {
+        let mut input = String::from("x [img:0] y");
+        let mut pos = 1; // on the space before the token
+        cursor_delete(&mut input, &mut pos);
+        assert_eq!(input, "x[img:0] y");
+        assert_eq!(pos, 1);
+    }

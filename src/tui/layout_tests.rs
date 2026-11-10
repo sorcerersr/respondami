@@ -5,33 +5,33 @@ use super::layout::LayoutRenderer;
 
     #[test]
     fn input_area_height_empty_is_minimum() {
-        assert_eq!(LayoutRenderer::input_area_height_for("", 80), 1);
+        assert_eq!(LayoutRenderer::input_area_height_for("", 80, false), 1);
     }
 
     #[test]
     fn input_area_height_short_line_is_minimum() {
-        assert_eq!(LayoutRenderer::input_area_height_for("hello", 80), 1);
+        assert_eq!(LayoutRenderer::input_area_height_for("hello", 80, false), 1);
     }
 
     #[test]
     fn input_area_height_wraps_long_line() {
         // 80 chars at width 20 = 4 visual lines → capped at 4
         let input = "a".repeat(80);
-        assert_eq!(LayoutRenderer::input_area_height_for(&input, 20), 4);
+        assert_eq!(LayoutRenderer::input_area_height_for(&input, 20, false), 4);
     }
 
     #[test]
     fn input_area_height_capped_at_max() {
         // 200 chars at width 10 = 20 visual lines → capped at 6
         let input = "a".repeat(200);
-        assert_eq!(LayoutRenderer::input_area_height_for(&input, 10), 6);
+        assert_eq!(LayoutRenderer::input_area_height_for(&input, 10, false), 6);
     }
 
     #[test]
     fn input_area_height_multiline_no_wrap() {
         // 3 short lines at width 80 = 3 visual lines
         let input = "line1\nline2\nline3";
-        assert_eq!(LayoutRenderer::input_area_height_for(input, 80), 3);
+        assert_eq!(LayoutRenderer::input_area_height_for(input, 80, false), 3);
     }
 
     #[test]
@@ -42,16 +42,26 @@ use super::layout::LayoutRenderer;
         let line1 = "a".repeat(20);
         let line2 = "b".repeat(10);
         let input = format!("{line1}\n{line2}");
-        assert_eq!(LayoutRenderer::input_area_height_for(&input, 10), 3);
+        assert_eq!(LayoutRenderer::input_area_height_for(&input, 10, false), 3);
     }
 
     #[test]
     fn input_area_height_zero_width_uses_minimum() {
         // wrap_width.max(1) guards against zero
         let input = "hello";
-        let result = LayoutRenderer::input_area_height_for(input, 0);
+        let result = LayoutRenderer::input_area_height_for(input, 0, false);
         // width 1 → 5 visual lines (h,e,l,l,o) → capped at 5
         assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn input_area_height_pending_image_adds_summary_row() {
+        // L-1: a pending image adds one row for the 📎 summary line.
+        assert_eq!(LayoutRenderer::input_area_height_for("hello", 80, true), 2);
+        assert_eq!(LayoutRenderer::input_area_height_for("", 80, true), 2);
+        // Capped text rows (6) + 1 summary = 7.
+        let input = "a".repeat(200);
+        assert_eq!(LayoutRenderer::input_area_height_for(&input, 10, true), 7);
     }
 
 // Model select 3-column table tests

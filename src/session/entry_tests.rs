@@ -169,6 +169,52 @@ use super::{SessionEntry, AgentMessage, ToolCall, Usage, RequestTokenUsage, Toke
         }
     }
 
+    #[test]
+    fn agent_message_user_with_images_roundtrip() {
+        use crate::image::ImageContent;
+        let img = ImageContent {
+            data: "aW1hZ2U=".to_string(),
+            mime_type: "image/png".to_string(),
+            width: 2000,
+            height: 1500,
+        };
+        let msg = AgentMessage::user_with_images("why is this failing?".to_string(), vec![img.clone()]);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"images\""), "non-empty images must be serialized");
+        let decoded: AgentMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            AgentMessage::User { content, images } => {
+                assert_eq!(content, "why is this failing?");
+                assert_eq!(images, vec![img]);
+            }
+            _ => panic!("expected User message"),
+        }
+    }
+
+    #[test]
+    fn agent_message_user_empty_images_omitted() {
+        // Backward compat: a no-image user message serializes without the key,
+        // byte-identical to the pre-feature form (prefix-cache stability).
+        let msg = AgentMessage::user("hello".to_string());
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("\"images\""), "empty images must be omitted from JSON");
+        assert_eq!(json, r#"{"role":"user","content":"hello"}"#);
+    }
+
+    #[test]
+    fn agent_message_user_deserializes_without_images_field() {
+        // Old JSONL user lines have no `images` key — must deserialize with default.
+        let json = r#"{"role":"user","content":"old"}"#;
+        let decoded: AgentMessage = serde_json::from_str(json).unwrap();
+        match decoded {
+            AgentMessage::User { content, images } => {
+                assert_eq!(content, "old");
+                assert_eq!(images, Vec::new());
+            }
+            _ => panic!("expected User message"),
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // AgentMessage content()
     // ---------------------------------------------------------------------------

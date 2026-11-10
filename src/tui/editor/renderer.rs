@@ -29,14 +29,53 @@ impl EditorRenderer {
         let input = &app.editor.input_buffer;
         let cursor_pos = app.editor.cursor_pos;
 
+        // When images are pending, reserve the top row for the summary line and
+        // render the input in the remaining area below it.
+        let input_area = if !app.editor.pending_images.is_empty() && area.height > 1 {
+            let summary_area = Rect {
+                y: area.y,
+                height: 1,
+                ..area
+            };
+            Self::render_image_summary(frame, summary_area, app, theme);
+            Rect {
+                y: area.y + 1,
+                height: area.height - 1,
+                ..area
+            }
+        } else {
+            area
+        };
+
         match &app.editor.autocomplete_mode {
             AutocompleteMode::None
             | AutocompleteMode::File { .. }
             | AutocompleteMode::Skill { .. } => {
                 // Both overlays rendered in layout.rs. Here we just render input.
-                Self::render_input_only(frame, area, input, cursor_pos, theme);
+                Self::render_input_only(frame, input_area, input, cursor_pos, theme);
             }
         }
+    }
+
+    /// Render the pending-image summary line: `📎 name 2000×1500` (single) or
+    /// `📎 N images: a 2000×1500, b 1024×768` (multiple). Only called when
+    /// `pending_images` is non-empty.
+    fn render_image_summary(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+        let images = &app.editor.pending_images;
+        let text = if images.len() == 1 {
+            let p = &images[0];
+            format!("📎 {} {}×{}", p.name, p.image.width, p.image.height)
+        } else {
+            let items: Vec<String> = images
+                .iter()
+                .map(|p| format!("{} {}×{}", p.name, p.image.width, p.image.height))
+                .collect();
+            format!("📎 {} images: {}", images.len(), items.join(", "))
+        };
+        let style = Style::default().fg(theme.text_dim).bg(theme.bg_light);
+        let paragraph = Paragraph::new(Line::from(Span::styled(text, style)))
+            .style(Style::default().bg(theme.bg_light));
+        frame.render_widget(paragraph, area);
     }
 
     fn render_input_only(frame: &mut Frame, area: Rect, input: &str, cursor_pos: usize, theme: &Theme) {

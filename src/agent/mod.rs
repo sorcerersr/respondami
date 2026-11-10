@@ -133,6 +133,7 @@ pub fn build_context_with_system(
 pub async fn run_agent_with_snapshot(
     context_messages: Vec<AgentMessage>,
     user_message: String,
+    user_images: Vec<crate::image::ImageContent>,
     config: Config,
     cwd: PathBuf,
     tool_registry: ToolRegistry,
@@ -157,9 +158,11 @@ pub async fn run_agent_with_snapshot(
 
     let compaction_engine = CompactionEngine::from_config(&config);
 
-    // Build initial context from snapshot + user message
+    // Build initial context from snapshot + user message. Images are attached
+    // to the user message (frozen base64; the wire is a pure function of this,
+    // so the history guard's digest covers them and the model sees them).
     let mut current_context = context_messages;
-    current_context.push(AgentMessage::user(user_message.clone()));
+    current_context.push(AgentMessage::user_with_images(user_message.clone(), user_images));
 
     // Per-message digests, kept in lockstep with `current_context` for the
     // history guard (vLLM prefix-cache stability).
@@ -886,21 +889,31 @@ async fn strip_seen_images(
     tx: &mpsc::Sender<AgentEvent>,
 ) {
     let mut stripped_ids: Vec<String> = Vec::new();
+    let mut any_stripped = false;
     for (i, msg) in context.iter_mut().enumerate() {
-        if let AgentMessage::Tool {
-            images,
-            tool_call_id,
-            ..
-        } = msg
-            && !images.is_empty()
-        {
-            let id = tool_call_id.clone();
-            *msg = strip_images_from_tool(msg);
-            digests[i] = message_digest(msg);
-            stripped_ids.push(id);
+        match msg {
+            AgentMessage::Tool {
+                images,
+                tool_call_id,
+                ..
+            } if !images.is_empty() => {
+                let id = tool_call_id.clone();
+                *msg = strip_images_from_tool(msg);
+                digests[i] = message_digest(msg);
+                stripped_ids.push(id);
+                any_stripped = true;
+            }
+            // User images are stripped blanket-style (no ID in the event); the
+            // session store applies the same transform on the `StripImages` event.
+            AgentMessage::User { images, .. } if !images.is_empty() => {
+                *msg = strip_images_from_user(msg);
+                digests[i] = message_digest(msg);
+                any_stripped = true;
+            }
+            _ => {}
         }
     }
-    if !stripped_ids.is_empty() {
+    if any_stripped {
         let _ = tx
             .send(AgentEvent::StripImages {
                 tool_call_ids: stripped_ids,
@@ -1088,6 +1101,34 @@ pub(crate) fn strip_images_from_tool(msg: &AgentMessage) -> AgentMessage {
     }
 }
 
+/// The stripped form of a user message that carries images: `images` cleared
+/// and one removal note per image appended to `content`.
+///
+/// Non-user messages and user messages without images are returned unchanged
+/// (cloned). The label for each note is the image's MIME type (the `name` is
+/// not stored in [`crate::image::ImageContent`]; the MIME is deterministic, so
+/// the agent loop and the TUI session rewrite never diverge).
+#[must_use]
+pub(crate) fn strip_images_from_user(msg: &AgentMessage) -> AgentMessage {
+    let AgentMessage::User { content, images } = msg else {
+        return msg.clone();
+    };
+    if images.is_empty() {
+        return msg.clone();
+    }
+    let mut new_content = content.clone();
+    for img in images {
+        new_content.push_str(&format!(
+            "\n[image removed: {} ({}x{})]",
+            img.mime_type, img.width, img.height
+        ));
+    }
+    AgentMessage::User {
+        content: new_content,
+        images: Vec::new(),
+    }
+}
+
 /// Log the last 3 context messages before a retry attempt.
 ///
 /// Fires once per empty-response event (when `stream_retry_count` == 0),
@@ -1110,7 +1151,7 @@ fn format_message_preview(msg: &AgentMessage) -> String {
             let preview = truncate_content(content, 500);
             format!("  [system] — {preview}")
         }
-        AgentMessage::User { content } => {
+        AgentMessage::User { content, .. } => {
             let preview = truncate_content(content, 500);
             format!("  [user] — {preview}")
         }

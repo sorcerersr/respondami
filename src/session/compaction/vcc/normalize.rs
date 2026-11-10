@@ -182,7 +182,7 @@ fn normalize_message(
 ) {
     match msg {
         AgentMessage::System { .. } => {}
-        AgentMessage::User { content } => {
+        AgentMessage::User { content, .. } => {
             let text = sanitize(content);
             if !text.trim().is_empty() {
                 out.push(VccBlock::User { text });

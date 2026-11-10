@@ -177,8 +177,12 @@ fn estimate_message_tokens(msg: &AgentMessage, est: &TokenEstimator) -> u32 {
         AgentMessage::System { content } => {
             est.estimate_tokens("system") + est.estimate_tokens(content)
         }
-        AgentMessage::User { content } => {
-            est.estimate_tokens("user") + est.estimate_tokens(content)
+        AgentMessage::User { content, images } => {
+            let mut tokens = est.estimate_tokens("user") + est.estimate_tokens(content);
+            for img in images {
+                tokens += crate::image::estimate_image_tokens(img.width, img.height);
+            }
+            tokens
         }
         AgentMessage::Assistant { content: blocks, .. } => {
             let mut tokens = est.estimate_tokens("assistant");
@@ -231,7 +235,7 @@ fn estimate_tool_call_tokens(tc: &ToolCall, est: &TokenEstimator) -> u32 {
 fn estimate_message_content_chars(msg: &AgentMessage) -> usize {
     match msg {
         AgentMessage::System { content } => content.len(),
-        AgentMessage::User { content } => content.len(),
+        AgentMessage::User { content, .. } => content.len(),
         AgentMessage::Assistant { content: blocks, .. } => {
             blocks
                 .iter()

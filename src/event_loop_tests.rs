@@ -361,6 +361,7 @@ async fn poll_launches_pending_turn_when_compaction_finishes() {
     }));
     app.pending_turn = Some(PendingTurn {
         input: "deferred question".to_string(),
+        images: Vec::new(),
         restore_input: "deferred question".to_string(),
         created_session: false,
         pre_turn_chat_len: 0,
