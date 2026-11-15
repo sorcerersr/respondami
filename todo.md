@@ -42,6 +42,15 @@ real case comes up:
   model sees the image in its intended orientation. Phone screenshots are the main case.
 - Runs inside the existing `process_image_bytes` pipeline, before the resize step.
 
+## Future: Smart paste
+
+`Ctrl+V` is image-only in the 2026-11-15 key fix (`2026-11-15-image-paste-ctrl-v-design.md`). A
+possible extension is pi-style "smart paste" on the same key: read the platform clipboard and do
+the right thing in priority order — file paths (insert, spaced like pi) → image (attach `[img:N]`)
+→ text (insert). Requires an arboard text read alongside the existing image read, and a decision on
+how file-path insertion interacts with the existing dropped-path handler (`try_attach_dropped_image`).
+Not done now to keep the key fix minimal and image-only.
+
 ## Future: Exhaustive panic-elimination (Option B)
 
 The 2026-10-08 "no panics" fix used the **surgical + safety net** approach (Option A):

@@ -1,10 +1,22 @@
-//! Tests for the dropped-image-path detection in the main event loop.
+//! Tests for the dropped-image-path detection and the image-paste key intercept
+//! in the main event loop.
 
 use std::path::PathBuf;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
 use crate::config::Config;
 use crate::session::SessionStore;
 use crate::tui::App;
+
+fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
 
 fn make_app() -> App {
     // Re-point the session store at a temp dir so no real session files are
@@ -103,4 +115,52 @@ fn dropped_image_with_vision_off_is_plain_insert() {
 
     assert!(!attached, "vision off must not attach");
     assert!(app.editor.pending_images.is_empty());
+}
+
+#[test]
+fn image_paste_key_matches_ctrl_v() {
+    let key = make_key(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    assert!(
+        crate::is_image_paste_key(&key),
+        "Ctrl+V must be the image-paste key"
+    );
+}
+
+#[test]
+fn image_paste_key_matches_ctrl_shift_v() {
+    let key = make_key(
+        KeyCode::Char('v'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert!(
+        crate::is_image_paste_key(&key),
+        "Ctrl+Shift+V must still be the image-paste key"
+    );
+}
+
+#[test]
+fn image_paste_key_rejects_plain_v() {
+    let key = make_key(KeyCode::Char('v'), KeyModifiers::NONE);
+    assert!(
+        !crate::is_image_paste_key(&key),
+        "plain V must not trigger image paste"
+    );
+}
+
+#[test]
+fn image_paste_key_rejects_shift_v() {
+    let key = make_key(KeyCode::Char('v'), KeyModifiers::SHIFT);
+    assert!(
+        !crate::is_image_paste_key(&key),
+        "Shift+V (no Ctrl) must not trigger image paste"
+    );
+}
+
+#[test]
+fn image_paste_key_rejects_ctrl_other_char() {
+    let key = make_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(
+        !crate::is_image_paste_key(&key),
+        "Ctrl+C must not trigger image paste"
+    );
 }

@@ -60,7 +60,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEventKind, KeyboardEnhancementFlags, KeyModifiers,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyboardEnhancementFlags, KeyModifiers,
     MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use futures_util::StreamExt;
@@ -289,11 +289,10 @@ pub async fn run() -> anyhow::Result<()> {
         if let Some(ev) = event {
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    // Ctrl+Shift+V: explicit image paste from the clipboard.
-                    if key.code == KeyCode::Char('v')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.modifiers.contains(KeyModifiers::SHIFT)
-                    {
+                    // Ctrl+V (and Ctrl+Shift+V): explicit image paste from the
+                    // clipboard. Ctrl+V is the primary key — it is not intercepted
+                    // by Kitty/Alacritty's native paste, unlike Ctrl+Shift+V.
+                    if is_image_paste_key(&key) {
                         paste_clipboard_image(&mut app).await;
                         continue;
                     }
@@ -358,6 +357,16 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
     }
+}
+
+/// Returns true when the key is the explicit image-paste shortcut: `Ctrl+V`,
+/// with or without `Shift`.
+///
+/// `Ctrl+V` is the primary key — it is not intercepted by Kitty's or
+/// Alacritty's native paste binding (`Ctrl+Shift+V`), so it reaches the TUI on
+/// both terminals. `Ctrl+Shift+V` is also matched for terminals that forward it.
+pub(crate) fn is_image_paste_key(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// Paste an image from the clipboard into the input buffer.
