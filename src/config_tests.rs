@@ -1,5 +1,6 @@
 use crate::config::{
-    CompactionConfig, CompactionMode, Config, ProviderConfig, RtkConfig, UiConfig, VccConfig,
+    CompactionConfig, CompactionMode, Config, LoopDetectionConfig, ProviderConfig, RtkConfig,
+    UiConfig, VccConfig,
 };
 use crate::provider::{OpenAISettings, ProviderSettings};
 use crate::tui::ThinkingDisplay;
@@ -535,4 +536,94 @@ fn config_without_rtk_section_loads_defaults() {
 }"#;
     let config: Config = serde_json::from_str(json).unwrap();
     assert!(config.rtk.enabled);
+}
+
+// ---------------------------------------------------------------------------
+// LoopDetectionConfig
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loop_detection_config_default_values() {
+    let config = LoopDetectionConfig::default();
+    assert!(config.enabled);
+    assert_eq!(config.window, 20);
+    assert_eq!(config.threshold, 8);
+    assert_eq!(config.max_recoveries, 3);
+    assert_eq!(config.reset_after_calls, 50);
+}
+
+#[test]
+fn loop_detection_config_custom_values() {
+    let json = r#"{
+    "enabled": false,
+    "window": 30,
+    "threshold": 5,
+    "max_recoveries": 1,
+    "reset_after_calls": 100
+}"#;
+    let config: LoopDetectionConfig = serde_json::from_str(json).unwrap();
+    assert!(!config.enabled);
+    assert_eq!(config.window, 30);
+    assert_eq!(config.threshold, 5);
+    assert_eq!(config.max_recoveries, 1);
+    assert_eq!(config.reset_after_calls, 100);
+}
+
+#[test]
+fn loop_detection_config_missing_uses_defaults() {
+    let config: LoopDetectionConfig = serde_json::from_str(r"{}").unwrap();
+    assert!(config.enabled);
+    assert_eq!(config.window, 20);
+    assert_eq!(config.threshold, 8);
+    assert_eq!(config.max_recoveries, 3);
+    assert_eq!(config.reset_after_calls, 50);
+}
+
+#[test]
+fn config_default_includes_loop_detection() {
+    let config = Config::default();
+    assert!(config.loop_detection.enabled);
+}
+
+#[test]
+fn config_full_roundtrip_with_loop_detection() {
+    let config = Config::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let decoded: Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded.loop_detection.window, config.loop_detection.window);
+    assert_eq!(decoded.loop_detection.threshold, config.loop_detection.threshold);
+    assert_eq!(
+        decoded.loop_detection.max_recoveries,
+        config.loop_detection.max_recoveries
+    );
+    assert_eq!(
+        decoded.loop_detection.reset_after_calls,
+        config.loop_detection.reset_after_calls
+    );
+}
+
+#[test]
+fn config_without_loop_detection_section_loads_defaults() {
+    // Simulates a legacy config without the loop_detection section: the
+    // `#[serde(default)]` on the field must fill it in on upgrade-in-place.
+    let json = r#"{
+    "provider": {
+        "type": "llamacpp",
+        "url": "http://localhost:8080",
+        "model": "llama3.2",
+        "context_window": 32768
+    },
+    "compaction": {
+        "enabled": true,
+        "reserve_tokens": 8192,
+        "keep_recent_tokens": 16384
+    },
+    "ui": {
+        "thinking_display": "collapsed",
+        "thinking_max_lines": 5
+    }
+}"#;
+    let config: Config = serde_json::from_str(json).unwrap();
+    assert!(config.loop_detection.enabled);
+    assert_eq!(config.loop_detection.window, 20);
 }

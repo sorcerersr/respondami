@@ -5,10 +5,13 @@
 //!
 //! Rust guideline compliant 2026-02-21
 
+mod loop_detector;
 mod prompts;
 mod streaming;
 pub mod token_estimation;
 
+#[cfg(test)]
+mod loop_detector_tests;
 #[cfg(test)]
 mod mod_tests;
 #[cfg(test)]
@@ -16,6 +19,10 @@ mod streaming_tests;
 #[cfg(test)]
 mod token_estimation_tests;
 
+#[doc(inline)]
+pub use loop_detector::{
+    LoopDetector, LoopReport, canonical_args, loop_recovery_prompt, DEFAULT_THRESHOLD, DEFAULT_WINDOW,
+};
 #[doc(inline)]
 pub use prompts::get_system_prompt;
 #[doc(inline)]
@@ -170,6 +177,14 @@ pub async fn run_agent_with_snapshot(
         current_context.iter().map(message_digest).collect();
 
     let mut current_request_usage: RequestTokenUsage = RequestTokenUsage::default();
+
+    // Degenerate-loop detector: a sliding window of recent tool calls. Created
+    // from config; when `enabled` is false it is never consulted (record is a
+    // no-op guard below). The recovery decision lives in the TUI, not here.
+    let mut loop_detector = config.loop_detection.enabled.then(|| {
+        LoopDetector::new(config.loop_detection.window, config.loop_detection.threshold)
+    });
+
     // Retry tracking for transient provider errors
     let mut stream_retry_count = 0u32;
     let max_stream_retries = if config.retry.enabled {
@@ -440,7 +455,19 @@ pub async fn run_agent_with_snapshot(
         };
         for tc in &tool_calls {
             match execute_tool_call(&mut tool_ctx, tc).await {
-                ToolCallOutcome::Continue | ToolCallOutcome::Blocked => {}
+                ToolCallOutcome::Continue | ToolCallOutcome::Blocked => {
+                    // Record the call and check for a degenerate loop. On a
+                    // hit, signal the TUI and stop the task (no `Done` follows,
+                    // so the Stop hook never fires). The TUI cuts the looped
+                    // history and restarts, or stops if the budget is spent.
+                    if let Some(detector) = loop_detector.as_mut() {
+                        detector.record(&tc.name, &tc.arguments);
+                        if let Some(report) = detector.detect() {
+                            let _ = tx.send(AgentEvent::LoopDetected { report }).await;
+                            return;
+                        }
+                    }
+                }
                 ToolCallOutcome::Cancelled => return,
             }
         }

@@ -637,6 +637,13 @@ pub async fn launch_agent_turn(
     images: Vec<crate::tui::editor_state::PendingImage>,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
+    // A genuine user message starts a fresh task: reset the loop-recovery
+    // budget and the loop-free decay counter. (Loop-recovery and compaction
+    // restarts go through `restart_agent` directly and must NOT reset the
+    // budget — they are continuations of the same task.)
+    app.loop_recovery_count = 0;
+    app.loop_free_tool_calls = 0;
+
     let agent = restart_agent(app, user_msg, images);
 
     // Process agent events while maintaining TUI responsiveness

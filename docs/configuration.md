@@ -51,6 +51,13 @@ The file is created automatically with default values on first launch. Existing 
     "enabled": true,
     "max_retries": 3,
     "base_delay_ms": 2000
+  },
+  "loop_detection": {
+    "enabled": true,
+    "window": 20,
+    "threshold": 8,
+    "max_recoveries": 3,
+    "reset_after_calls": 50
   }
 }
 ```
@@ -126,6 +133,22 @@ Controls automatic retry on transient provider errors (empty responses, network 
 | `enabled` | boolean | `true` | Whether automatic retry is enabled. |
 | `max_retries` | integer | `3` | Maximum number of retry attempts before giving up. |
 | `base_delay_ms` | integer | `2000` | Base delay between retries in milliseconds. Uses exponential backoff (delay doubles each attempt). |
+
+## Loop Detection
+
+Detects degenerate tool-call loops — the model repeatedly issuing the *same* tool call (identical tool + arguments) without making progress — and automatically recovers by surgically cutting the looped history and re-orienting the model. This is the guard against the failure mode where a model gets stuck re-running the same command (e.g. the same `grep`) for dozens of minutes and tokens.
+
+Detection uses a sliding window of recent tool calls. A call is keyed by its tool name plus a canonical (key-sorted) form of its arguments, so argument order does not matter. When the same key appears at least `threshold` times within the last `window` calls, a loop is declared. Interleaved housekeeping calls (e.g. a periodic `edit` to a progress file) do not mask the loop, because the window counts occurrences rather than requiring a consecutive run.
+
+On detection, the recovery is a **surgical cut**: the session is truncated at the *first* occurrence of the looped call (floored at the last user message, so user messages are never deleted), a `loop-recovery` marker is recorded, and the agent is restarted with a re-orienting prompt that names the repeated call and steers the model to take a *different* action. The pre-loop work and the user's instruction are preserved. The recovery budget (`max_recoveries`) is spent per user turn; after `reset_after_calls` loop-free tool calls the counter decays so a later, distinct loop gets a fresh budget in long sessions. When the budget is exhausted the agent stops and asks for manual intervention (the Stop hook does not fire for this stop).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | Whether loop detection is enabled. When `false`, the detector is never consulted. |
+| `window` | integer | `20` | Sliding window size (in tool calls) over which frequency is measured. |
+| `threshold` | integer | `8` | Number of occurrences of the same call within the window that declares a loop. |
+| `max_recoveries` | integer | `3` | Maximum automatic recoveries per user turn before stopping for manual intervention. |
+| `reset_after_calls` | integer | `50` | Number of loop-free tool calls after which the recovery counter decays to zero (a later, distinct loop gets a fresh budget). |
 
 ## Directory Layout
 

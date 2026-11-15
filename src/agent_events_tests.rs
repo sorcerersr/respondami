@@ -174,3 +174,189 @@ fn strip_images_event_no_active_session_is_noop() {
     super::agent_events::handle_strip_images_event(&mut app, vec!["call_img".to_string()]);
     assert!(!app.session.session_store.has_active_session());
 }
+
+// ---------------------------------------------------------------------------
+// Loop recovery (decide_loop_recovery + decay)
+// ---------------------------------------------------------------------------
+
+/// An assistant message issuing a `bash` call with the given command.
+fn bash_assistant(command: &str) -> crate::session::AgentMessage {
+    crate::session::AgentMessage::assistant(
+        String::new(),
+        String::new(),
+        vec![crate::session::ToolCall {
+            id: "call_1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": command }),
+        }],
+        None,
+    )
+}
+
+/// A report for a repeated `bash grep` loop.
+fn grep_report() -> crate::agent::LoopReport {
+    crate::agent::LoopReport {
+        tool_name: "bash".to_string(),
+        canonical_args: crate::agent::canonical_args(&serde_json::json!({ "command": "grep -n foo" })),
+        args_preview: "grep -n foo".to_string(),
+        count: 10,
+    }
+}
+
+/// Build an app with a session: user task, a pre-loop `ls` turn, then the
+/// repeated `grep` loop (assistant + tool ×2).
+fn app_with_loop_session() -> (App, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, "/".to_string())
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(None, crate::session::AgentMessage::user("task".into()))
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(None, bash_assistant("ls"))
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(
+            None,
+            crate::session::AgentMessage::tool(
+                "c".into(),
+                "bash".into(),
+                serde_json::json!({ "command": "ls" }),
+                "ok".into(),
+                vec![],
+            ),
+        )
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(None, bash_assistant("grep -n foo"))
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(
+            None,
+            crate::session::AgentMessage::tool(
+                "c".into(),
+                "bash".into(),
+                serde_json::json!({ "command": "grep -n foo" }),
+                "ok".into(),
+                vec![],
+            ),
+        )
+        .unwrap();
+    (app, dir)
+}
+
+/// `LoopDetected` within budget: the cut is applied (loop removed, pre-loop
+/// work kept), the guard is reset, the recovery counter increments, and a
+/// recovery prompt is returned.
+#[test]
+fn loop_recovery_within_budget_cuts_and_restarts() {
+    let (mut app, _dir) = app_with_loop_session();
+    let report = grep_report();
+
+    let decision = super::agent_events::decide_loop_recovery(&mut app, &report);
+
+    match decision {
+        super::agent_events::LoopRecoveryDecision::Recover { prompt, removed } => {
+            assert_eq!(removed, 2, "the assistant + tool loop entries must be cut");
+            assert!(prompt.contains("grep -n foo"), "prompt must name the loop");
+        }
+        other => panic!("expected Recover, got {other:?}"),
+    }
+    assert_eq!(app.loop_recovery_count, 1, "recovery counter must increment");
+
+    // The pre-loop `ls` turn survives; the looped `grep` is gone.
+    let context = app.session.session_store.build_context();
+    assert!(
+        !context.iter().any(|m| matches!(m, crate::session::AgentMessage::Assistant { content, .. } if content.iter().any(|b| matches!(b, crate::session::ContentBlock::ToolCall { tool_call } if tool_call.arguments["command"] == "grep -n foo")))),
+        "the looped call must be cut"
+    );
+}
+
+/// `LoopDetected` with the budget already spent: `Exhausted`, no cut, counter
+/// unchanged.
+#[test]
+fn loop_recovery_exhausted_stops_without_cut() {
+    let (mut app, _dir) = app_with_loop_session();
+    app.loop_recovery_count = app.config.config.loop_detection.max_recoveries;
+    let entries_before = app.session.session_store.entries().len();
+    let report = grep_report();
+
+    let decision = super::agent_events::decide_loop_recovery(&mut app, &report);
+
+    assert!(
+        matches!(decision, super::agent_events::LoopRecoveryDecision::Exhausted),
+        "budget spent → Exhausted"
+    );
+    assert_eq!(
+        app.session.session_store.entries().len(),
+        entries_before,
+        "no cut must be applied when exhausted"
+    );
+    assert_eq!(
+        app.loop_recovery_count, app.config.config.loop_detection.max_recoveries,
+        "counter must not increment past the budget"
+    );
+}
+
+/// `LoopDetected` with no active session: still `Recover` (nothing to cut),
+/// counter increments, empty prompt path is safe.
+#[test]
+fn loop_recovery_no_active_session_recovers_without_cut() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    // No session created.
+    let report = grep_report();
+
+    let decision = super::agent_events::decide_loop_recovery(&mut app, &report);
+
+    match decision {
+        super::agent_events::LoopRecoveryDecision::Recover { removed, .. } => {
+            assert_eq!(removed, 0, "no session → nothing removed");
+        }
+        other => panic!("expected Recover, got {other:?}"),
+    }
+    assert_eq!(app.loop_recovery_count, 1);
+}
+
+/// `apply_loop_decay`: after `reset_after_calls` loop-free tool calls, an
+/// elevated recovery counter resets to 0; below the threshold it does not.
+#[test]
+fn loop_decay_resets_elevated_counter() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    let reset_after = app.config.config.loop_detection.reset_after_calls;
+    app.loop_recovery_count = 1;
+
+    // Below the threshold: counter stays elevated.
+    for _ in 0..(reset_after - 1) {
+        app.apply_loop_decay();
+    }
+    assert_eq!(app.loop_recovery_count, 1, "must not reset below the threshold");
+    assert_eq!(app.loop_free_tool_calls, reset_after - 1);
+
+    // The threshold-th call resets both.
+    app.apply_loop_decay();
+    assert_eq!(app.loop_recovery_count, 0, "must reset at the threshold");
+    assert_eq!(app.loop_free_tool_calls, 0);
+}
+
+/// `apply_loop_decay` is a no-op until a recovery has happened (counter 0).
+#[test]
+fn loop_decay_noop_without_recovery() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    app.loop_recovery_count = 0;
+    for _ in 0..100 {
+        app.apply_loop_decay();
+    }
+    assert_eq!(app.loop_recovery_count, 0);
+    assert_eq!(app.loop_free_tool_calls, 0, "no decay counting without a recovery");
+}

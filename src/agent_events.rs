@@ -171,6 +171,10 @@ pub async fn process_agent_events(
                     cancelled,
                     rtk_original,
                 );
+                // Loop-recovery counter decay: after enough loop-free tool
+                // calls, a distinct later loop gets a fresh budget (long
+                // sessions). Only meaningful once a recovery has happened.
+                app.apply_loop_decay();
                 app.maybe_auto_scroll();
             }
             Ok(Some(AgentEvent::ToolOutput(text))) => {
@@ -370,6 +374,55 @@ pub async fn process_agent_events(
                 });
                 app.modal.state = AppState::Compacting;
                 continue;
+            }
+            Ok(Some(AgentEvent::LoopDetected { report })) => {
+                // A degenerate loop was detected; the agent task has stopped
+                // (no `Done` follows, so the Stop hook never fires). Decide:
+                // cut the looped history and restart (within budget) or stop.
+                app.drain_pending_events(&mut rx);
+                if let Some(snap) = app.agent.tracker.finalize_turn() {
+                    app.session.session_store.save_token_rate(snap);
+                }
+                app.loop_free_tool_calls = 0;
+
+                match decide_loop_recovery(app, &report) {
+                    LoopRecoveryDecision::Exhausted => {
+                        app.add_system_message(&format!(
+                            "⚠️ Loop recovery failed after {} attempts — the model keeps repeating the same action. Intervene manually.",
+                            app.config.config.loop_detection.max_recoveries,
+                        ));
+                        app.maybe_auto_scroll();
+                        done = true;
+                        continue;
+                    }
+                    LoopRecoveryDecision::Failed(e) => {
+                        app.add_system_message(&format!("Loop cut failed: {e}"));
+                        app.maybe_auto_scroll();
+                        done = true;
+                        continue;
+                    }
+                    LoopRecoveryDecision::Recover {
+                        prompt,
+                        removed,
+                    } => {
+                        app.add_system_message(&format!(
+                            "⚠️ Loop detected: {} ×{} — truncated {removed} messages, continuing. (recovery {}/{})",
+                            report.summary(),
+                            report.count,
+                            app.loop_recovery_count,
+                            app.config.config.loop_detection.max_recoveries,
+                        ));
+                        app.maybe_auto_scroll();
+
+                        let new_agent = crate::turn::restart_agent(app, prompt, Vec::new());
+                        sse_guard = new_agent.sse_guard;
+                        agent_handle = new_agent.handle;
+                        let _ = cancel_tx.send(true);
+                        rx = new_agent.rx;
+                        cancel_tx = new_agent.cancel_tx;
+                        continue;
+                    }
+                }
             }
             Ok(Some(AgentEvent::Done(Ok(())))) => {
                 // Drain any remaining Token/Reasoning/Usage events from the channel.
@@ -575,6 +628,69 @@ pub(crate) fn handle_strip_images_event(app: &mut App, tool_call_ids: Vec<String
     {
         tracing::error!("Failed to strip images from session: {e}");
     }
+}
+
+/// The outcome of a [`decide_loop_recovery`] decision.
+#[derive(Debug)]
+pub(crate) enum LoopRecoveryDecision {
+    /// The cut was applied (or there was no session to cut); restart the agent
+    /// with `prompt`. `removed` is the number of messages truncated.
+    Recover { prompt: String, removed: u32 },
+    /// The recovery budget is exhausted: stop, no cut.
+    Exhausted,
+    /// The cut failed (I/O): stop with the error message.
+    Failed(String),
+}
+
+/// Decide how to recover from a detected loop: apply the surgical cut and
+/// build the recovery prompt, or stop (budget exhausted / cut failed).
+///
+/// This is the pure decision core of the `LoopDetected` handler — separated
+/// from the channel swapping so it can be unit-tested. It mutates the session
+/// (the cut), the history guard (reset), and the recovery counter (increment).
+/// The caller handles the system message, `restart_agent`, and channel swap.
+pub(crate) fn decide_loop_recovery(
+    app: &mut App,
+    report: &crate::agent::LoopReport,
+) -> LoopRecoveryDecision {
+    let max_recoveries = app.config.config.loop_detection.max_recoveries;
+    if app.loop_recovery_count >= max_recoveries {
+        return LoopRecoveryDecision::Exhausted;
+    }
+
+    // Locate and apply the surgical cut: the first assistant message (at/after
+    // the last user message) that issued the repeated call. The pre-loop work
+    // and the user's instruction are preserved.
+    let entries = app.session.session_store.entries().to_vec();
+    let cut_index = crate::session::find_loop_cut_index(
+        &entries,
+        &report.tool_name,
+        &report.canonical_args,
+    );
+    let mut removed = 0u32;
+    if app.session.session_store.has_active_session() {
+        match app
+            .session
+            .session_store
+            .apply_loop_cut(cut_index, &report.tool_name, &report.args_preview, report.count)
+        {
+            Ok(n) => removed = n,
+            Err(e) => return LoopRecoveryDecision::Failed(e.to_string()),
+        }
+        // The history was rewritten: reset the guard baseline so the next
+        // outgoing request is not flagged as drift.
+        app.session.reset_history_guard();
+    }
+
+    app.loop_recovery_count += 1;
+    let prompt = crate::agent::loop_recovery_prompt(
+        &report.tool_name,
+        &report.args_preview,
+        report.count,
+        app.loop_recovery_count,
+        max_recoveries,
+    );
+    LoopRecoveryDecision::Recover { prompt, removed }
 }
 
 /// Calculate the visible height of the chat area in lines.

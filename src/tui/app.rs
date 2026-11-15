@@ -90,6 +90,31 @@ pub struct App {
     /// loop iteration; `None` once delivered (or if the sender was dropped
     /// without a result).
     pub model_fetch: Option<ModelFetch>,
+    /// Loop-recovery budget spent this task: number of loop cuts performed
+    /// since the last genuine user message. When it reaches
+    /// `loop_detection.max_recoveries`, the next detected loop hard-stops
+    /// instead of cutting again. Reset on a new user turn and by counter decay.
+    pub loop_recovery_count: u32,
+    /// Loop-free tool calls since the last loop recovery. When it reaches
+    /// `loop_detection.reset_after_calls` (with a non-zero recovery count), the
+    /// recovery counter resets so a later, distinct loop gets a fresh budget.
+    pub loop_free_tool_calls: usize,
+}
+
+impl App {
+    /// Loop-recovery counter decay: called on every `ToolCallDone`. After
+    /// `reset_after_calls` loop-free tool calls (with a non-zero recovery
+    /// count), the recovery counter resets so a later, distinct loop gets a
+    /// fresh budget in long sessions. No-op until a recovery has happened.
+    pub(crate) fn apply_loop_decay(&mut self) {
+        if self.loop_recovery_count > 0 {
+            self.loop_free_tool_calls += 1;
+            if self.loop_free_tool_calls >= self.config.config.loop_detection.reset_after_calls {
+                self.loop_recovery_count = 0;
+                self.loop_free_tool_calls = 0;
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for App {
@@ -114,6 +139,8 @@ impl std::fmt::Debug for App {
             .field("compaction_trigger", &self.compaction_trigger)
             .field("endpoint_rx", &self.endpoint_rx.is_some())
             .field("model_fetch", &self.model_fetch.is_some())
+            .field("loop_recovery_count", &self.loop_recovery_count)
+            .field("loop_free_tool_calls", &self.loop_free_tool_calls)
             .finish()
     }
 }
@@ -218,6 +245,8 @@ impl App {
             compaction_trigger: "auto",
             endpoint_rx: None,
             model_fetch: None,
+            loop_recovery_count: 0,
+            loop_free_tool_calls: 0,
         }
     }
 

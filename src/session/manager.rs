@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use super::entry::{AgentMessage, SessionEntry, TokenRateEntry};
+use super::entry::{AgentMessage, ContentBlock, SessionEntry, TokenRateEntry};
 use crate::agent::token_estimation::{estimate_tokens_from_messages, TokenEstimator};
 
 /// Metadata about a session for listing purposes.
@@ -53,6 +53,46 @@ pub struct SessionStore {
     /// Token estimate of [`Self::cached_system_prompt`] (incl. the `system`
     /// role label, mirroring `estimate_tokens_from_messages`).
     cached_system_tokens: u32,
+}
+
+/// Locate the session cut index for a detected loop.
+///
+/// The cut is the first assistant message, at or after the last user message,
+/// that issued the repeated call (matching `tool_name` + canonical
+/// `args`). Cutting there removes the loop while preserving the pre-loop work
+/// and the user's most recent instruction. The last user message is the
+/// floor: the cut never lands before it, so user messages are never deleted.
+///
+/// If no matching assistant message is found after the floor (the loop's
+/// first occurrence was already compacted away), the floor itself is
+/// returned. If there is no user message at all, the cut is entry 1 (just
+/// after the session header) so the header is always preserved.
+#[must_use]
+pub fn find_loop_cut_index(entries: &[SessionEntry], tool_name: &str, canonical_args: &str) -> usize {
+    // Floor: the last user message, if any.
+    let floor = entries
+        .iter()
+        .rposition(|e| matches!(e, SessionEntry::Message { message: AgentMessage::User { .. }, .. }))
+        .unwrap_or(1);
+
+    // Scan forward from the floor for the first assistant message carrying the
+    // repeated call. The entry at the cut is an assistant message by
+    // construction, so the assistant→tool alternation stays intact.
+    for (i, entry) in entries.iter().enumerate().skip(floor) {
+        if let SessionEntry::Message { message: AgentMessage::Assistant { content, .. }, .. } = entry
+            && content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolCall { tool_call }
+                        if tool_call.name == tool_name
+                            && crate::agent::canonical_args(&tool_call.arguments) == canonical_args
+                )
+            })
+        {
+            return i;
+        }
+    }
+    floor
 }
 
 /// Build context messages by walking a flat list of session entries.
@@ -708,6 +748,61 @@ impl SessionStore {
 
         let messages_removed = (messages_before.saturating_sub(messages_after)) as u32;
         Ok((tokens_before, self.estimate_token_count(), messages_removed))
+    }
+
+    /// Cut a degenerate loop out of the session: drop entries from `cut_index`
+    /// to the end and append a `loop-recovery` marker recording the cut.
+    ///
+    /// `cut_index` is an index into [`Self::entries`] (the session header is
+    /// entry 0). The entry at `cut_index` is the assistant message that first
+    /// issued the repeated call, so everything from it on (the loop) is
+    /// removed; the pre-loop work and the last user message are preserved.
+    /// The marker is a [`SessionEntry::Custom`] (metadata only, invisible to
+    /// context rebuild) so the cut is auditable in the JSONL.
+    ///
+    /// Returns the number of `Message` entries removed.
+    ///
+    /// # Errors
+    ///
+    /// - I/O errors when rewriting the session file to disk.
+    pub fn apply_loop_cut(
+        &mut self,
+        cut_index: usize,
+        tool_name: &str,
+        args_preview: &str,
+        count: usize,
+    ) -> anyhow::Result<u32> {
+        let messages_before = self
+            .entries
+            .iter()
+            .filter(|e| matches!(e, SessionEntry::Message { .. }))
+            .count();
+
+        // Keep everything strictly before the cut, then append the marker.
+        let mut new_entries: Vec<SessionEntry> = self.entries[..cut_index].to_vec();
+        let messages_removed = new_entries
+            .iter()
+            .filter(|e| matches!(e, SessionEntry::Message { .. }))
+            .count();
+
+        let marker = SessionEntry::new_custom(
+            "loop-recovery".to_string(),
+            serde_json::json!({
+                "tool_name": tool_name,
+                "args_preview": args_preview,
+                "count": count,
+                "messages_removed": messages_before.saturating_sub(messages_removed),
+            }),
+        );
+        new_entries.push(marker);
+
+        self.entries = new_entries;
+        self.recompute_context_cache();
+        if let Some(ref path) = self.current_session_path {
+            self.rewrite_session_file(path)?;
+        }
+
+        Ok((messages_before.saturating_sub(messages_removed)) as u32)
     }
 
     /// Strip images from the session (`strip_images_after_view` workaround).

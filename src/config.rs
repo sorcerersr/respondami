@@ -439,6 +439,63 @@ impl Default for RetryConfig {
     }
 }
 
+/// Loop-detection & automatic-recovery configuration.
+///
+/// Detects degenerate loops (the model repeating the exact same tool call) in
+/// unattended sessions and recovers by surgically cutting the looped history
+/// and restarting with a re-orienting prompt. See `docs/configuration.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopDetectionConfig {
+    /// Master switch. When `false`, detection is skipped entirely.
+    #[serde(default = "default_loop_detection_enabled")]
+    pub enabled: bool,
+    /// Sliding window of recent tool calls to scan for repetition.
+    #[serde(default = "default_loop_detection_window")]
+    pub window: usize,
+    /// Same (name, args) at/above this many times in the window → loop.
+    #[serde(default = "default_loop_detection_threshold")]
+    pub threshold: usize,
+    /// Cuts allowed per task before a hard stop (manual intervention).
+    #[serde(default = "default_loop_detection_max_recoveries")]
+    pub max_recoveries: u32,
+    /// Loop-free tool calls after which the recovery counter resets, so a
+    /// later, distinct loop gets a fresh budget (long-session decay).
+    #[serde(default = "default_loop_detection_reset_after_calls")]
+    pub reset_after_calls: usize,
+}
+
+fn default_loop_detection_enabled() -> bool {
+    true
+}
+
+fn default_loop_detection_window() -> usize {
+    crate::agent::DEFAULT_WINDOW
+}
+
+fn default_loop_detection_threshold() -> usize {
+    crate::agent::DEFAULT_THRESHOLD
+}
+
+fn default_loop_detection_max_recoveries() -> u32 {
+    3
+}
+
+fn default_loop_detection_reset_after_calls() -> usize {
+    50
+}
+
+impl Default for LoopDetectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_loop_detection_enabled(),
+            window: default_loop_detection_window(),
+            threshold: default_loop_detection_threshold(),
+            max_recoveries: default_loop_detection_max_recoveries(),
+            reset_after_calls: default_loop_detection_reset_after_calls(),
+        }
+    }
+}
+
 /// Full application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -450,6 +507,8 @@ pub struct Config {
     pub rtk: RtkConfig,
     #[serde(default)]
     pub retry: RetryConfig,
+    #[serde(default)]
+    pub loop_detection: LoopDetectionConfig,
 }
 
 fn default_compaction_enabled() -> bool {
@@ -502,6 +561,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             rtk: RtkConfig::default(),
             retry: RetryConfig::default(),
+            loop_detection: LoopDetectionConfig::default(),
         }
     }
 }
@@ -553,6 +613,7 @@ impl Config {
             .with_context(|| format!("Failed to parse config {}", path.display()))?;
         let needs_migration = raw.get("ui").is_none()
             || raw.get("rtk").is_none()
+            || raw.get("loop_detection").is_none()
             || raw.get("provider").and_then(|p| p.get("models")).is_none()
             || raw
                 .get("provider")

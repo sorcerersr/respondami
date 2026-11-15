@@ -89,6 +89,14 @@ pub enum AgentEvent {
         /// User message to retry after compaction (only for Overflow).
         retry_user_message: Option<String>,
     },
+    /// A degenerate loop was detected: the model repeated the same tool call
+    /// at the threshold. The agent task has stopped (no `Done` follows), so the
+    /// Stop hook never fires. The TUI decides: cut the looped history and
+    /// restart (within budget) or stop (budget exhausted).
+    LoopDetected {
+        /// The detected loop (repeated tool name + canonical args + count).
+        report: crate::agent::LoopReport,
+    },
     /// Progress update during compaction LLM call.
     CompactionProgress { message: String },
     /// Compaction completed with result.
