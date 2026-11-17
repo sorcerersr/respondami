@@ -7,7 +7,9 @@
 
 use std::borrow::Cow;
 
-use super::clipboard::{ClipboardError, fetch_image, rgba_to_content};
+use super::clipboard::{
+    ClipboardError, TerminalKind, detect_terminal_from, fetch_image, rgba_to_content,
+};
 use arboard::ImageData;
 use base64::Engine;
 
@@ -64,4 +66,36 @@ fn fetch_image_smoke_returns_result() {
     // Some, text-only → None. All are valid `Result`s; the assertion is that
     // it does not panic.
     let _ = fetch_image();
+}
+
+#[test]
+fn detect_terminal_kitty() {
+    assert_eq!(
+        detect_terminal_from(Some("kitty"), Some("xterm-256color")),
+        TerminalKind::Kitty
+    );
+}
+
+#[test]
+fn detect_terminal_ghostty() {
+    assert_eq!(
+        detect_terminal_from(None, Some("xterm-ghostty")),
+        TerminalKind::Ghostty
+    );
+}
+
+#[test]
+fn detect_terminal_other() {
+    assert_eq!(detect_terminal_from(None, Some("xterm-256color")), TerminalKind::Other);
+    assert_eq!(detect_terminal_from(Some("alacritty"), None), TerminalKind::Other);
+    assert_eq!(detect_terminal_from(None, None), TerminalKind::Other);
+}
+
+#[test]
+fn detect_terminal_kitty_preferred_over_ghostty() {
+    // TERM_PROGRAM wins over TERM when both are set.
+    assert_eq!(
+        detect_terminal_from(Some("kitty"), Some("xterm-ghostty")),
+        TerminalKind::Kitty
+    );
 }

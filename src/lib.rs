@@ -15,6 +15,7 @@ pub mod event_loop;
 pub mod history_guard;
 pub mod hooks;
 pub mod image;
+pub mod input;
 pub mod key_handler;
 pub mod logging;
 pub mod mouse;
@@ -60,10 +61,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyboardEnhancementFlags, KeyModifiers,
-    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyboardEnhancementFlags, KeyModifiers, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
@@ -71,6 +71,7 @@ use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use tokio::time::sleep;
 
 use crate::config::Config;
+use crate::input::{InputEvent, kitty5522, spawn_reader};
 use crate::tui::{App, AppState, Theme};
 
 /// Run the application.
@@ -159,6 +160,16 @@ pub async fn run() -> anyhow::Result<()> {
     // Enable button-event mouse tracking (?1002h) for scroll wheel support.
     // Shift+drag bypasses capture for native terminal text selection.
     execute!(std::io::stdout(), crate::mouse::EnableMouseScroll)?;
+    // Enable the Kitty 5522 clipboard protocol for terminals that support it
+    // (Kitty, Ghostty). Text-only terminals ignore the sequence. The terminal
+    // kind is detected from env vars; `Other` leaves 5522 off (arboard fallback).
+    let terminal_kind = crate::clipboard::detect_terminal();
+    if matches!(
+        terminal_kind,
+        crate::clipboard::TerminalKind::Kitty | crate::clipboard::TerminalKind::Ghostty
+    ) {
+        execute!(std::io::stdout(), crossterm::style::Print(kitty5522::ENABLE_REQUEST))?;
+    }
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -180,8 +191,12 @@ pub async fn run() -> anyhow::Result<()> {
     // the `openai` provider.
     app.spawn_model_fetch(false);
 
-    // Async event stream — proper tokio integration, no background threads.
-    let mut events = EventStream::new();
+    // vte-based input reader — replaces crossterm's EventStream so the 5522
+    // OSC frames (which crossterm mangles) reach the clipboard state machine.
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<InputEvent>(256);
+    let _input_reader = spawn_reader(input_tx);
+    // 5522 clipboard state machine: tracks a pending data request + deadline.
+    let mut clipboard_state = kitty5522::ClipboardState::default();
 
     // Main event loop
     loop {
@@ -278,82 +293,116 @@ pub async fn run() -> anyhow::Result<()> {
             Duration::from_millis(50)
         };
         let event = tokio::select! {
-            maybe_event = events.next() => match maybe_event {
-                Some(Ok(ev)) => Some(ev),
-                Some(Err(_)) | None => None,
-            },
+            maybe_event = input_rx.recv() => maybe_event,
             // Animation timeout — redraw for working indicator movement / effects
             () = sleep(tick_duration) => None,
         };
 
+        // Check for a timed-out 5522 pending request on every iteration, so the
+        // ~2 s deadline is enforced even if no further 5522 frame arrives.
+        if kitty5522::is_timed_out(&clipboard_state, std::time::Instant::now()) {
+            clipboard_state = kitty5522::ClipboardState::Idle;
+            app.add_system_message("Clipboard read timed out");
+        }
+
         if let Some(ev) = event {
             match ev {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    // Ctrl+V (and Ctrl+Shift+V): explicit image paste from the
-                    // clipboard. Ctrl+V is the primary key — it is not intercepted
-                    // by Kitty/Alacritty's native paste, unlike Ctrl+Shift+V.
-                    if is_image_paste_key(&key) {
-                        paste_clipboard_image(&mut app).await;
-                        continue;
-                    }
-
-                    let was_compacting = app.modal.state == AppState::Compacting;
-
-                    if key_handler::handle_key_event(&mut app, &key, &mut terminal).await? {
-                        shutdown_terminal(endpoint_check).await?;
-                        return Ok(());
-                    }
-
-                    // If user cancelled during compaction (Esc/Ctrl+C), abort
-                    // the background task and roll back any deferred turn.
-                    if was_compacting
-                        && app.modal.state != AppState::Compacting
-                        && let Some(task) = app.compaction_task.take()
-                    {
-                        task.abort();
-                        crate::turn::rollback_pending_turn(&mut app);
-                        app.add_system_message("Compaction cancelled.");
-                        app.chat.auto_scroll = true;
-                    }
-                }
-                Event::Paste(text) => {
-                    let text: String = text
-                        .chars()
-                        .filter(|c| !c.is_control() || *c == '\n')
-                        .take(10_000)
-                        .collect();
-                    if text.is_empty() {
-                        // Empty paste: the terminal often reports a clipboard
-                        // image this way. Fall back to a clipboard image check.
-                        paste_clipboard_image(&mut app).await;
-                    } else if try_attach_dropped_image(&mut app, &text) {
-                        // The whole paste was a single dropped image path — it
-                        // was attached and a token inserted; nothing to insert.
-                        app.chat.scroll_to_bottom();
+                InputEvent::Kitty5522(payload) => {
+                    if let Some(frame) = kitty5522::parse(&payload) {
+                        let now = std::time::Instant::now();
+                        let (new_state, action) = kitty5522::advance(clipboard_state, &frame, now);
+                        clipboard_state = new_state;
+                        match action {
+                            kitty5522::ClipboardAction::RequestImagePng(request) => {
+                                // Send the read request for image/png. The
+                                // terminal replies with DATA chunks + DONE.
+                                let _ = execute!(
+                                    std::io::stdout(),
+                                    crossterm::style::Print(request)
+                                );
+                            }
+                            kitty5522::ClipboardAction::Image(bytes) => {
+                                attach_5522_image(&mut app, bytes);
+                            }
+                            kitty5522::ClipboardAction::Error(status) => {
+                                app.add_system_message(&format!(
+                                    "Clipboard read failed: {status}"
+                                ));
+                            }
+                            kitty5522::ClipboardAction::None => {}
+                        }
                     } else {
-                        app.editor
-                            .input_buffer
-                            .insert_str(app.editor.cursor_pos, &text);
-                        app.editor.cursor_pos += text.len();
-                        app.chat.scroll_to_bottom();
+                        tracing::debug!("ignoring malformed 5522 frame");
                     }
                 }
-                Event::Mouse(mouse) => {
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            app.chat.scroll_up(crate::mouse::SCROLL_LINES);
+                InputEvent::Crossterm(ev) => match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        // Ctrl+V (and Ctrl+Shift+V): explicit image paste from the
+                        // clipboard. Ctrl+V is the primary key — it is not intercepted
+                        // by Kitty/Alacritty's native paste, unlike Ctrl+Shift+V.
+                        if is_image_paste_key(&key) {
+                            paste_clipboard_image(&mut app).await;
+                            continue;
                         }
-                        MouseEventKind::ScrollDown => {
-                            app.chat.scroll_down(crate::mouse::SCROLL_LINES);
+
+                        let was_compacting = app.modal.state == AppState::Compacting;
+
+                        if key_handler::handle_key_event(&mut app, &key, &mut terminal).await? {
+                            shutdown_terminal(endpoint_check).await?;
+                            return Ok(());
                         }
-                        _ => {} // clicks, drags, moves — ignored; Shift+drag = native selection
+
+                        // If user cancelled during compaction (Esc/Ctrl+C), abort
+                        // the background task and roll back any deferred turn.
+                        if was_compacting
+                            && app.modal.state != AppState::Compacting
+                            && let Some(task) = app.compaction_task.take()
+                        {
+                            task.abort();
+                            crate::turn::rollback_pending_turn(&mut app);
+                            app.add_system_message("Compaction cancelled.");
+                            app.chat.auto_scroll = true;
+                        }
                     }
-                }
-                Event::Resize(_, height) => {
-                    app.ui.terminal_height = height as usize;
-                    terminal.clear()?;
-                }
-                _ => {}
+                    Event::Paste(text) => {
+                        let text: String = text
+                            .chars()
+                            .filter(|c| !c.is_control() || *c == '\n')
+                            .take(10_000)
+                            .collect();
+                        if text.is_empty() {
+                            // Empty paste: the terminal often reports a clipboard
+                            // image this way. Fall back to a clipboard image check.
+                            paste_clipboard_image(&mut app).await;
+                        } else if try_attach_dropped_image(&mut app, &text) {
+                            // The whole paste was a single dropped image path — it
+                            // was attached and a token inserted; nothing to insert.
+                            app.chat.scroll_to_bottom();
+                        } else {
+                            app.editor
+                                .input_buffer
+                                .insert_str(app.editor.cursor_pos, &text);
+                            app.editor.cursor_pos += text.len();
+                            app.chat.scroll_to_bottom();
+                        }
+                    }
+                    Event::Mouse(mouse) => {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                app.chat.scroll_up(crate::mouse::SCROLL_LINES);
+                            }
+                            MouseEventKind::ScrollDown => {
+                                app.chat.scroll_down(crate::mouse::SCROLL_LINES);
+                            }
+                            _ => {} // clicks, drags, moves — ignored; Shift+drag = native selection
+                        }
+                    }
+                    Event::Resize(_, height) => {
+                        app.ui.terminal_height = height as usize;
+                        terminal.clear()?;
+                    }
+                    _ => {}
+                },
             }
         }
     }
@@ -403,6 +452,33 @@ async fn paste_clipboard_image(app: &mut App) {
         Err(_) => {
             // The blocking task panicked — surface a generic error.
             app.add_system_message("Image paste failed");
+        }
+    }
+}
+
+/// Attach a 5522-resolved image to the input buffer.
+///
+/// Gated on the active model's vision flag (same as the arboard path). The
+/// bytes are normalized through `process_image_bytes` (sniff/resize/cap/base64);
+/// on success the image is added to the `pending_images` side table and an
+/// `[img:N]` token is inserted at the cursor.
+pub(crate) fn attach_5522_image(app: &mut App, bytes: Vec<u8>) {
+    if !app.config.config.provider.active_vision() {
+        app.add_system_message("Current model does not support images");
+        return;
+    }
+    match crate::image::process_image_bytes(&bytes) {
+        Ok(image) => {
+            let id = app
+                .editor
+                .add_pending_image("clipboard".to_string(), image);
+            let token = crate::tui::editor::format_token(id);
+            app.editor.input_buffer.insert_str(app.editor.cursor_pos, &token);
+            app.editor.cursor_pos += token.len();
+            app.chat.scroll_to_bottom();
+        }
+        Err(e) => {
+            app.add_system_message(&format!("Image paste failed: {e}"));
         }
     }
 }
@@ -464,6 +540,11 @@ async fn shutdown_terminal(
 ) -> anyhow::Result<()> {
     execute!(std::io::stdout(), crate::mouse::DisableMouseScroll)?;
     execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
+    // Disable the 5522 clipboard protocol (harmless on terminals that ignore it).
+    execute!(
+        std::io::stdout(),
+        crossterm::style::Print(kitty5522::DISABLE_REQUEST)
+    )?;
     execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
     execute!(
         std::io::stdout(),

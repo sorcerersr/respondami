@@ -119,3 +119,43 @@ pub(crate) fn rgba_to_content(img: ImageData) -> Result<ImageContent, ClipboardE
     process_image_bytes(&buf.into_inner())
         .map_err(|e| ClipboardError::Normalization(e.to_string()))
 }
+
+/// The terminal emulator, detected from environment variables at startup.
+///
+/// 5522 is enabled only for Kitty and Ghostty; all other terminals fall back
+/// to the existing arboard `Ctrl+V` path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TerminalKind {
+    /// Kitty terminal (`TERM_PROGRAM=kitty`).
+    Kitty,
+    /// Ghostty terminal (`TERM=xterm-ghostty`).
+    Ghostty,
+    /// Any other terminal (or detection failure) — the default.
+    #[default]
+    Other,
+}
+
+/// Detect the terminal emulator from environment variables.
+///
+/// Checks `TERM_PROGRAM` (Kitty) and `TERM` (Ghostty) in that order. Returns
+/// [`TerminalKind::Other`] when neither matches, so the existing arboard path
+/// is used as a fallback.
+#[must_use]
+pub fn detect_terminal() -> TerminalKind {
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    let term = std::env::var("TERM").ok();
+    detect_terminal_from(term_program.as_deref(), term.as_deref())
+}
+
+/// Pure form of [`detect_terminal`] that takes the env values directly, so it
+/// can be tested without modifying the process environment.
+#[must_use]
+pub(crate) fn detect_terminal_from(term_program: Option<&str>, term: Option<&str>) -> TerminalKind {
+    if term_program == Some("kitty") {
+        TerminalKind::Kitty
+    } else if term == Some("xterm-ghostty") {
+        TerminalKind::Ghostty
+    } else {
+        TerminalKind::Other
+    }
+}

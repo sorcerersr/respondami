@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1438 total)
+cargo test --workspace                         # all tests (1541 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1438 tests** (1210 root + 44 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1541 tests** (1313 root + 44 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -105,7 +105,8 @@ cargo test --workspace                       # all tests pass
 
 ### Image / Vision Support
 
-- Image ingestion has three paths, all funneling through `process_image_bytes(&[u8])` (`src/image.rs`): the `read` tool, clipboard paste (Ctrl+V / empty Ctrl+V, `src/clipboard.rs`), and dropped image file paths (`try_attach_dropped_image` in `src/lib.rs`). The pipeline sniffs the MIME from magic bytes (never the extension), rejects animated GIFs (frame count via `0x2C` bytes), resizes to ≤2000px (Lanczos3, only when a dimension exceeds), re-encodes (JPEG→JPEG; PNG/GIF/WebP/BMP→PNG), caps at 4.5 MB, then base64-encodes into an `ImageContent`.
+- Image ingestion has four paths, all funneling through `process_image_bytes(&[u8])` (`src/image.rs`): the `read` tool, clipboard paste (Ctrl+V / empty Ctrl+V, `src/clipboard.rs`), the Kitty 5522 terminal-native paste (`src/input/kitty5522.rs` → `attach_5522_image` in `src/lib.rs`), and dropped image file paths (`try_attach_dropped_image` in `src/lib.rs`). The pipeline sniffs the MIME from magic bytes (never the extension), rejects animated GIFs (frame count via `0x2C` bytes), resizes to ≤2000px (Lanczos3, only when a dimension exceeds), re-encodes (JPEG→JPEG; PNG/GIF/WebP/BMP→PNG), caps at 4.5 MB, then base64-encodes into an `ImageContent`.
+- **Kitty 5522 terminal-native paste:** the terminal's own native paste key reads the host clipboard over the PTY (no display server required). 5522 is an **OSC** protocol (`ESC ] 5522;metadata;payload ST`), not a DCS protocol. The vte-based input reader (`src/input/mod.rs`) replaces crossterm's event reading (which mangles OSC sequences) while keeping the existing key/modifier/mouse mapping byte-for-byte (`src/input/keymap.rs`); 5522 frames are captured via `osc_dispatch`. 5522 is enabled at startup for Kitty (`TERM_PROGRAM=kitty`) and Ghostty (`TERM=xterm-ghostty`) via `CSI ? 5522 h`; the state machine (`kitty5522::advance`) handles the paste event (OK → `.` listing → read request → DATA chunks → DONE) with a ~2 s timeout. Text-only MIME lists are a silent no-op; the arboard `Ctrl+V` path stays as the `Other` fallback.
 - Clipboard / dropped-path images attach to the outgoing **user** message (not a tool result): `AgentMessage::User { content, images }` (serde `default` + `skip_if_empty`, so no-image users stay byte-identical). They travel in the editor's `pending_images` side table as `[img:N]` atomic buffer tokens; `start_turn` strips the tokens, takes the images, and the model / history / chat see token-free text. Rollback restores both.
 - The base64 is frozen at ingestion and stored inline in the JSONL. Re-injection at the wire is pure/deterministic (`agent_messages_to_provider_messages`), so the byte-prefix stays stable for vLLM prefix caching. `HistoryGuard` needs no change — the digest already covers the stable base64.
 - OpenAI completions can't carry images in tool results, so a tool message with images is followed by a synthetic `Message::User { content: "", images }` at the wire only (never persisted). The `read` tool card shows a text note with dimensions; no new TUI message type.
@@ -192,6 +193,9 @@ cargo test --workspace                       # all tests pass
 | `src/commands.rs`        | Command palette commands and descriptions                              |
 | `src/history_guard.rs`   | Per-message digests + append-only prefix guard (vLLM cache stability)  |
 | `src/image.rs`           | Image normalization: `ImageContent`, `process_image`/`process_image_bytes`, MIME sniff, token estimate |
+| `src/input/mod.rs`       | vte-based input reader: `InputHandler`, `parse_chunk`, `spawn_reader`, 5522 via `osc_dispatch`  |
+| `src/input/keymap.rs`    | crossterm key/modifier/mouse/resize mapping (replicated from crossterm's parser)  |
+| `src/input/kitty5522.rs` | 5522 OSC frame parser, read-request builder, base64 codec, `ClipboardState` machine  |
 
 ### Provider Layer
 
@@ -346,7 +350,10 @@ cargo test --workspace                       # all tests pass
 | `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, post-compaction image strip, `poll_compaction_task` (not finished / idle / pending-turn launch) |
 | `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability (tool + user), strip one-time drift |
 | `src/image_tests.rs`                          | MIME sniff (incl. BMP), process_image (png/jpeg/gif/webp/bmp), process_image_bytes parity, animated-GIF reject, resize, token estimate |
-| `src/lib_tests.rs`                            | Dropped-image-path detection (single attach, path+text, multi, missing, non-image, vision-off) |
+| `src/input/input_tests.rs`                    | vte input reader chunk parsing, 5522 OSC capture (OK/DONE, BEL, split, mixed, non-5522)  |
+| `src/input/keymap_tests.rs`                   | crossterm key/modifier/mouse/resize mapping parity (arrows, F-keys, mods, Enter/Tab/BS, mouse 3 modes)  |
+| `src/input/kitty5522_tests.rs`                | 5522 OSC frame parser (OK/DATA/DONE/error), read-request shape, base64 codec, `ClipboardState` machine  |
+| `src/lib_tests.rs`                            | Dropped-image-path detection (single attach, path+text, multi, missing, non-image, vision-off), 5522 attach (token, vision-off, malformed)  |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
 | `src/key_handler/command_palette_tests.rs`  | Command palette navigation and scroll clamping  |

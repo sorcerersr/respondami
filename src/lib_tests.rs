@@ -164,3 +164,42 @@ fn image_paste_key_rejects_ctrl_other_char() {
         "Ctrl+C must not trigger image paste"
     );
 }
+
+/// A minimal valid PNG (1x1) as raw bytes, for the 5522 attach tests.
+fn png_bytes() -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
+    let mut buf = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+        .unwrap();
+    buf
+}
+
+#[test]
+fn attach_5522_image_attaches_token() {
+    let mut app = make_app();
+    crate::attach_5522_image(&mut app, png_bytes());
+    assert_eq!(app.editor.pending_images.len(), 1);
+    assert_eq!(app.editor.input_buffer, "[img:0]");
+    assert_eq!(app.editor.cursor_pos, 7);
+}
+
+#[test]
+fn attach_5522_image_vision_off_no_attach() {
+    let mut app = make_app();
+    app.config.config.provider.models[0].vision = false;
+    crate::attach_5522_image(&mut app, png_bytes());
+    assert_eq!(app.editor.pending_images.len(), 0);
+    assert_eq!(app.editor.input_buffer.len(), 0);
+    // A system message is shown.
+    assert!(!app.chat.chat_messages.is_empty());
+}
+
+#[test]
+fn attach_5522_image_malformed_bytes_no_attach() {
+    let mut app = make_app();
+    crate::attach_5522_image(&mut app, b"not an image".to_vec());
+    assert_eq!(app.editor.pending_images.len(), 0);
+    assert_eq!(app.editor.input_buffer.len(), 0);
+    // A system message is shown.
+    assert!(!app.chat.chat_messages.is_empty());
+}
