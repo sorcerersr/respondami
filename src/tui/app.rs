@@ -342,6 +342,7 @@ impl App {
         self.agent.pending_tool_calls.clear();
         self.agent.pending_tool_call_ids.clear();
         self.agent.current_user_message = Some(user_message.to_string());
+        self.mark_model_loaded();
     }
 
     /// Add a pending (executing) tool call message.
@@ -839,6 +840,32 @@ impl App {
                 self.config.vision = vision;
                 self.config.loaded = loaded;
             }
+        }
+    }
+
+    /// Mark the active model as loaded on the server.
+    ///
+    /// Called at turn start: the model is about to process a request, so the
+    /// server has loaded it. One-way (stays loaded until a switch or re-fetch
+    /// reports otherwise). Updates both `config.loaded` (status bar) and the
+    /// matching `discovered_models` entry (picker) so the two stay consistent.
+    /// No-op for the `openai` provider, where the concept doesn't apply.
+    pub fn mark_model_loaded(&mut self) {
+        let is_llamacpp = matches!(
+            self.config.config.provider.settings,
+            crate::provider::ProviderSettings::LlamaCpp(_)
+        );
+        if !is_llamacpp {
+            return;
+        }
+        self.config.loaded = Some(true);
+        if let Some(dm) = self
+            .config
+            .discovered_models
+            .iter_mut()
+            .find(|m| m.name == self.config.model_name)
+        {
+            dm.loaded = Some(true);
         }
     }
 

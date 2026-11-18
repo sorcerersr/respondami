@@ -574,6 +574,39 @@ fn app_with_skill(name: &str, hooks: Vec<SkillHook>) -> App {
         assert_eq!(app.config.discovered_models.len(), 0);
     }
 
+    // mark_model_loaded: turn-start loaded-state update (status bar + picker)
+
+    #[test]
+    fn mark_model_loaded_llamacpp_sets_both() {
+        let mut app = llamacpp_app();
+        app.config.model_name = "coder-27b".to_string();
+        app.config.discovered_models = vec![discovered("coder-27b", Some(1000), Some(false), None)];
+        app.start_streaming("hi");
+        assert_eq!(app.config.loaded, Some(true));
+        assert_eq!(app.config.discovered_models[0].loaded, Some(true));
+    }
+
+    #[test]
+    fn mark_model_loaded_openai_noop() {
+        let mut app = App::new(
+            crate::config::Config::default(),
+            std::path::PathBuf::from("."),
+        );
+        app.start_streaming("hi");
+        assert_eq!(app.config.loaded, None);
+    }
+
+    #[test]
+    fn mark_model_loaded_missing_entry_only_config() {
+        let mut app = llamacpp_app();
+        app.config.model_name = "not-in-list".to_string();
+        app.config.discovered_models = vec![discovered("other", Some(1000), Some(false), None)];
+        app.start_streaming("hi");
+        // `config.loaded` is set; the picker entry is untouched (no match).
+        assert_eq!(app.config.loaded, Some(true));
+        assert_eq!(app.config.discovered_models[0].loaded, Some(false));
+    }
+
     #[tokio::test]
     async fn spawn_model_fetch_noop_for_openai() {
         let mut app = App::new(
