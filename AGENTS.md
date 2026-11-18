@@ -8,7 +8,7 @@ Critical decisions and known pitfalls. Read before modifying agent/streaming/TUI
 
 Rust TUI chat app for AI coding agents. Workspace with 3 crates: main app + 2 widget libraries.
 
-- **203 `.rs` files**, ~39.1K lines total
+- **200 `.rs` files**, ~49.1K lines total
 - **3 crates**: `respondami` (main), `ratatui-widgets` (reusable widgets), `ratatui-md` (markdown rendering)
 - **Key deps**: ratatui 0.30 (TUI), crossterm 0.29 (terminal), tokio 1 (async), tachyonfx (animations), mimalloc (allocator)
 
@@ -53,7 +53,7 @@ Each app state composes layers: `InputLayer` → `NavigationLayer` → `StateTra
 cargo build                                    # debug build
 cargo run                                      # run the app
 cargo build --release                          # optimized build (LTO, strip)
-cargo test --workspace                         # all tests (1541 total)
+cargo test --workspace                         # all tests (1431 total)
 cargo clippy --all-targets --all-features      # must be clean (0 warnings)
 ```
 
@@ -82,7 +82,7 @@ cargo test --workspace                       # all tests pass
 
 ### Test Count
 
-`cargo test --workspace` should report **1541 tests** (1313 root + 44 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
+`cargo test --workspace` should report **1431 tests** (1203 root + 44 ratatui-widgets + 184 ratatui-md). If the count drops, a test file was likely removed or renamed.
 
 ## Known Pitfalls
 
@@ -105,14 +105,13 @@ cargo test --workspace                       # all tests pass
 
 ### Image / Vision Support
 
-- Image ingestion has four paths, all funneling through `process_image_bytes(&[u8])` (`src/image.rs`): the `read` tool, clipboard paste (Ctrl+V / empty Ctrl+V, `src/clipboard.rs`), the Kitty 5522 terminal-native paste (`src/input/kitty5522.rs` → `attach_5522_image` in `src/lib.rs`), and dropped image file paths (`try_attach_dropped_image` in `src/lib.rs`). The pipeline sniffs the MIME from magic bytes (never the extension), rejects animated GIFs (frame count via `0x2C` bytes), resizes to ≤2000px (Lanczos3, only when a dimension exceeds), re-encodes (JPEG→JPEG; PNG/GIF/WebP/BMP→PNG), caps at 4.5 MB, then base64-encodes into an `ImageContent`.
-- **Kitty 5522 terminal-native paste:** the terminal's own native paste key reads the host clipboard over the PTY (no display server required). 5522 is an **OSC** protocol (`ESC ] 5522;metadata;payload ST`), not a DCS protocol. The vte-based input reader (`src/input/mod.rs`) replaces crossterm's event reading (which mangles OSC sequences) while keeping the existing key/modifier/mouse mapping byte-for-byte (`src/input/keymap.rs`); 5522 frames are captured via `osc_dispatch`. 5522 is enabled at startup for Kitty (`TERM_PROGRAM=kitty`) and Ghostty (`TERM=xterm-ghostty`) via `CSI ? 5522 h`; the state machine (`kitty5522::advance`) handles the paste event (OK → `.` listing → read request → DATA chunks → DONE) with a ~2 s timeout. Text-only MIME lists are a silent no-op; the arboard `Ctrl+V` path stays as the `Other` fallback.
-- Clipboard / dropped-path images attach to the outgoing **user** message (not a tool result): `AgentMessage::User { content, images }` (serde `default` + `skip_if_empty`, so no-image users stay byte-identical). They travel in the editor's `pending_images` side table as `[img:N]` atomic buffer tokens; `start_turn` strips the tokens, takes the images, and the model / history / chat see token-free text. Rollback restores both.
+- Image ingestion is a single path: the `read` tool funnels through `process_image_bytes(&[u8])` (`src/image.rs`). The pipeline sniffs the MIME from magic bytes (never the extension), rejects animated GIFs (frame count via `0x2C` bytes), resizes to ≤2000px (Lanczos3, only when a dimension exceeds), re-encodes (JPEG→JPEG; PNG/GIF/WebP/BMP→PNG), caps at 4.5 MB, then base64-encodes into an `ImageContent` attached to the tool result.
 - The base64 is frozen at ingestion and stored inline in the JSONL. Re-injection at the wire is pure/deterministic (`agent_messages_to_provider_messages`), so the byte-prefix stays stable for vLLM prefix caching. `HistoryGuard` needs no change — the digest already covers the stable base64.
 - OpenAI completions can't carry images in tool results, so a tool message with images is followed by a synthetic `Message::User { content: "", images }` at the wire only (never persisted). The `read` tool card shows a text note with dimensions; no new TUI message type.
 - The `provider.vision` config (default `true`) gates in the agent loop (`apply_vision_gate`), not the tool — the tool stays config-agnostic. When off, image attachments are replaced with a text note so the model is never sent images it can't see. It lives in the `provider` block (per-model); a legacy top-level `vision` key is ignored.
-- `ToolHandler::execute` / `ToolRegistry::execute` return `anyhow::Result<ToolOutput>` where `ToolOutput { content, images }` (was `Result<String>`). Only `read` populates `images` (clipboard / dropped-path images attach to the user message, not a tool).
+- `ToolHandler::execute` / `ToolRegistry::execute` return `anyhow::Result<ToolOutput>` where `ToolOutput { content, images }` (was `Result<String>`). Only `read` populates `images`.
 - `estimate_image_tokens(w,h) = 1600 + (w·h / 1024²) × 448` on post-resize dimensions; used in `token_estimation.rs` and the compaction fallback. Provider `prompt_tokens` corrects the running total.
+- **Removed (2026-11-18):** the three user-message image-paste experiments (arboard Ctrl+V, Kitty 5522 terminal-native paste, dropped image file paths) and the vte-based input layer were reverted. Images now enter only via the `read` tool. Old sessions with user-image JSONL lines still load (serde ignores the unknown `images` field on `AgentMessage::User`).
 
 ### Scroll Model
 
@@ -183,8 +182,7 @@ cargo test --workspace                       # all tests pass
 | File                     | Purpose                                                                |
 | ------------------------ | ---------------------------------------------------------------------- |
 | `src/main.rs`            | Entry point, mimalloc global allocator                                 |
-| `src/lib.rs`             | Main event loop, terminal setup, animation ticks, compaction polling, clipboard/dropped-image paste   |
-| `src/clipboard.rs`       | Clipboard image fetch (arboard), RGBA→PNG normalization, negative-cached board  |
+| `src/lib.rs`             | Main event loop, terminal setup, animation ticks, compaction polling   |
 | `src/agent/mod.rs`       | Agent loop, tool orchestration, retry, canonical turn blocks, history guard wiring |
 | `src/agent/streaming.rs` | SSE streaming from provider, `AgentResponse` builder                   |
 | `src/agent_events.rs`    | Agent event processing, bridges async agent loop with TUI              |
@@ -193,9 +191,6 @@ cargo test --workspace                       # all tests pass
 | `src/commands.rs`        | Command palette commands and descriptions                              |
 | `src/history_guard.rs`   | Per-message digests + append-only prefix guard (vLLM cache stability)  |
 | `src/image.rs`           | Image normalization: `ImageContent`, `process_image`/`process_image_bytes`, MIME sniff, token estimate |
-| `src/input/mod.rs`       | vte-based input reader: `InputHandler`, `parse_chunk`, `spawn_reader`, 5522 via `osc_dispatch`  |
-| `src/input/keymap.rs`    | crossterm key/modifier/mouse/resize mapping (replicated from crossterm's parser)  |
-| `src/input/kitty5522.rs` | 5522 OSC frame parser, read-request builder, base64 codec, `ClipboardState` machine  |
 
 ### Provider Layer
 
@@ -280,7 +275,6 @@ cargo test --workspace                       # all tests pass
 | File                          | Purpose                            |
 | ----------------------------- | ---------------------------------- |
 | `src/tui/editor/mod.rs`       | Editor module declarations         |
-| `src/tui/editor/tokens.rs`    | `[img:N]` atomic buffer tokens (find/strip/format) |
 | `src/tui/editor/renderer.rs`  | Prompt input rendering             |
 | `src/tui/editor/cursor.rs`    | Cursor management and movement     |
 | `src/tui/editor/commands.rs`  | Editor commands (cut, paste, etc.) |
@@ -335,25 +329,20 @@ cargo test --workspace                       # all tests pass
 
 ## Test Files
 
-### Root Crate Tests (1210 tests)
+### Root Crate Tests (1203 tests)
 
 | Test File                                     | Coverage                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------- |
-| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing, image strip (`image_removal_note`/`strip_images_from_tool`/`strip_images_from_user`/`strip_seen_images`)        |
-| `src/agent/token_estimation_tests.rs`         | Token estimation from messages (incl. user image)  |
+| `src/agent/mod_tests.rs`                      | Agent loop, system prompt building, canonical turn blocks, PostToolUse instruction framing, image strip (`image_removal_note`/`strip_images_from_tool`/`strip_seen_images`)        |
+| `src/agent/token_estimation_tests.rs`         | Token estimation from messages  |
 | `src/agent_events_tests.rs`                   | Agent event processing edge cases, `StripImages` handler  |
 | `src/agents_md_tests.rs`                      | AGENTS.md loading and parsing                           |
 | `src/commands_tests.rs`                       | Command palette commands                                |
-| `src/clipboard_tests.rs`                      | Clipboard fetch (no-image/no-display/negative-cache), RGBA→PNG normalization  |
 | `src/config_tests.rs`                         | Config loading and validation, `strip_images_after_view` default/parse  |
 | `src/context/token_tracker_tests.rs`          | Token rate tracking, EMA, provider correction           |
 | `src/event_loop_tests.rs`                     | Draw frame, compaction result handling, `handle_compaction_result` usage reset, post-compaction image strip, `poll_compaction_task` (not finished / idle / pending-turn launch) |
-| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability (tool + user), strip one-time drift |
+| `src/history_guard_tests.rs`                  | Message digests, append-only prefix guard, ephemeral skip, image byte-stability (tool), strip one-time drift |
 | `src/image_tests.rs`                          | MIME sniff (incl. BMP), process_image (png/jpeg/gif/webp/bmp), process_image_bytes parity, animated-GIF reject, resize, token estimate |
-| `src/input/input_tests.rs`                    | vte input reader chunk parsing, 5522 OSC capture (OK/DONE, BEL, split, mixed, non-5522)  |
-| `src/input/keymap_tests.rs`                   | crossterm key/modifier/mouse/resize mapping parity (arrows, F-keys, mods, Enter/Tab/BS, mouse 3 modes)  |
-| `src/input/kitty5522_tests.rs`                | 5522 OSC frame parser (OK/DATA/DONE/error), read-request shape, base64 codec, `ClipboardState` machine  |
-| `src/lib_tests.rs`                            | Dropped-image-path detection (single attach, path+text, multi, missing, non-image, vision-off), 5522 attach (token, vision-off, malformed)  |
 | `src/hooks/executor_tests.rs`                 | Hook execution, exit codes, context                     |
 | `src/hooks/loader_tests.rs`                   | Hook discovery from directories                         |
 | `src/key_handler/command_palette_tests.rs`  | Command palette navigation and scroll clamping  |
@@ -364,9 +353,9 @@ cargo test --workspace                       # all tests pass
 | `src/logging_tests.rs`                        | Logging initialization                                  |
 | `src/provider/finalize_tool_calls_tests.rs`   | Streaming tool-call filtering (empty/unparseable drops) |
 | `src/provider/llamacpp_tests.rs`              | LlamaCpp provider, request building                     |
-| `src/provider/mod_tests.rs`                   | Provider trait, error classification, tool call parsing, user-image forwarding |
+| `src/provider/mod_tests.rs`                   | Provider trait, error classification, tool call parsing, tool-image synthetic user |
 | `src/provider/sse_tests.rs`                   | SSE parsing, cancellation                               |
-| `src/session/compaction_tests.rs`             | Compaction engine, LlmCompaction helpers, active-skill re-injection (`format_active_skills`), user-image token estimate |
+| `src/session/compaction_tests.rs`             | Compaction engine, LlmCompaction helpers, active-skill re-injection (`format_active_skills`) |
 | `src/session/compaction/vcc_tests.rs`         | VccCompaction end-to-end compute (NoopProvider)        |
 | `src/session/compaction/vcc/normalize_tests.rs` | VCC sanitize/clip/collapse, normalize_entries, exit-code parse |
 | `src/session/compaction/vcc/cut_tests.rs`       | VCC find_live_start, build_own_cut, apply_tail_budget, resolve_smart_keep |
@@ -375,8 +364,8 @@ cargo test --workspace                       # all tests pass
 | `src/session/compaction/vcc/brief_tests.rs`     | VCC compile_brief, cap_brief                           |
 | `src/session/compaction/vcc/rank_tests.rs`      | VCC block scoring + ranked selection                   |
 | `src/session/compaction/vcc/merge_tests.rs`     | VCC merge_previous, strip_active_skills                |
-| `src/session/entry_tests.rs`                  | Session entry serialization (incl. user/tool image serde, backward-compat)  |
-| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage, `strip_tool_images` (tool by ID + user blanket)  |
+| `src/session/entry_tests.rs`                  | Session entry serialization (incl. tool image serde, backward-compat)  |
+| `src/session/manager_tests.rs`                | Session CRUD, context building, last request usage, `strip_tool_images` (tool by ID)  |
 | `src/skills_tests.rs`                         | Skill discovery, loading, prompt formatting             |
 | `src/sse_debug_tests.rs`                      | SSE debug utilities                                     |
 | `src/tools/activate_skill_tests.rs`           | activate_skill tool                                     |
@@ -391,10 +380,9 @@ cargo test --workspace                       # all tests pass
 | `src/tui/app_tests.rs`                        | App state, message helpers, token usage, session reset  |
 | `src/tui/autocomplete_tests.rs`               | File and skill autocomplete                             |
 | `src/tui/editor/commands_tests.rs`            | Editor commands                                         |
-| `src/tui/editor/cursor_tests.rs`              | Cursor movement, wrapping, `[img:N]` token atomicity  |
+| `src/tui/editor/cursor_tests.rs`              | Cursor movement, wrapping  |
 | `src/tui/editor/discovery_tests.rs`           | File discovery for autocomplete, always-visible (force-include) patterns |
-| `src/tui/editor/tokens_tests.rs`              | `[img:N]` token format/find/strip, atomicity  |
-| `src/tui/editor/wrap_tests.rs`                | Text wrapping (incl. atomic token)  |
+| `src/tui/editor/wrap_tests.rs`                | Text wrapping  |
 | `src/tui/hook_display_tests.rs`               | Hook display modes                                      |
 | `src/tui/layout_tests.rs`                     | Layout calculations, input area height                  |
 | `src/tui/messages/hook_message_tests.rs`      | Hook message rendering                                  |
@@ -407,7 +395,7 @@ cargo test --workspace                       # all tests pass
 | `src/tui/status_bar_tests.rs`                 | Status bar rendering                                    |
 | `src/tui/thinking_display_tests.rs`           | Thinking display toggle                                 |
 | `src/tui/tracker_tests.rs`                    | Token tracker display                                   |
-| `src/turn_tests.rs`                           | Pre-prompt deferral, in-progress guards, pending-turn rollback, `/skillname` header persistence, turn-start token strip + image attach  |
+| `src/turn_tests.rs`                           | Pre-prompt deferral, in-progress guards, pending-turn rollback, `/skillname` header persistence  |
 
 ### Widget Crate Tests
 

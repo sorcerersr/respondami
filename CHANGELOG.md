@@ -6,10 +6,11 @@ All notable changes to this project are documented here.
 
 ### Features
 
-- TUI: terminal-native image paste via the Kitty 5522 clipboard protocol (Kitty + Ghostty) — the terminal's own native paste key reads the host clipboard over the PTY, no display server required; 5522 is an OSC protocol (`ESC ] 5522;metadata;payload ST`); the vte-based input reader replaces crossterm's event reading (which mangles OSC sequences) while keeping the existing key/modifier/mouse mapping byte-for-byte
-- TUI: paste an image from the clipboard into the prompt (Ctrl+V, or the terminal's native paste when it forwards it) — the image is normalized and attached to the outgoing user message as an `[img:N]` buffer token; dropped image file paths are auto-attached the same way
-- Image: BMP input is now accepted and re-encoded to PNG (WSLg clipboard source); `process_image_bytes` is the shared normalization entry point for the `read` tool, clipboard paste, and dropped paths
-- Provider: `strip_images_after_view` now also strips user-message images (blanket, no ID) alongside tool images, so pasted images protect prefix-cache hits too
+- Image: BMP input is now accepted and re-encoded to PNG (WSLg clipboard source); `process_image_bytes` is the shared normalization entry point for the `read` tool
+
+### Removals
+
+- TUI: removed the three user-message image-paste experiments (arboard Ctrl+V clipboard paste, Kitty 5522 terminal-native paste, dropped image file paths) and the vte-based input layer; input reading returns to crossterm's `EventStream`. Images now enter only via the `read` tool. Old sessions with user-image JSONL lines still load (serde ignores the unknown `images` field).
 
 ## [0.3.0] - 2026-11-01
 

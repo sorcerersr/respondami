@@ -336,9 +336,9 @@ pub fn agent_message_to_message(msg: &AgentMessage) -> Message {
         AgentMessage::System { content } => Message::System {
             content: content.clone(),
         },
-        AgentMessage::User { content, images } => Message::User {
+        AgentMessage::User { content } => Message::User {
             content: content.clone(),
-            images: images.clone(),
+            images: Vec::new(),
         },
         AgentMessage::Assistant {
             content: blocks, ..

@@ -23,11 +23,7 @@ pub struct EnableMouseScroll;
 
 impl crossterm::Command for EnableMouseScroll {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        // `?1002h` = button-event tracking; `?1006h` = SGR encoding. SGR mode is
-        // required because the vte-based input reader (src/input) parses mouse
-        // events as numeric-param CSI; the legacy normal encoding (`ESC [ M CB
-        // Cx Cy`) is not a well-formed CSI sequence and vte cannot parse it.
-        f.write_str("\x1b[?1002h\x1b[?1006h")
+        f.write_str("\x1b[?1002h")
     }
 }
 
@@ -37,6 +33,6 @@ pub struct DisableMouseScroll;
 
 impl crossterm::Command for DisableMouseScroll {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1006l\x1b[?1002l")
+        f.write_str("\x1b[?1002l")
     }
 }

@@ -177,12 +177,8 @@ fn estimate_message_tokens(msg: &AgentMessage, est: &TokenEstimator) -> u32 {
         AgentMessage::System { content } => {
             est.estimate_tokens("system") + est.estimate_tokens(content)
         }
-        AgentMessage::User { content, images } => {
-            let mut tokens = est.estimate_tokens("user") + est.estimate_tokens(content);
-            for img in images {
-                tokens += crate::image::estimate_image_tokens(img.width, img.height);
-            }
-            tokens
+        AgentMessage::User { content } => {
+            est.estimate_tokens("user") + est.estimate_tokens(content)
         }
         AgentMessage::Assistant { content: blocks, .. } => {
             let mut tokens = est.estimate_tokens("assistant");

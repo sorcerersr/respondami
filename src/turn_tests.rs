@@ -116,7 +116,6 @@ async fn run_turn_with_input_blocked_while_compaction_in_progress() {
     let quit = run_turn_with_input(
         &mut app,
         "hello".to_string(),
-        Vec::new(),
         None,
         HashSet::new(),
         &mut terminal,
@@ -149,7 +148,6 @@ async fn run_turn_defers_to_background_compaction_when_near_threshold() {
     let quit = run_turn_with_input(
         &mut app,
         "hello".to_string(),
-        Vec::new(),
         None,
         HashSet::new(),
         &mut terminal,
@@ -199,7 +197,6 @@ async fn deferral_keeps_typed_text_for_restore_but_launches_with_llm_input() {
     let quit = run_turn_with_input(
         &mut app,
         input.clone(),
-        Vec::new(),
         Some(display.clone()),
         HashSet::new(),
         &mut terminal,
@@ -242,7 +239,6 @@ async fn run_turn_ups_hook_stdout_not_injected_into_model_input() {
     let quit = run_turn_with_input(
         &mut app,
         "hello".to_string(),
-        Vec::new(),
         None,
         HashSet::new(),
         &mut terminal,
@@ -283,7 +279,6 @@ async fn run_turn_ups_hook_empty_stdout_not_injected() {
     let quit = run_turn_with_input(
         &mut app,
         "hello".to_string(),
-        Vec::new(),
         None,
         HashSet::new(),
         &mut terminal,
@@ -317,7 +312,6 @@ async fn run_turn_precompact_blocked_undoes_turn_setup() {
     let quit = run_turn_with_input(
         &mut app,
         "hello".to_string(),
-        Vec::new(),
         None,
         HashSet::new(),
         &mut terminal,
@@ -358,7 +352,6 @@ async fn run_turn_precompact_stdout_captured_for_summary() {
     let quit = run_turn_with_input(
         &mut app,
         "hello".to_string(),
-        Vec::new(),
         None,
         HashSet::new(),
         &mut terminal,
@@ -392,7 +385,7 @@ async fn restart_agent_creates_sse_guard_when_enabled() {
     crate::logging::set_sse_debug_for_test(config);
 
     let mut app = make_app();
-    let agent = restart_agent(&mut app, "hello".to_string(), Vec::new());
+    let agent = restart_agent(&mut app, "hello".to_string());
 
     // The restart path now carries the SSE capture guard (M1: it was only
     // on the launch path before the extraction).
@@ -550,92 +543,6 @@ async fn unknown_skill_returns_not_found() {
 
 // ---- Rollback ----
 
-/// A pending image for turn tests.
-fn pending_image(id: u32, name: &str) -> crate::tui::editor_state::PendingImage {
-    crate::tui::editor_state::PendingImage {
-        id,
-        name: name.to_string(),
-        image: crate::image::ImageContent {
-            data: "aW1hZ2U=".to_string(),
-            mime_type: "image/png".to_string(),
-            width: 100,
-            height: 50,
-        },
-    }
-}
-
-/// Turn start strips `[img:N]` tokens from the text, takes the pending
-/// images out of the editor, and the chat shows token-free text. The pending
-/// turn carries the images (for rollback restore) and the token-free text.
-#[tokio::test]
-async fn start_turn_strips_tokens_and_attaches_images() {
-    let dir = TempDir::new().unwrap();
-    let mut app = App::new(deferral_config(), PathBuf::from("."));
-    app.session.session_store = SessionStore::new(dir.path());
-    let mut terminal = make_terminal();
-
-    app.editor.pending_images = vec![pending_image(1, "test.png")];
-    app.editor.input_buffer = "look at [img:1] this".to_string();
-    app.editor.cursor_pos = app.editor.input_buffer.len();
-
-    let quit = start_turn(&mut app, &mut terminal).await.expect("start_turn");
-
-    assert!(!quit);
-    // Buffer cleared, pending images taken out of the editor.
-    assert!(app.editor.input_buffer.is_empty(), "buffer must be cleared");
-    assert!(app.editor.pending_images.is_empty(), "pending images must be taken");
-
-    // Chat shows token-free text (the model / history see no tokens).
-    assert!(
-        app.chat
-            .chat_messages
-            .iter()
-            .any(|m| matches!(m, ChatMessage::User(u) if u.content == "look at  this")),
-        "chat must show token-free text"
-    );
-
-    // The pending turn carries the images and the token-free restore text.
-    let pending = app.pending_turn.take().expect("pending turn");
-    assert_eq!(pending.images.len(), 1);
-    assert_eq!(pending.images[0].name, "test.png");
-    assert_eq!(pending.restore_input, "look at  this");
-
-    if let Some(task) = app.compaction_task.take() {
-        task.abort();
-    }
-}
-
-/// Rollback of a deferred turn restores the token-free text to the editor
-/// and the pending images back to the side table.
-#[test]
-fn rollback_restores_images_and_token_free_text() {
-    let mut app = make_app();
-    let pre_len = app.chat.chat_messages.len();
-
-    app.add_user_message("look at  this");
-    app.editor.input_buffer = String::new();
-    app.editor.pending_images = Vec::new();
-
-    app.pending_turn = Some(PendingTurn {
-        input: "look at  this".to_string(),
-        images: vec![pending_image(1, "test.png")],
-        restore_input: "look at  this".to_string(),
-        created_session: false,
-        pre_turn_chat_len: pre_len,
-        pre_turn_skills: HashSet::new(),
-    });
-
-    rollback_pending_turn(&mut app);
-
-    assert!(app.pending_turn.is_none());
-    // Token-free text restored to the editor...
-    assert_eq!(app.editor.input_buffer, "look at  this");
-    assert_eq!(app.editor.cursor_pos, "look at  this".len());
-    // ...and the image restored to the side table.
-    assert_eq!(app.editor.pending_images.len(), 1);
-    assert_eq!(app.editor.pending_images[0].name, "test.png");
-}
-
 #[test]
 fn rollback_pending_turn_restores_pre_turn_state() {
     let mut app = make_app();
@@ -656,7 +563,6 @@ fn rollback_pending_turn_restores_pre_turn_state() {
 
     app.pending_turn = Some(PendingTurn {
         input: "typed question".to_string(),
-        images: Vec::new(),
         restore_input: "typed question".to_string(),
         created_session: true,
         pre_turn_chat_len: pre_len,
@@ -695,7 +601,6 @@ fn rollback_pending_turn_keeps_existing_session_when_not_created_by_turn() {
 
     app.pending_turn = Some(PendingTurn {
         input: "typed question".to_string(),
-        images: Vec::new(),
         restore_input: "typed question".to_string(),
         created_session: false,
         pre_turn_chat_len: pre_len,
@@ -769,7 +674,6 @@ fn undo_turn_setup_removes_rolled_back_skill_hooks() {
         pre_len,
         false,
         "typed question".to_string(),
-        Vec::new(),
         HashSet::new(),
     );
 
@@ -788,7 +692,7 @@ fn undo_turn_setup_keeps_pre_turn_skill_hooks() {
     app.activate_skill("refine");
     let pre_turn_skills = app.active_skills.clone();
 
-    undo_turn_setup(&mut app, pre_len, false, "x".to_string(), Vec::new(), pre_turn_skills);
+    undo_turn_setup(&mut app, pre_len, false, "x".to_string(), pre_turn_skills);
 
     assert!(app.active_skills.contains("refine"));
     assert_eq!(
@@ -835,7 +739,6 @@ fn skillname_activation_then_reactivation_survives_agent_restart() {
 fn pending_turn_derives_debug() {
     let pending = PendingTurn {
         input: "input".to_string(),
-        images: Vec::new(),
         restore_input: "restore".to_string(),
         created_session: true,
         pre_turn_chat_len: 3,
@@ -844,7 +747,6 @@ fn pending_turn_derives_debug() {
     let debug = format!("{pending:?}");
     for field in [
         "input",
-        "images",
         "restore_input",
         "created_session",
         "pre_turn_chat_len",

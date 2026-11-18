@@ -78,13 +78,7 @@ pub enum AgentMessage {
     #[serde(rename = "system")]
     System { content: String },
     #[serde(rename = "user")]
-    User {
-        content: String,
-        /// Images attached to the user message (clipboard paste / dropped
-        /// path). Serialized inline; empty for text-only messages.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        images: Vec<ImageContent>,
-    },
+    User { content: String },
     #[serde(rename = "assistant")]
     Assistant {
         /// Structured content blocks (text, thinking, tool calls).
@@ -268,18 +262,7 @@ impl AgentMessage {
     /// Create a user message.
     #[must_use]
     pub fn user(content: String) -> Self {
-        AgentMessage::User {
-            content,
-            images: Vec::new(),
-        }
-    }
-
-    /// Create a user message with attached images (clipboard paste /
-    /// dropped path). The base64 is frozen at ingestion, so the stored
-    /// value is byte-stable for the life of the message.
-    #[must_use]
-    pub fn user_with_images(content: String, images: Vec<ImageContent>) -> Self {
-        AgentMessage::User { content, images }
+        AgentMessage::User { content }
     }
 
     /// Create an assistant message from structured content blocks.

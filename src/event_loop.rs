@@ -298,7 +298,7 @@ pub async fn poll_compaction_task(
     let _ = handle_compaction_result(app, handle, false).await;
 
     if let Some(pending) = app.pending_turn.take() {
-        let quit = match crate::turn::launch_agent_turn(app, pending.input, pending.images, terminal).await {
+        let quit = match crate::turn::launch_agent_turn(app, pending.input, terminal).await {
             Ok(quit) => quit,
             Err(e) => {
                 app.add_system_message(&format!("Failed to start agent: {e}"));

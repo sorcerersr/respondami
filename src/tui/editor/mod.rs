@@ -10,7 +10,6 @@ mod renderer;
 mod discovery;
 mod commands;
 pub(crate) mod wrap;
-pub(crate) mod tokens;
 
 #[doc(inline)]
 pub use cursor::{
@@ -31,8 +30,6 @@ pub use commands::{
 };
 #[doc(inline)]
 pub use wrap::{wrap_line, build_visual_lines, cursor_visual_pos};
-#[doc(inline)]
-pub use tokens::{TokenSpan, find_tokens, format_token, token_starting_at, token_ending_at, strip_tokens};
 
 #[cfg(test)]
 mod commands_tests;
@@ -40,7 +37,5 @@ mod commands_tests;
 mod cursor_tests;
 #[cfg(test)]
 mod discovery_tests;
-#[cfg(test)]
-mod tokens_tests;
 #[cfg(test)]
 mod wrap_tests;

@@ -85,11 +85,13 @@ Deferred from the token counter design (2026-10-31, `docs/plans/2026-10-31-token
 
 Not done now to avoid changing the session schema. The structural estimate is slightly optimistic when the cache is cold (first request of a session, right after compaction, cross-machine resume); the raw sum remains the upper bound.
 
-## Resolved: Container/headless image paste (2026-11-15)
+## Reverted: Container/headless image paste (2026-11-15 → 2026-11-18)
 
 The rootless-podman container had no display server (`DISPLAY`/`WAYLAND_DISPLAY` unset), so the
 arboard clipboard path failed with "Clipboard unavailable (no display server)". Resolved 2026-11-15
 via the Kitty 5522 terminal-native protocol: the terminal's own native paste key reads the host
 clipboard over the PTY, no display server required. See `docs/plans/2026-11-15-terminal-native-image-paste-design.md`.
-Kitty (`TERM_PROGRAM=kitty`) and Ghostty (`TERM=xterm-ghostty`) are auto-detected; the arboard
-`Ctrl+V` path remains the `Other`/fallback for other terminals.
+
+**Reverted 2026-11-18:** the three user-message image-paste experiments (arboard Ctrl+V, Kitty 5522,
+dropped image file paths) and the vte input layer were removed. Images now enter only via the `read`
+tool. See `docs/plans/2026-11-18-remove-image-paste-experiments-design.md`.

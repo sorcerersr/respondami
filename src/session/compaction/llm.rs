@@ -184,7 +184,7 @@ impl LlmCompaction {
             if let SessionEntry::Message { message, .. } = entry {
                 total += CompactionSettings::estimate_tokens(message.content());
                 let images: &[crate::image::ImageContent] = match message {
-                    AgentMessage::Tool { images, .. } | AgentMessage::User { images, .. } => images,
+                    AgentMessage::Tool { images, .. } => images,
                     _ => &[],
                 };
                 for img in images {

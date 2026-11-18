@@ -4,7 +4,6 @@
 //! UTF-8 multi-byte character handling. Visual-line functions (`cursor_up_visual`,
 //! `cursor_down_visual`) are soft-wrap aware, using display-width calculations.
 
-use super::tokens::{token_ending_at, token_starting_at};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Find the last valid char-boundary byte index that is <= `pos`.
@@ -74,16 +73,10 @@ pub fn cursor_line_col(input: &str, pos: usize) -> (usize, usize) {
 }
 
 /// Move cursor left by one character. Returns new position.
-///
-/// If the cursor is at the end of an `[img:N]` token, jumps to the token's
-/// start (the token is atomic — the cursor never lands inside it).
 #[must_use]
 pub fn cursor_left(input: &str, pos: usize) -> usize {
     if pos == 0 {
         return 0;
-    }
-    if let Some(token) = token_ending_at(input, pos) {
-        return token.start;
     }
     match prev_char_offset(input, pos) {
         Some((offset, width)) => {
@@ -99,16 +92,10 @@ pub fn cursor_left(input: &str, pos: usize) -> usize {
 }
 
 /// Move cursor right by one character. Returns new position.
-///
-/// If the cursor is at the start of an `[img:N]` token, jumps to the token's
-/// end (the token is atomic — the cursor never lands inside it).
 #[must_use]
 pub fn cursor_right(input: &str, pos: usize) -> usize {
     if pos >= input.len() {
         return pos;
-    }
-    if let Some(token) = token_starting_at(input, pos) {
-        return token.end;
     }
     let width = char_width_at(input, pos);
     // If current char is '\n', skip to start of next line
@@ -194,19 +181,11 @@ pub fn cursor_end(input: &str, pos: usize) -> usize {
 
 /// Delete the character before the cursor. Handles line joining at line start.
 ///
-/// If the cursor is at the end of an `[img:N]` token, removes the whole token.
-///
 /// # Panics
 ///
 /// - If `prev_char_offset` returns `None` for a non-empty string with cursor > 0.
 pub fn cursor_backspace(input: &mut String, pos: &mut usize) {
     if *pos == 0 || input.is_empty() {
-        return;
-    }
-    // If the cursor is at the end of an image token, remove the whole token.
-    if let Some(token) = token_ending_at(input, *pos) {
-        input.replace_range(token.start..token.end, "");
-        *pos = token.start;
         return;
     }
     // If cursor is on a '\n' (e.g. after cursor_left from start of next line),
@@ -222,16 +201,8 @@ pub fn cursor_backspace(input: &mut String, pos: &mut usize) {
 }
 
 /// Delete the character at the cursor. Handles line joining on '\n'.
-///
-/// If the cursor is at the start of an `[img:N]` token, removes the whole token.
 pub fn cursor_delete(input: &mut String, pos: &mut usize) {
     if *pos >= input.len() {
-        return;
-    }
-    // If the cursor is at the start of an image token, remove the whole token.
-    if let Some(token) = token_starting_at(input, *pos) {
-        input.replace_range(token.start..token.end, "");
-        // Cursor stays at the token's start; the following text shifts in.
         return;
     }
     input.remove(*pos);

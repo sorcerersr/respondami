@@ -13,7 +13,7 @@
 use crossterm::event::KeyEvent;
 use crate::tui::editor::{
     cursor_backspace, cursor_delete, cursor_end, cursor_home, cursor_left,
-    cursor_right, cursor_up_visual, cursor_down_visual, token_ending_at, token_starting_at,
+    cursor_right, cursor_up_visual, cursor_down_visual,
 };
 use crate::tui::editor::wrap::{build_visual_lines, cursor_visual_pos};
 use crate::tui::App;
@@ -160,13 +160,7 @@ impl InputLayer {
     }
 
     fn handle_backspace(&self, app: &mut App) {
-        // If the cursor is at the end of an image token, the backspace removes
-        // the whole token — drop the matching side-table entry too.
-        let removed_token = token_ending_at(&app.editor.input_buffer, app.editor.cursor_pos);
         cursor_backspace(&mut app.editor.input_buffer, &mut app.editor.cursor_pos);
-        if let Some(token) = removed_token {
-            app.editor.remove_pending_image(token.id);
-        }
 
         // Update autocomplete if @ trigger is enabled
         if self.config.enable_at_trigger && app.editor.input_buffer.contains('@') {
@@ -189,13 +183,7 @@ impl InputLayer {
     }
 
     fn handle_delete(&self, app: &mut App) {
-        // If the cursor is at the start of an image token, the delete removes
-        // the whole token — drop the matching side-table entry too.
-        let removed_token = token_starting_at(&app.editor.input_buffer, app.editor.cursor_pos);
         cursor_delete(&mut app.editor.input_buffer, &mut app.editor.cursor_pos);
-        if let Some(token) = removed_token {
-            app.editor.remove_pending_image(token.id);
-        }
     }
 
     fn handle_left(&self, app: &mut App) {

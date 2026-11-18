@@ -47,7 +47,7 @@ use super::{Message, ProviderError, ToolDef, ToolCallDelta, accumulate_tool_call
 
     #[test]
     fn agent_to_message_user() {
-        let agent = AgentMessage::User { content: "user msg".to_string(), images: Vec::new() };
+        let agent = AgentMessage::User { content: "user msg".to_string() };
         let msg = agent_message_to_message(&agent);
         assert_eq!(msg.content(), "user msg");
     }
@@ -132,21 +132,6 @@ use super::{Message, ProviderError, ToolDef, ToolCallDelta, accumulate_tool_call
         let ja = serde_json::to_string(&a).unwrap();
         let jb = serde_json::to_string(&b).unwrap();
         assert_eq!(ja, jb, "re-injection must be byte-stable for prefix caching");
-    }
-
-    #[test]
-    fn user_with_images_forwards_to_message() {
-        let msgs = vec![AgentMessage::user_with_images("why?".to_string(), vec![img()])];
-        let out = agent_messages_to_provider_messages(&msgs);
-        assert_eq!(out.len(), 1, "user image → no synthetic message");
-        match &out[0] {
-            Message::User { content, images } => {
-                assert_eq!(content, "why?");
-                assert_eq!(images.len(), 1);
-                assert_eq!(images[0].mime_type, "image/png");
-            }
-            _ => panic!("expected User message, got {:?}", out[0]),
-        }
     }
 
     #[test]

@@ -265,37 +265,3 @@ use super::wrap::{build_visual_lines, cursor_visual_pos, last_char_boundary, wra
         assert_eq!(last_char_boundary("", 0), 0);
         assert_eq!(last_char_boundary("", 5), 0);
     }
-
-    // -----------------------------------------------------------------------
-    // Image-token atomicity
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn wrap_line_token_never_split_when_fits() {
-        // "[img:0]" is 7 display cols. Width 10: token + "ab" fits on one line.
-        let segments = wrap_line("[img:0]ab", 10);
-        assert_eq!(segments, vec![(0, 9)]);
-    }
-
-    #[test]
-    fn wrap_line_token_breaks_before_when_no_room() {
-        // "abc" (3) + "[img:0]" (7) = 10 > width 8. Token must not be split:
-        // break before the token → segment 1 = "abc", segment 2 = "[img:0]".
-        let segments = wrap_line("abc[img:0]", 8);
-        assert_eq!(segments, vec![(0, 3), (3, 10)]);
-    }
-
-    #[test]
-    fn wrap_line_token_wider_than_width_starts_own_segment() {
-        // Token (7 cols) is wider than width 4. It starts its own segment and
-        // is never split.
-        let segments = wrap_line("[img:0]", 4);
-        assert_eq!(segments, vec![(0, 7)]);
-    }
-
-    #[test]
-    fn wrap_line_two_tokens_break_between() {
-        // "[img:0][img:1]" = 14 cols. Width 8: each token on its own line.
-        let segments = wrap_line("[img:0][img:1]", 8);
-        assert_eq!(segments, vec![(0, 7), (7, 14)]);
-    }

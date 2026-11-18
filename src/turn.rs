@@ -50,8 +50,6 @@ pub fn estimate_system_overhead_tokens(
 pub struct PendingTurn {
     /// Input to launch the agent with (may be a skill-injected prompt).
     pub input: String,
-    /// Images attached to the turn's user message (restored on rollback).
-    pub images: Vec<crate::tui::editor_state::PendingImage>,
     /// Text to restore to the editor on cancel (what the user typed).
     pub restore_input: String,
     /// `true` if the session was auto-created for this turn.
@@ -82,25 +80,11 @@ pub async fn start_turn(
     }
 
     let input = app.editor.input_buffer.clone();
-    // Take the pending images out of the editor (they are attached to the
-    // outgoing user message; restored on rollback via the pending_turn snapshot).
-    let images = std::mem::take(&mut app.editor.pending_images);
     app.editor.input_buffer.clear();
     app.editor.cursor_pos = 0;
 
-    // Strip `[img:N]` tokens from the text: the images travel in the side
-    // table, and the model / history / chat see token-free text.
-    let had_tokens = !crate::tui::editor::find_tokens(&input).is_empty();
-    let input = crate::tui::editor::strip_tokens(&input);
-
-    if input.trim().is_empty() && images.is_empty() {
+    if input.trim().is_empty() {
         return Ok(false);
-    }
-    // Defensive: tokens present but no side-table entries (atomic deletion
-    // keeps them in lockstep, so this should not happen). Strip the token,
-    // attach nothing, and log.
-    if images.is_empty() && had_tokens {
-        tracing::warn!("image tokens in buffer but no pending images; sending text only");
     }
 
     // Check for slash commands (palette commands triggered via /).
@@ -116,7 +100,7 @@ pub async fn start_turn(
     }
 
     let pre_turn_skills = app.active_skills.clone();
-    run_turn_with_input(app, input, images, None, pre_turn_skills, terminal).await
+    run_turn_with_input(app, input, None, pre_turn_skills, terminal).await
 }
 
 /// Parse a slash command from input. Returns (`command_id`, args) if matched.
@@ -211,7 +195,6 @@ async fn handle_skill_activation(
         match run_turn_with_input(
             app,
             user_input,
-            Vec::new(),
             Some(input.to_string()),
             pre_turn_skills,
             terminal,
@@ -264,7 +247,6 @@ async fn handle_skill_activation(
 pub async fn run_turn_with_input(
     app: &mut App,
     input: String,
-    images: Vec<crate::tui::editor_state::PendingImage>,
     display_text: Option<String>,
     pre_turn_skills: HashSet<String>,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -370,7 +352,6 @@ pub async fn run_turn_with_input(
                     pre_turn_chat_len,
                     created_session,
                     display,
-                    images,
                     pre_turn_skills,
                 );
                 // Added after the truncation so the block note survives.
@@ -419,7 +400,6 @@ pub async fn run_turn_with_input(
 
             app.pending_turn = Some(PendingTurn {
                 input: model_input.clone(),
-                images: images.clone(),
                 restore_input: display,
                 created_session,
                 pre_turn_chat_len,
@@ -429,7 +409,7 @@ pub async fn run_turn_with_input(
         }
     }
 
-    launch_agent_turn(app, model_input, images, terminal).await
+    launch_agent_turn(app, model_input, terminal).await
 }
 
 /// Roll back a deferred turn after compaction cancellation.
@@ -446,7 +426,6 @@ pub fn rollback_pending_turn(app: &mut App) {
         pending.pre_turn_chat_len,
         pending.created_session,
         pending.restore_input,
-        pending.images,
         pending.pre_turn_skills,
     );
 }
@@ -468,7 +447,6 @@ pub(crate) fn undo_turn_setup(
     pre_turn_chat_len: usize,
     created_session: bool,
     restore_input: String,
-    images: Vec<crate::tui::editor_state::PendingImage>,
     pre_turn_skills: HashSet<String>,
 ) {
     app.chat.chat_messages.truncate(pre_turn_chat_len);
@@ -496,9 +474,6 @@ pub(crate) fn undo_turn_setup(
     );
     app.editor.input_buffer = restore_input;
     app.editor.cursor_pos = app.editor.input_buffer.len();
-    // Restore the images taken from the editor at turn start so the user can
-    // re-send them after a rollback.
-    app.editor.pending_images = images;
 }
 
 /// Create the SSE debug capture guard for a turn, if capture is enabled.
@@ -542,7 +517,6 @@ pub(crate) struct RestartedAgent {
 pub(crate) fn restart_agent(
     app: &mut App,
     user_msg: String,
-    images: Vec<crate::tui::editor_state::PendingImage>,
 ) -> RestartedAgent {
     app.start_streaming(&user_msg);
     app.agent
@@ -569,17 +543,14 @@ pub(crate) fn restart_agent(
         app.chat.auto_scroll = true;
     }
 
-    // Save user message to session (session_store stays in app). Images are
-    // attached to the User message (frozen base64; the wire is a pure function
-    // of this stored state, so the history guard's digest covers them).
-    let image_contents: Vec<crate::image::ImageContent> =
-        images.iter().map(|p| p.image.clone()).collect();
+    // Save user message to session (session_store stays in app).
     if app.session.session_store.has_active_session() {
         let parent_id = app.session.session_store.last_entry_id();
-        if let Err(e) = app.session.session_store.append_message(
-            parent_id,
-            crate::session::AgentMessage::user_with_images(user_msg.clone(), image_contents.clone()),
-        ) {
+        if let Err(e) = app
+            .session
+            .session_store
+            .append_message(parent_id, crate::session::AgentMessage::user(user_msg.clone()))
+        {
             tracing::error!("Failed to save user message: {e}");
         }
     }
@@ -600,7 +571,6 @@ pub(crate) fn restart_agent(
         crate::agent::run_agent_with_snapshot(
             context_messages,
             user_msg,
-            image_contents,
             config,
             cwd,
             agent_tool_registry,
@@ -634,7 +604,6 @@ pub(crate) fn restart_agent(
 pub async fn launch_agent_turn(
     app: &mut App,
     user_msg: String,
-    images: Vec<crate::tui::editor_state::PendingImage>,
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     // A genuine user message starts a fresh task: reset the loop-recovery
@@ -644,7 +613,7 @@ pub async fn launch_agent_turn(
     app.loop_recovery_count = 0;
     app.loop_free_tool_calls = 0;
 
-    let agent = restart_agent(app, user_msg, images);
+    let agent = restart_agent(app, user_msg);
 
     // Process agent events while maintaining TUI responsiveness
     process_agent_events(app, agent.handle, agent.cancel_tx, agent.rx, terminal).await;

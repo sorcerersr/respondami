@@ -807,11 +807,9 @@ impl SessionStore {
 
     /// Strip images from the session (`strip_images_after_view` workaround).
     ///
-    /// Tool images are stripped by ID (ID-matched); user-message images are
-    /// stripped blanket-style (no ID in the event). Both use the same
-    /// transforms as the agent loop's live-context strip
-    /// ([`crate::agent::strip_images_from_tool`] /
-    /// [`crate::agent::strip_images_from_user`]), so session and live context
+    /// Tool images are stripped by ID (ID-matched), using the same transform
+    /// as the agent loop's live-context strip
+    /// ([`crate::agent::strip_images_from_tool`]), so session and live context
     /// stay byte-identical. Rewrites the session file (atomic); no-op when
     /// nothing carries images.
     ///
@@ -821,32 +819,14 @@ impl SessionStore {
     pub fn strip_tool_images(&mut self, tool_call_ids: &[String]) -> anyhow::Result<()> {
         let mut changed = false;
         for entry in &mut self.entries {
-            // Tool images: ID-matched. User images: blanket (no ID).
-            let should_strip = matches!(
-                entry,
-                SessionEntry::Message {
-                    message: AgentMessage::Tool {
-                        tool_call_id, images, ..
-                    },
-                    ..
-                } if !images.is_empty()
-                    && tool_call_ids.iter().any(|id| id == tool_call_id)
-            )
-                || matches!(
-                    entry,
-                    SessionEntry::Message {
-                        message: AgentMessage::User { images, .. },
-                        ..
-                    } if !images.is_empty()
-                );
-            if should_strip
-                && let SessionEntry::Message { message, .. } = entry
-            {
-                *message = if matches!(message, AgentMessage::User { .. }) {
-                    crate::agent::strip_images_from_user(message)
-                } else {
-                    crate::agent::strip_images_from_tool(message)
-                };
+            let SessionEntry::Message { message, .. } = entry else {
+                continue;
+            };
+            let AgentMessage::Tool { tool_call_id, images, .. } = message else {
+                continue;
+            };
+            if !images.is_empty() && tool_call_ids.iter().any(|id| id == tool_call_id) {
+                *message = crate::agent::strip_images_from_tool(message);
                 changed = true;
             }
         }

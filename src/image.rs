@@ -92,8 +92,8 @@ pub fn process_image(path: &Path) -> Result<ImageContent, ImageError> {
 /// Pipeline: sniff → (reject animated GIF) → decode → resize (2000px,
 /// Lanczos3) → re-encode (JPEG; PNG/GIF/WebP/BMP → PNG) → byte cap → base64.
 ///
-/// Shared by file ingestion (`process_image`) and clipboard ingestion
-/// (`crate::clipboard`), so pasted and read images are normalized identically.
+/// The `read` tool funnels all image ingestion through this function via
+/// `process_image`, so every attached image is normalized identically.
 pub fn process_image_bytes(bytes: &[u8]) -> Result<ImageContent, ImageError> {
     let mime = sniff_mime(bytes)?;
     if mime == "image/gif" && is_animated_gif(bytes)? {
