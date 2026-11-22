@@ -385,44 +385,17 @@ pub async fn process_agent_events(
                 }
                 app.loop_free_tool_calls = 0;
 
-                match decide_loop_recovery(app, &report) {
-                    LoopRecoveryDecision::Exhausted => {
-                        app.add_system_message(&format!(
-                            "⚠️ Loop recovery failed after {} attempts — the model keeps repeating the same action. Intervene manually.",
-                            app.config.config.loop_detection.max_recoveries,
-                        ));
-                        app.maybe_auto_scroll();
-                        done = true;
-                        continue;
-                    }
-                    LoopRecoveryDecision::Failed(e) => {
-                        app.add_system_message(&format!("Loop cut failed: {e}"));
-                        app.maybe_auto_scroll();
-                        done = true;
-                        continue;
-                    }
-                    LoopRecoveryDecision::Recover {
-                        prompt,
-                        removed,
-                    } => {
-                        app.add_system_message(&format!(
-                            "⚠️ Loop detected: {} ×{} — truncated {removed} messages, continuing. (recovery {}/{})",
-                            report.summary(),
-                            report.count,
-                            app.loop_recovery_count,
-                            app.config.config.loop_detection.max_recoveries,
-                        ));
-                        app.maybe_auto_scroll();
-
-                        let new_agent = crate::turn::restart_agent(app, prompt);
+                match apply_loop_recovery(app, &report) {
+                    Some(new_agent) => {
                         sse_guard = new_agent.sse_guard;
                         agent_handle = new_agent.handle;
                         let _ = cancel_tx.send(true);
                         rx = new_agent.rx;
                         cancel_tx = new_agent.cancel_tx;
-                        continue;
                     }
+                    None => done = true,
                 }
+                continue;
             }
             Ok(Some(AgentEvent::Done(Ok(())))) => {
                 // Drain any remaining Token/Reasoning/Usage events from the channel.
@@ -430,6 +403,42 @@ pub async fn process_agent_events(
                 app.drain_pending_events(&mut rx);
                 if let Some(snap) = app.agent.tracker.finalize_turn() {
                     app.session.session_store.save_token_rate(snap);
+                }
+
+                // Text-echo loop check before the Stop hook: a text-only turn
+                // that repeats the same final response is a degenerate loop
+                // (typically a Stop-hook re-prompt cycle). A trip takes the
+                // same recovery path as a tool-call loop and skips the Stop
+                // hook; a turn with tool activity is progress and clears the
+                // detector's window.
+                if app.config.config.loop_detection.enabled {
+                    if app.agent.pending_tool_calls.is_empty() {
+                        if let Some(report) = app
+                            .text_loop_detector
+                            .record(&last_assistant_text(app))
+                        {
+                            app.loop_free_tool_calls = 0;
+                            match apply_loop_recovery(app, &report) {
+                                Some(new_agent) => {
+                                    // The cut removed the looped history, so the
+                                    // detector's evidence is gone: reset the window
+                                    // or the next response (even a different one)
+                                    // re-trips on the stale key and the model can
+                                    // never escape by taking a different action.
+                                    app.text_loop_detector.reset();
+                                    sse_guard = new_agent.sse_guard;
+                                    agent_handle = new_agent.handle;
+                                    let _ = cancel_tx.send(true);
+                                    rx = new_agent.rx;
+                                    cancel_tx = new_agent.cancel_tx;
+                                }
+                                None => done = true,
+                            }
+                            continue;
+                        }
+                    } else {
+                        app.text_loop_detector.note_tool_activity();
+                    }
                 }
 
                 // Run Stop hooks before finishing. A blocked hook (exit 2)
@@ -645,10 +654,14 @@ pub(crate) enum LoopRecoveryDecision {
 /// Decide how to recover from a detected loop: apply the surgical cut and
 /// build the recovery prompt, or stop (budget exhausted / cut failed).
 ///
-/// This is the pure decision core of the `LoopDetected` handler — separated
-/// from the channel swapping so it can be unit-tested. It mutates the session
+/// This is the pure decision core of the loop-recovery path — separated from
+/// the channel swapping so it can be unit-tested. It mutates the session
 /// (the cut), the history guard (reset), and the recovery counter (increment).
 /// The caller handles the system message, `restart_agent`, and channel swap.
+///
+/// The cut point and prompt depend on the loop kind: a tool-call loop cuts
+/// at the first assistant message that issued the repeated call; a text-echo
+/// loop cuts at the user message preceding the first matching response.
 pub(crate) fn decide_loop_recovery(
     app: &mut App,
     report: &crate::agent::LoopReport,
@@ -658,15 +671,19 @@ pub(crate) fn decide_loop_recovery(
         return LoopRecoveryDecision::Exhausted;
     }
 
-    // Locate and apply the surgical cut: the first assistant message (at/after
-    // the last user message) that issued the repeated call. The pre-loop work
-    // and the user's instruction are preserved.
+    // Locate and apply the surgical cut. The pre-loop work and the user's
+    // instruction are preserved.
     let entries = app.session.session_store.entries().to_vec();
-    let cut_index = crate::session::find_loop_cut_index(
-        &entries,
-        &report.tool_name,
-        &report.canonical_args,
-    );
+    let cut_index = match report.kind {
+        crate::agent::LoopKind::ToolCall => crate::session::find_loop_cut_index(
+            &entries,
+            &report.tool_name,
+            &report.canonical_args,
+        ),
+        crate::agent::LoopKind::TextEcho => {
+            crate::session::find_text_loop_cut_index(&entries, &report.canonical_args)
+        }
+    };
     let mut removed = 0u32;
     if app.session.session_store.has_active_session() {
         match app
@@ -683,14 +700,78 @@ pub(crate) fn decide_loop_recovery(
     }
 
     app.loop_recovery_count += 1;
-    let prompt = crate::agent::loop_recovery_prompt(
-        &report.tool_name,
-        &report.args_preview,
-        report.count,
-        app.loop_recovery_count,
-        max_recoveries,
-    );
+    let prompt = match report.kind {
+        crate::agent::LoopKind::ToolCall => crate::agent::loop_recovery_prompt(
+            &report.tool_name,
+            &report.args_preview,
+            report.count,
+            app.loop_recovery_count,
+            max_recoveries,
+        ),
+        crate::agent::LoopKind::TextEcho => crate::agent::text_loop_recovery_prompt(
+            &report.args_preview,
+            report.count,
+            app.loop_recovery_count,
+            max_recoveries,
+        ),
+    };
     LoopRecoveryDecision::Recover { prompt, removed }
+}
+
+/// Apply a loop-recovery decision: show the system message and either
+/// restart the agent with the recovery prompt or end the turn.
+///
+/// Shared by the `LoopDetected` event (tool-call loop) and the `Done(Ok)`
+/// text-echo trip. Returns the restarted agent when recovering (the caller
+/// swaps the channels), or `None` when the turn ends (budget exhausted or
+/// cut failed). The caller must have already drained events, finalized the
+/// turn, and zeroed `loop_free_tool_calls`.
+fn apply_loop_recovery(
+    app: &mut App,
+    report: &crate::agent::LoopReport,
+) -> Option<crate::turn::RestartedAgent> {
+    match decide_loop_recovery(app, report) {
+        LoopRecoveryDecision::Exhausted => {
+            app.add_system_message(&format!(
+                "⚠️ Loop recovery failed after {} attempts — the model keeps repeating the same action. Intervene manually.",
+                app.config.config.loop_detection.max_recoveries,
+            ));
+            app.maybe_auto_scroll();
+            None
+        }
+        LoopRecoveryDecision::Failed(e) => {
+            app.add_system_message(&format!("Loop cut failed: {e}"));
+            app.maybe_auto_scroll();
+            None
+        }
+        LoopRecoveryDecision::Recover {
+            prompt,
+            removed,
+        } => {
+            app.add_system_message(&format!(
+                "⚠️ Loop detected: {} ×{} — truncated {removed} messages, continuing. (recovery {}/{})",
+                report.summary(),
+                report.count,
+                app.loop_recovery_count,
+                app.config.config.loop_detection.max_recoveries,
+            ));
+            app.maybe_auto_scroll();
+            Some(crate::turn::restart_agent(app, prompt))
+        }
+    }
+}
+
+/// The normalized visible text of the current turn's response.
+///
+/// `streaming_content` accumulates the turn's visible text tokens and is
+/// cleared in `start_streaming` (every turn, including re-prompts), so at
+/// `Done(Ok)` it is exactly this turn's text — empty on a reasoning-only turn
+/// (which sends `Done` without a `SaveAssistantMessage`, so reading the
+/// session store would return the *previous* turn's text and re-record a
+/// stale key). For a text-only turn it equals the saved content block's text,
+/// so the normalized key matches what the cut logic compares against.
+fn last_assistant_text(app: &App) -> String {
+    crate::agent::normalize_text(&app.agent.streaming_content)
 }
 
 /// Calculate the visible height of the chat area in lines.

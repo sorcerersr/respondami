@@ -99,6 +99,10 @@ pub struct App {
     /// `loop_detection.reset_after_calls` (with a non-zero recovery count), the
     /// recovery counter resets so a later, distinct loop gets a fresh budget.
     pub loop_free_tool_calls: usize,
+    /// Text-echo loop detector: watches the model's text-only final responses
+    /// across turns (the loop spans agent re-spawns, so it lives here, not in
+    /// the agent loop). Fed at `Done(Ok)`; a turn with tool activity clears it.
+    pub text_loop_detector: crate::agent::TextLoopDetector,
 }
 
 impl App {
@@ -141,6 +145,7 @@ impl std::fmt::Debug for App {
             .field("model_fetch", &self.model_fetch.is_some())
             .field("loop_recovery_count", &self.loop_recovery_count)
             .field("loop_free_tool_calls", &self.loop_free_tool_calls)
+            .field("text_loop_detector", &self.text_loop_detector)
             .finish()
     }
 }
@@ -173,6 +178,8 @@ impl App {
         let thinking_display = config.ui.thinking_display;
         let tool_output_expanded = config.ui.tool_output_expanded;
         let hook_display = config.ui.hook_display;
+        let text_window = config.loop_detection.text_window;
+        let text_threshold = config.loop_detection.text_threshold;
 
         // Load AGENTS.md — capture path for welcome screen, set state for popup
         let (state, agents_md_path) = match crate::agents_md::load_agents_md(&cwd) {
@@ -247,6 +254,9 @@ impl App {
             model_fetch: None,
             loop_recovery_count: 0,
             loop_free_tool_calls: 0,
+            text_loop_detector: crate::agent::TextLoopDetector::new(
+                text_window, text_threshold,
+            ),
         }
     }
 

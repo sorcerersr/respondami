@@ -607,11 +607,13 @@ pub async fn launch_agent_turn(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<bool> {
     // A genuine user message starts a fresh task: reset the loop-recovery
-    // budget and the loop-free decay counter. (Loop-recovery and compaction
-    // restarts go through `restart_agent` directly and must NOT reset the
-    // budget — they are continuations of the same task.)
+    // budget, the loop-free decay counter, and the text-echo detector window.
+    // (Loop-recovery and compaction restarts go through `restart_agent`
+    // directly and must NOT reset these — they are continuations of the same
+    // task.)
     app.loop_recovery_count = 0;
     app.loop_free_tool_calls = 0;
+    app.text_loop_detector.reset();
 
     let agent = restart_agent(app, user_msg);
 

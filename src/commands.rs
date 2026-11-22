@@ -45,6 +45,7 @@ pub async fn execute_palette_command(
                     &app.config.cwd,
                 );
                 app.session.reset_for_new_session();
+                app.text_loop_detector.reset();
             }
         }
         "resume" => {

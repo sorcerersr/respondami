@@ -17,7 +17,10 @@ pub use display_adapter::SessionDisplayAdapter;
 #[doc(inline)]
 pub use entry::{AgentMessage, ContentBlock, RequestTokenUsage, SessionEntry, TokenRateEntry, ToolCall, Usage};
 #[doc(inline)]
-pub use manager::{build_context_from_entries, find_loop_cut_index, SessionStore, SessionMeta};
+pub use manager::{
+    build_context_from_entries, find_loop_cut_index, find_text_loop_cut_index, SessionMeta,
+    SessionStore,
+};
 
 #[cfg(test)]
 mod compaction_tests;

@@ -196,6 +196,7 @@ fn bash_assistant(command: &str) -> crate::session::AgentMessage {
 /// A report for a repeated `bash grep` loop.
 fn grep_report() -> crate::agent::LoopReport {
     crate::agent::LoopReport {
+        kind: crate::agent::LoopKind::ToolCall,
         tool_name: "bash".to_string(),
         canonical_args: crate::agent::canonical_args(&serde_json::json!({ "command": "grep -n foo" })),
         args_preview: "grep -n foo".to_string(),
@@ -359,4 +360,116 @@ fn loop_decay_noop_without_recovery() {
     }
     assert_eq!(app.loop_recovery_count, 0);
     assert_eq!(app.loop_free_tool_calls, 0, "no decay counting without a recovery");
+}
+
+// ---------------------------------------------------------------------------
+// Text-echo loop recovery (decide_loop_recovery, TextEcho kind)
+// ---------------------------------------------------------------------------
+
+/// A report for a repeated text-only response (the 5b6b68d3 pattern).
+fn text_echo_report() -> crate::agent::LoopReport {
+    crate::agent::LoopReport {
+        kind: crate::agent::LoopKind::TextEcho,
+        tool_name: "response".to_string(),
+        canonical_args: "I need to investigate this further.".to_string(),
+        args_preview: "I need to investigate this further.".to_string(),
+        count: 603,
+    }
+}
+
+/// An assistant message with only a visible text block.
+fn text_assistant(text: &str) -> crate::session::AgentMessage {
+    crate::session::AgentMessage::assistant_with_blocks(
+        vec![crate::session::ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        None,
+    )
+}
+
+/// Build an app with the 5b6b68d3 shape: user task, then the repeated
+/// (stop-block user, assistant text) pairs ×3.
+fn app_with_text_loop_session() -> (App, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut app = App::new(crate::config::Config::default(), dir.path().to_path_buf());
+    app.session
+        .session_store
+        .create_session("model".to_string(), 32768, "/".to_string())
+        .unwrap();
+    app.session
+        .session_store
+        .append_message(None, crate::session::AgentMessage::user("real task".into()))
+        .unwrap();
+    for _ in 0..3 {
+        app.session
+            .session_store
+            .append_message(
+                None,
+                crate::session::AgentMessage::user("blocked: plan incomplete".into()),
+            )
+            .unwrap();
+        app.session
+            .session_store
+            .append_message(
+                None,
+                text_assistant("I need to investigate this further."),
+            )
+            .unwrap();
+    }
+    (app, dir)
+}
+
+/// `TextEcho` within budget: the cut removes the repeated pairs (preserving
+/// the real task), the recovery counter increments, and a text recovery
+/// prompt is returned.
+#[test]
+fn text_loop_recovery_within_budget_cuts_and_restarts() {
+    let (mut app, _dir) = app_with_text_loop_session();
+    let report = text_echo_report();
+
+    let decision = super::agent_events::decide_loop_recovery(&mut app, &report);
+
+    match decision {
+        super::agent_events::LoopRecoveryDecision::Recover { prompt, removed } => {
+            assert_eq!(removed, 6, "the 3 repeated (user, assistant) pairs must be cut");
+            assert!(
+                prompt.contains("I need to investigate this further."),
+                "prompt must name the repeated response"
+            );
+            assert!(prompt.contains("603"), "prompt must state the count");
+        }
+        other => panic!("expected Recover, got {other:?}"),
+    }
+    assert_eq!(app.loop_recovery_count, 1, "recovery counter must increment");
+
+    // The real task survives; the looped response is gone.
+    let context = app.session.session_store.build_context();
+    assert!(
+        !context
+            .iter()
+            .any(|m| matches!(m, crate::session::AgentMessage::Assistant { content, .. } if content.iter().any(|b| matches!(b, crate::session::ContentBlock::Text { text } if text.contains("I need to investigate"))))),
+        "the looped response must be cut"
+    );
+}
+
+/// `TextEcho` with the budget already spent: `Exhausted`, no cut, counter
+/// unchanged.
+#[test]
+fn text_loop_recovery_exhausted_stops_without_cut() {
+    let (mut app, _dir) = app_with_text_loop_session();
+    app.loop_recovery_count = app.config.config.loop_detection.max_recoveries;
+    let entries_before = app.session.session_store.entries().len();
+    let report = text_echo_report();
+
+    let decision = super::agent_events::decide_loop_recovery(&mut app, &report);
+
+    assert!(
+        matches!(decision, super::agent_events::LoopRecoveryDecision::Exhausted),
+        "budget spent → Exhausted"
+    );
+    assert_eq!(
+        app.session.session_store.entries().len(),
+        entries_before,
+        "no cut must be applied when exhausted"
+    );
 }

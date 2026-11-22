@@ -58,8 +58,10 @@ fn do_load_session(app: &mut App) -> anyhow::Result<()> {
     // The message list was fully replaced — drop all cached heights.
     app.chat.heights.invalidate_all();
     // Resumed session — the next outgoing prefix legitimately differs from
-    // whatever the guard saw last, so reset the baseline.
+    // whatever the guard saw last, so reset the baseline. The text-echo
+    // detector window is per-task: a resumed session starts fresh.
     app.session.reset_history_guard();
+    app.text_loop_detector.reset();
     // `llamacpp`: refresh the model list on resume so the status bar's loaded
     // icon reflects the server's current state. Best-effort; silent on failure.
     app.spawn_model_fetch(true);

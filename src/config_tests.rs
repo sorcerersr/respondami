@@ -550,6 +550,8 @@ fn loop_detection_config_default_values() {
     assert_eq!(config.threshold, 8);
     assert_eq!(config.max_recoveries, 3);
     assert_eq!(config.reset_after_calls, 50);
+    assert_eq!(config.text_window, 10);
+    assert_eq!(config.text_threshold, 3);
 }
 
 #[test]
@@ -559,7 +561,9 @@ fn loop_detection_config_custom_values() {
     "window": 30,
     "threshold": 5,
     "max_recoveries": 1,
-    "reset_after_calls": 100
+    "reset_after_calls": 100,
+    "text_window": 20,
+    "text_threshold": 5
 }"#;
     let config: LoopDetectionConfig = serde_json::from_str(json).unwrap();
     assert!(!config.enabled);
@@ -567,6 +571,8 @@ fn loop_detection_config_custom_values() {
     assert_eq!(config.threshold, 5);
     assert_eq!(config.max_recoveries, 1);
     assert_eq!(config.reset_after_calls, 100);
+    assert_eq!(config.text_window, 20);
+    assert_eq!(config.text_threshold, 5);
 }
 
 #[test]
@@ -577,6 +583,8 @@ fn loop_detection_config_missing_uses_defaults() {
     assert_eq!(config.threshold, 8);
     assert_eq!(config.max_recoveries, 3);
     assert_eq!(config.reset_after_calls, 50);
+    assert_eq!(config.text_window, 10);
+    assert_eq!(config.text_threshold, 3);
 }
 
 #[test]
@@ -599,6 +607,11 @@ fn config_full_roundtrip_with_loop_detection() {
     assert_eq!(
         decoded.loop_detection.reset_after_calls,
         config.loop_detection.reset_after_calls
+    );
+    assert_eq!(decoded.loop_detection.text_window, config.loop_detection.text_window);
+    assert_eq!(
+        decoded.loop_detection.text_threshold,
+        config.loop_detection.text_threshold
     );
 }
 

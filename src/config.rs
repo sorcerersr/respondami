@@ -441,9 +441,10 @@ impl Default for RetryConfig {
 
 /// Loop-detection & automatic-recovery configuration.
 ///
-/// Detects degenerate loops (the model repeating the exact same tool call) in
-/// unattended sessions and recovers by surgically cutting the looped history
-/// and restarting with a re-orienting prompt. See `docs/configuration.md`.
+/// Detects degenerate loops (the model repeating the exact same tool call, or
+/// the exact same text-only response) in unattended sessions and recovers by
+/// surgically cutting the looped history and restarting with a re-orienting
+/// prompt. See `docs/configuration.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopDetectionConfig {
     /// Master switch. When `false`, detection is skipped entirely.
@@ -462,6 +463,13 @@ pub struct LoopDetectionConfig {
     /// later, distinct loop gets a fresh budget (long-session decay).
     #[serde(default = "default_loop_detection_reset_after_calls")]
     pub reset_after_calls: usize,
+    /// Sliding window of recent text-only responses to scan for repetition.
+    #[serde(default = "default_loop_detection_text_window")]
+    pub text_window: usize,
+    /// Same normalized text-only response at/above this many times in the
+    /// text window → text-echo loop.
+    #[serde(default = "default_loop_detection_text_threshold")]
+    pub text_threshold: usize,
 }
 
 fn default_loop_detection_enabled() -> bool {
@@ -484,6 +492,14 @@ fn default_loop_detection_reset_after_calls() -> usize {
     50
 }
 
+fn default_loop_detection_text_window() -> usize {
+    crate::agent::DEFAULT_TEXT_WINDOW
+}
+
+fn default_loop_detection_text_threshold() -> usize {
+    crate::agent::DEFAULT_TEXT_THRESHOLD
+}
+
 impl Default for LoopDetectionConfig {
     fn default() -> Self {
         Self {
@@ -492,6 +508,8 @@ impl Default for LoopDetectionConfig {
             threshold: default_loop_detection_threshold(),
             max_recoveries: default_loop_detection_max_recoveries(),
             reset_after_calls: default_loop_detection_reset_after_calls(),
+            text_window: default_loop_detection_text_window(),
+            text_threshold: default_loop_detection_text_threshold(),
         }
     }
 }

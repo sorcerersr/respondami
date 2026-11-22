@@ -21,7 +21,9 @@ mod token_estimation_tests;
 
 #[doc(inline)]
 pub use loop_detector::{
-    LoopDetector, LoopReport, canonical_args, loop_recovery_prompt, DEFAULT_THRESHOLD, DEFAULT_WINDOW,
+    LoopDetector, LoopKind, LoopReport, TextLoopDetector, canonical_args, loop_recovery_prompt,
+    normalize_text, text_loop_recovery_prompt, DEFAULT_THRESHOLD, DEFAULT_TEXT_THRESHOLD,
+    DEFAULT_TEXT_WINDOW, DEFAULT_WINDOW,
 };
 #[doc(inline)]
 pub use prompts::get_system_prompt;

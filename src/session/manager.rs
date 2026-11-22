@@ -95,6 +95,68 @@ pub fn find_loop_cut_index(entries: &[SessionEntry], tool_name: &str, canonical_
     floor
 }
 
+/// Locate the session cut index for a detected text-echo loop.
+///
+/// The cut is the user message immediately preceding the first assistant
+/// message whose normalized visible text equals the repeated key — removing
+/// whole repeated `(user, assistant)` pairs while preserving everything
+/// before the loop (compaction summary, the real human instruction). Scanning
+/// from the start (rather than from the last user message, as
+/// [`find_loop_cut_index`] does) is essential: in a Stop-hook re-prompt cycle
+/// the last user message is the latest re-prompt, so a floor-based cut would
+/// remove only the final pair.
+///
+/// If no matching assistant message is found (the loop's first occurrence was
+/// already compacted away), the last user message is returned as the floor, so
+/// at least the current re-prompt pair is removed. If there is no user message
+/// at all, the cut is entry 1 (just after the session header) so the header is
+/// always preserved.
+#[must_use]
+pub fn find_text_loop_cut_index(entries: &[SessionEntry], normalized_text: &str) -> usize {
+    for (i, entry) in entries.iter().enumerate() {
+        if let SessionEntry::Message {
+            message: AgentMessage::Assistant { content, .. },
+            ..
+        } = entry
+            && visible_text_normalized(content) == normalized_text
+        {
+            // Cut from the preceding user message (the re-prompt) if present,
+            // so the whole repeated pair is removed; otherwise the assistant
+            // message itself.
+            return entries[..i]
+                .iter()
+                .rposition(|e| {
+                    matches!(
+                        e,
+                        SessionEntry::Message { message: AgentMessage::User { .. }, .. }
+                    )
+                })
+                .unwrap_or(i);
+        }
+    }
+    entries
+        .iter()
+        .rposition(|e| matches!(e, SessionEntry::Message { message: AgentMessage::User { .. }, .. }))
+        .unwrap_or(1)
+}
+
+/// The normalized visible text of an assistant message's content blocks.
+///
+/// Joins the `Text` blocks (thinking and tool calls excluded) and normalizes
+/// whitespace — the same key the TUI feeds the text-echo detector, so session
+/// entries and live responses compare equal.
+fn visible_text_normalized(content: &[ContentBlock]) -> String {
+    let text: String = content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    crate::agent::normalize_text(&text)
+}
+
 /// Build context messages by walking a flat list of session entries.
 ///
 /// Shared by [`SessionStore::build_context`] and the calibrated
